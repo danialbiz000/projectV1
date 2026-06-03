@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dieta Simil-Chetogenica · Cristina Seregni</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --green: #1D9E75;
+    --green-light: #E1F5EE;
+    --green-mid: #5DCAA5;
+    --green-dark: #0F6E56;
+    --red-light: #FAECE7;
+    --red: #D85A30;
+    --bg: #FAFAF8;
+    --surface: #FFFFFF;
+    --surface2: #F4F4F0;
+    --border: rgba(0,0,0,0.09);
+    --border2: rgba(0,0,0,0.15);
+    --text: #1A1A18;
+    --text2: #5A5A54;
+    --text3: #8E8E86;
+    --radius: 14px;
+    --radius-sm: 8px;
+    --shadow: 0 1px 4px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+    --shadow-lg: 0 2px 8px rgba(0,0,0,0.08), 0 8px 32px rgba(0,0,0,0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131412;
+      --surface: #1E1E1B;
+      --surface2: #272724;
+      --border: rgba(255,255,255,0.08);
+      --border2: rgba(255,255,255,0.14);
+      --text: #F0EFEA;
+      --text2: #A8A89E;
+      --text3: #6A6A62;
+      --green-light: rgba(29,158,117,0.15);
+      --red-light: rgba(216,90,48,0.12);
+      --shadow: 0 1px 4px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.2);
+      --shadow-lg: 0 2px 8px rgba(0,0,0,0.4), 0 8px 32px rgba(0,0,0,0.3);
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page-wrapper {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+  }
+
+  /* ── HEADER ── */
+  .header {
+    margin-bottom: 2rem;
+    animation: fadeUp 0.5s ease both;
+  }
+  .header-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+  }
+  .header-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--green);
+    margin-bottom: 4px;
+  }
+  .header-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(26px, 5vw, 36px);
+    color: var(--text);
+    line-height: 1.1;
+    font-weight: 400;
+  }
+  .header-title em {
+    font-style: italic;
+    color: var(--green);
+  }
+  .header-sub {
+    font-size: 13px;
+    color: var(--text2);
+    margin-top: 6px;
+  }
+  .header-logo {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: var(--green-light);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    flex-shrink: 0;
+    border: 1.5px solid var(--green-mid);
+  }
+  .note-banner {
+    background: var(--green-light);
+    border: 1px solid rgba(29,158,117,0.25);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    font-size: 13px;
+    color: var(--green-dark);
+    line-height: 1.6;
+  }
+  @media (prefers-color-scheme: dark) {
+    .note-banner { color: var(--green-mid); }
+  }
+
+  /* ── STAT CARDS ── */
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 1.5rem;
+    animation: fadeUp 0.5s 0.1s ease both;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+    text-align: center;
+  }
+  .stat-num {
+    font-family: 'DM Serif Display', serif;
+    font-size: 28px;
+    color: var(--text);
+    line-height: 1;
+  }
+  .stat-lbl {
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  /* ── PROGRESS ── */
+  .progress-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    box-shadow: var(--shadow);
+    margin-bottom: 1.5rem;
+    animation: fadeUp 0.5s 0.15s ease both;
+  }
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .progress-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .progress-pct {
+    font-size: 13px;
+    color: var(--green);
+    font-weight: 500;
+  }
+  .progress-track {
+    height: 8px;
+    background: var(--surface2);
+    border-radius: 99px;
+    overflow: hidden;
+    margin-bottom: 14px;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--green-mid), var(--green));
+    border-radius: 99px;
+    transition: width 0.5s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  .day-dots {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .day-dot {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text3);
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .day-dot:hover { border-color: var(--green); color: var(--green); transform: scale(1.08); }
+  .day-dot.active { background: var(--green); border-color: var(--green); color: white; box-shadow: 0 2px 8px rgba(29,158,117,0.35); }
+  .day-dot.done { background: var(--green-light); border-color: var(--green-mid); color: var(--green-dark); }
+
+  /* ── TABS ── */
+  .tabs-container {
+    margin-bottom: 1.25rem;
+    animation: fadeUp 0.5s 0.2s ease both;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--surface2);
+    padding: 4px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+  }
+  .tab {
+    flex: 1;
+    padding: 9px 8px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text2);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.18s;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow);
+  }
+
+  /* ── CONTENT ANIMATION ── */
+  .tab-content { animation: fadeUp 0.3s ease both; }
+
+  /* ── MEAL CARDS ── */
+  .meal-grid { display: flex; flex-direction: column; gap: 10px; }
+
+  .meal-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .meal-card:hover { border-color: var(--border2); box-shadow: var(--shadow-lg); }
+
+  .meal-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .meal-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .meal-info { flex: 1; min-width: 0; }
+  .meal-name { font-size: 15px; font-weight: 500; color: var(--text); }
+  .meal-time { font-size: 12px; color: var(--text3); margin-top: 2px; }
+  .meal-chevron {
+    width: 20px;
+    height: 20px;
+    color: var(--text3);
+    flex-shrink: 0;
+    transition: transform 0.25s ease;
+  }
+  .meal-chevron.open { transform: rotate(180deg); }
+
+  .meal-body {
+    border-top: 1px solid var(--border);
+    padding: 14px 16px 16px;
+    display: none;
+  }
+  .meal-body.open { display: block; animation: fadeUp 0.25s ease both; }
+
+  .option-list { display: flex; flex-direction: column; gap: 8px; }
+  .option-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13.5px;
+    color: var(--text2);
+    line-height: 1.55;
+  }
+  .option-bullet {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-top: 6px;
+    flex-shrink: 0;
+  }
+  .option-item strong { color: var(--text); font-weight: 500; }
+  .option-or {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text3);
+    padding-left: 17px;
+  }
+  .meal-note {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: var(--surface2);
+    border-radius: var(--radius-sm);
+    font-size: 12.5px;
+    color: var(--text2);
+    line-height: 1.5;
+    border-left: 3px solid var(--green-mid);
+  }
+
+  .verdure-tags { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .verdure-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 99px;
+    font-weight: 500;
+  }
+  .badge-ok { background: var(--green-light); color: var(--green-dark); }
+  .badge-no { background: var(--red-light); color: var(--red); text-decoration: line-through; }
+
+  /* ── PROTEIN SECTION ── */
+  .protein-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+  }
+  .protein-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+  }
+  .protein-cat {
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .protein-items { display: flex; flex-direction: column; gap: 5px; }
+  .protein-item { font-size: 13px; color: var(--text2); line-height: 1.4; }
+  .protein-item strong { color: var(--text); font-weight: 500; }
+
+  .carbo-box {
+    margin-top: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: var(--shadow);
+  }
+  .carbo-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .carbo-list { display: flex; flex-direction: column; gap: 8px; }
+  .carbo-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text2);
+    line-height: 1.5;
+  }
+  .carbo-item strong { color: var(--text); font-weight: 500; }
+
+  /* ── RULES SECTION ── */
+  .rules-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  @media (max-width: 480px) { .rules-grid { grid-template-columns: 1fr; } }
+  .rule-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: var(--shadow);
+  }
+  .rule-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rule-dot-ok { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; flex-shrink: 0; margin-top: 5px; }
+  .rule-dot-no { width: 8px; height: 8px; border-radius: 50%; background: var(--red); display: inline-block; flex-shrink: 0; margin-top: 5px; }
+  .rule-items { display: flex; flex-direction: column; gap: 6px; }
+  .rule-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text2); line-height: 1.4; }
+
+  /* ── CHECKLIST ── */
+  .checklist-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: var(--shadow);
+    margin-top: 14px;
+  }
+  .checklist-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 12px;
+  }
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: opacity 0.15s;
+    user-select: none;
+  }
+  .check-row:last-child { border-bottom: none; }
+  .check-row:hover { opacity: 0.8; }
+  .check-box {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    border: 1.5px solid var(--border2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.2s;
+    background: var(--surface);
+  }
+  .check-box.checked {
+    background: var(--green);
+    border-color: var(--green);
+  }
+  .check-box svg { display: none; }
+  .check-box.checked svg { display: block; }
+  .check-label { font-size: 13.5px; color: var(--text2); line-height: 1.4; transition: color 0.2s; }
+  .check-row.checked-row .check-label { color: var(--text3); text-decoration: line-through; }
+
+  .success-banner {
+    display: none;
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: var(--green-light);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    color: var(--green-dark);
+    font-weight: 500;
+    text-align: center;
+    animation: fadeUp 0.3s ease both;
+  }
+
+  /* ── WEIGHT NOTE ── */
+  .weight-note {
+    background: var(--surface2);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    font-size: 12.5px;
+    color: var(--text2);
+    line-height: 1.6;
+    margin-top: 14px;
+    border-left: 3px solid var(--border2);
+  }
+
+  /* ── FOOTER ── */
+  .footer {
+    margin-top: 2.5rem;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text3);
+    line-height: 1.7;
+  }
+  .footer a { color: var(--green); text-decoration: none; }
+
+  /* ── ANIMATIONS ── */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+</style>
+</head>
+<body>
+
+<div class="page-wrapper">
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-top">
+      <div>
+        <div class="header-label">Piano alimentare · Fase 1</div>
+        <h1 class="header-title">Dieta Simil-<em>Chetogenica</em></h1>
+        <div class="header-sub">Dott.ssa Serena Garifo · Cristina Seregni</div>
+      </div>
+      <div class="header-logo">🥗</div>
+    </div>
+    <div class="note-banner">
+      ⚡ <strong>Durata minima:</strong> 14 giorni consecutivi senza sgarri per valutarne l'efficacia. Prolungabile fino a 28 giorni.
+    </div>
+  </div>
+
+  <!-- STAT CARDS -->
+  <div class="stat-row">
+    <div class="stat-card">
+      <div class="stat-num" id="stat-done">0</div>
+      <div class="stat-lbl">Giorni completati</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num">14</div>
+      <div class="stat-lbl">Obiettivo minimo</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num" id="stat-pct">0%</div>
+      <div class="stat-lbl">Progressione</div>
+    </div>
+  </div>
+
+  <!-- PROGRESS -->
+  <div class="progress-section">
+    <div class="progress-header">
+      <span class="progress-title" id="prog-label">Giorno 1 di 14</span>
+      <span class="progress-pct" id="prog-pct">0%</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" id="prog-fill" style="width:7%"></div>
+    </div>
+    <div class="day-dots" id="day-dots"></div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs-container">
+    <div class="tabs">
+      <div class="tab active" data-tab="piano">Piano pasti</div>
+      <div class="tab" data-tab="proteine">Proteine</div>
+      <div class="tab" data-tab="regole">Regole & Note</div>
+    </div>
+  </div>
+
+  <!-- TAB: PIANO PASTI -->
+  <div id="tab-piano" class="tab-content">
+    <div class="meal-grid">
+
+      <!-- COLAZIONE -->
+      <div class="meal-card">
+        <div class="meal-header" onclick="toggleMeal(this)">
+          <div class="meal-icon" style="background:#E1F5EE">🌅</div>
+          <div class="meal-info">
+            <div class="meal-name">Colazione</div>
+            <div class="meal-time">3 opzioni a rotazione</div>
+          </div>
+          <svg class="meal-chevron open" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4,7 10,13 16,7"/></svg>
+        </div>
+        <div class="meal-body open">
+          <div class="option-list">
+            <div class="option-item">
+              <div class="option-bullet" style="background:var(--green)"></div>
+              <span><strong>Opzione A:</strong> Tè / caffè + yogurt greco magro 0% grassi 150g + 1 cucchiaio di gocce di cioccolato fondente extra dark</span>
+            </div>
+            <div class="option-or">oppure</div>
+            <div class="option-item">
+              <div class="option-bullet" style="background:var(--green)"></div>
+              <span><strong>Opzione B:</strong> 150g albume d'uovo cotto in padella + 30g salume magro (bresaola, p.cotto, speck, p.crudo, arrosto di pollo / tacchino)</span>
+            </div>
+            <div class="option-or">oppure</div>
+            <div class="option-item">
+              <div class="option-bullet" style="background:var(--green)"></div>
+              <span><strong>Opzione C:</strong> 50g pane proteico fase 1 + velo formaggio spalmabile Exquisa light + marmellata senza zuccheri Hero Light</span>
+            </div>
+          </div>
+          <div class="meal-note">
+            💡 In alternativa allo yogurt: cappuccino con latte proteico senza lattosio (150ml) — senza zucchero. Opzioni disponibili: Zymil Parmalat, Milk Pro, Latte di soia Alpro.
+          </div>
+        </div>
+      </div>
+
+      <!-- SPUNTINO MATTINO -->
+      <div class="meal-card">
+        <div class="meal-header" onclick="toggleMeal(this)">
+          <div class="meal-icon" style="background:#E6F1FB">☀️</div>
+          <div class="meal-info">
+            <div class="meal-name">Spuntino mattino</div>
+            <div class="meal-time">Intercambiabile con lo spuntino pomeriggio</div>
+          </div>
+          <svg class="meal-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4,7 10,13 16,7"/></svg>
+        </div>
+        <div class="meal-body">
+          <div class="option-list">
+            <div class="option-item"><div class="option-bullet" style="background:#378ADD"></div><span>Cappuccino senza zucchero</span></div>
+            <div class="option-or">oppure</div>
+            <div class="option-item"><div class="option-bullet" style="background:#378ADD"></div><span>100g frutti di bosco freschi o surgelati (fragole, lamponi, mirtilli, more)</span></div>
+            <div class="option-or">oppure</div>
+            <div class="option-item"><div class="option-bullet" style="background:#378ADD"></div><span>½ mela verde Granny Smith</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PRANZO -->
+      <div class="meal-card">
+        <div class="meal-header" onclick="toggleMeal(this)">
+          <div class="meal-icon" style="background:#EAF3DE">🥗</div>
+          <div class="meal-info">
+            <div class="meal-name">Pranzo</div>
+            <div class="meal-time">Secondo proteico + verdure + carboidrato</div>
+          </div>
+          <svg class="meal-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4,7 10,13 16,7"/></svg>
+        </div>
+        <div class="meal-body">
+          <div class="option-list">
+            <div class="option-item"><div class="option-bullet" style="background:#639922"></div><span><strong>Secondo piatto proteico</strong> — vedi sezione Proteine</span></div>
+            <div class="option-item"><div class="option-bullet" style="background:#639922"></div><span><strong>Verdure:</strong> libere, cotte o crude, solo di colore bianco o verde</span></div>
+            <div class="option-item"><div class="option-bullet" style="background:#639922"></div><span><strong>Carbo:</strong> 50g pane proteico fase 1 (o varianti ammesse)</span></div>
+          </div>
+          <div class="verdure-tags">
+            <span class="verdure-badge badge-ok">✓ Bianche</span>
+            <span class="verdure-badge badge-ok">✓ Verdi</span>
+            <span class="verdure-badge badge-no">✕ Arancioni</span>
+            <span class="verdure-badge badge-no">✕ Rosse</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SPUNTINO POMERIGGIO -->
+      <div class="meal-card">
+        <div class="meal-header" onclick="toggleMeal(this)">
+          <div class="meal-icon" style="background:#FAEEDA">🌤️</div>
+          <div class="meal-info">
+            <div class="meal-name">Spuntino pomeriggio</div>
+            <div class="meal-time">Intercambiabile con lo spuntino mattino</div>
+          </div>
+          <svg class="meal-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4,7 10,13 16,7"/></svg>
+        </div>
+        <div class="meal-body">
+          <div class="option-list">
+            <div class="option-item"><div class="option-bullet" style="background:#BA7517"></div><span>125g yogurt naturale bianco 0% grassi</span></div>
+            <div class="option-or">oppure</div>
+            <div class="option-item"><div class="option-bullet" style="background:#BA7517"></div><span>100g frutti di bosco freschi o surgelati</span></div>
+          </div>
+          <div class="meal-note">💡 Puoi frullare yogurt + frutti di bosco per un frullato</div>
+        </div>
+      </div>
+
+      <!-- CENA -->
+      <div class="meal-card">
+        <div class="meal-header" onclick="toggleMeal(this)">
+          <div class="meal-icon" style="background:#EEEDFE">🌙</div>
+          <div class="meal-info">
+            <div class="meal-name">Cena</div>
+            <div class="meal-time">Secondo proteico + verdure + carboidrato</div>
+          </div>
+          <svg class="meal-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4,7 10,13 16,7"/></svg>
+        </div>
+        <div class="meal-body">
+          <div class="option-list">
+            <div class="option-item"><div class="option-bullet" style="background:#7F77DD"></div><span><strong>Secondo piatto proteico</strong> — vedi sezione Proteine</span></div>
+            <div class="option-item"><div class="option-bullet" style="background:#7F77DD"></div><span><strong>Verdure:</strong> libere, cotte o crude, solo bianche o verdi</span></div>
+            <div class="option-item"><div class="option-bullet" style="background:#7F77DD"></div><span><strong>Carbo:</strong> 50g pane proteico fase 1 (o varianti ammesse)</span></div>
+          </div>
+          <div class="meal-note">🍫 <strong>Dopo cena:</strong> 2 quadretti di cioccolato fondente 90–99% cacao</div>
+        </div>
+      </div>
+
+    </div>
+    <div class="meal-note" style="margin-top:12px">
+      🫒 <strong>Condimento:</strong> max 20g di olio EVO al giorno (= 4 cucchiaini) per cucinare e condire pranzo e cena
+    </div>
+  </div>
+
+  <!-- TAB: PROTEINE -->
+  <div id="tab-proteine" class="tab-content" style="display:none">
+    <div class="protein-grid">
+      <div class="protein-card">
+        <div class="protein-cat" style="color:var(--green)">🐟 Pesce</div>
+        <div class="protein-items">
+          <div class="protein-item">200g pesce fresco o surgelato</div>
+          <div class="protein-item">100g tonno al naturale</div>
+          <div class="protein-item">80g salmone affumicato</div>
+          <div class="protein-item">70g tonno sott'olio (sgocciolato)</div>
+        </div>
+      </div>
+      <div class="protein-card">
+        <div class="protein-cat" style="color:#993C1D">🥩 Carne</div>
+        <div class="protein-items">
+          <div class="protein-item">150g carne magra rossa o bianca, ben cotta</div>
+          <div class="protein-item">80–100g salume magro cotto: p.cotto, p.cotto affumicato di Praga, mortadella di pollo light, fesa pollo/tacchino</div>
+          <div class="protein-item" style="font-size:11.5px; color:var(--text3);">max 10g grassi/100g</div>
+        </div>
+      </div>
+      <div class="protein-card">
+        <div class="protein-cat" style="color:#185FA5">🧀 Formaggi</div>
+        <div class="protein-items">
+          <div class="protein-item"><strong>Tipo 1:</strong> 200g ricotta magra / di capra (≤5g grassi)</div>
+          <div class="protein-item"><strong>Tipo 2:</strong> 120g mozzarella senza lattosio (20g grassi)</div>
+          <div class="protein-item"><strong>Tipo 3:</strong> 50g parmigiano (30g grassi)</div>
+        </div>
+      </div>
+      <div class="protein-card">
+        <div class="protein-cat" style="color:#534AB7">🌿 Vegetale / Veg</div>
+        <div class="protein-items">
+          <div class="protein-item">80g tofu affumicato</div>
+          <div class="protein-item">80g seitan</div>
+          <div class="protein-item">80–100g burger / polpettine vegetali (max 10g grassi)</div>
+          <div class="protein-item">80–100g salume vegano (Mopur o lupino)</div>
+          <div class="protein-item">50g spezzatino di soia granulare</div>
+          <div class="protein-item">⭐ 150g soia edamame</div>
+          <div class="protein-item">⭐ 150g lupini</div>
+        </div>
+      </div>
+      <div class="protein-card">
+        <div class="protein-cat" style="color:#854F0B">🥚 Uova</div>
+        <div class="protein-items">
+          <div class="protein-item">2 uova intere</div>
+          <div class="protein-item" style="color:var(--text3); font-style:italic">max 2 volte a settimana</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="carbo-box">
+      <div class="carbo-title">🍞 Varianti Carbo ammesse (in sostituzione del pane proteico)</div>
+      <div class="carbo-list">
+        <div class="carbo-item"><div class="option-bullet" style="background:var(--green); margin-top:6px; flex-shrink:0"></div><span>Panini <strong>Nuvola Zero</strong> gusto pizza Stage1 — max 1 panino/giorno</span></div>
+        <div class="carbo-item"><div class="option-bullet" style="background:var(--green); margin-top:6px; flex-shrink:0"></div><span>Pane proteico <strong>Mestemacher</strong> — max 50g/giorno</span></div>
+        <div class="carbo-item"><div class="option-bullet" style="background:var(--green); margin-top:6px; flex-shrink:0"></div><span>Piandine <strong>Feeling OK</strong> — max 1 base/giorno, max 50g</span></div>
+        <div class="carbo-item"><div class="option-bullet" style="background:var(--green); margin-top:6px; flex-shrink:0"></div><span>Pasta <strong>Shirataki Pesoforma</strong> fase 1 — <strong>quantità libera</strong></span></div>
+      </div>
+    </div>
+
+    <div class="weight-note">
+      ⚖️ <strong>Nota pesi:</strong> tutti i pesi si riferiscono al crudo, prima della cottura, al netto di eventuali scarti.
+    </div>
+  </div>
+
+  <!-- TAB: REGOLE -->
+  <div id="tab-regole" class="tab-content" style="display:none">
+    <div class="rules-grid">
+      <div class="rule-card">
+        <div class="rule-title">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--green)" stroke-width="2"><polyline points="2,8 6,12 14,4"/></svg>
+          Liberi nella dieta
+        </div>
+        <div class="rule-items">
+          <div class="rule-item"><div class="rule-dot-ok"></div>Spezie e aromi</div>
+          <div class="rule-item"><div class="rule-dot-ok"></div>Succo di limone</div>
+          <div class="rule-item"><div class="rule-dot-ok"></div>Salsa di soia</div>
+          <div class="rule-item"><div class="rule-dot-ok"></div>Senape</div>
+          <div class="rule-item"><div class="rule-dot-ok"></div>Aceto (no glassa balsamica)</div>
+          <div class="rule-item"><div class="rule-dot-ok"></div>Vino per sfumare</div>
+          <div class="rule-item"><div class="rule-dot-ok"></div>Coca Zero, bibite zero</div>
+          <div class="rule-item"><div class="rule-dot-ok"></div>Ketchup</div>
+        </div>
+      </div>
+      <div class="rule-card">
+        <div class="rule-title">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--red)" stroke-width="2"><line x1="2" y1="2" x2="14" y2="14"/><line x1="14" y1="2" x2="2" y2="14"/></svg>
+          Non concessi
+        </div>
+        <div class="rule-items">
+          <div class="rule-item"><div class="rule-dot-no"></div>Alcolici</div>
+          <div class="rule-item"><div class="rule-dot-no"></div>Maionese</div>
+          <div class="rule-item"><div class="rule-dot-no"></div>Salsa yogurt</div>
+          <div class="rule-item"><div class="rule-dot-no"></div>Salsa barbecue / tacos</div>
+          <div class="rule-item"><div class="rule-dot-no"></div>Legumi (tranne edamame e lupini)</div>
+          <div class="rule-item"><div class="rule-dot-no"></div>Succhi di frutta zero</div>
+          <div class="rule-item"><div class="rule-dot-no"></div>Frutta (eccetto frutti di bosco e mela Granny Smith)</div>
+          <div class="rule-item"><div class="rule-dot-no"></div>Verdure arancioni e rosse</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="weight-note">
+      ⚖️ <strong>Nota pesi:</strong> tutti i pesi si riferiscono al crudo, prima della cottura, al netto di eventuali scarti.
+    </div>
+
+    <!-- CHECKLIST -->
+    <div class="checklist-section">
+      <div class="checklist-title">✅ Checklist giornaliera — Giorno <span id="check-day-label">1</span></div>
+      <div id="checklist">
+        <div class="check-row" onclick="toggleCheck(this, 0)">
+          <div class="check-box"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2"><polyline points="1,6 4,9 11,3"/></svg></div>
+          <span class="check-label">Ho seguito il piano pasti senza sgarri</span>
+        </div>
+        <div class="check-row" onclick="toggleCheck(this, 1)">
+          <div class="check-box"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2"><polyline points="1,6 4,9 11,3"/></svg></div>
+          <span class="check-label">Ho usato max 20g olio EVO</span>
+        </div>
+        <div class="check-row" onclick="toggleCheck(this, 2)">
+          <div class="check-box"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2"><polyline points="1,6 4,9 11,3"/></svg></div>
+          <span class="check-label">Ho evitato verdure arancioni e rosse</span>
+        </div>
+        <div class="check-row" onclick="toggleCheck(this, 3)">
+          <div class="check-box"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2"><polyline points="1,6 4,9 11,3"/></svg></div>
+          <span class="check-label">Ho bevuto acqua a sufficienza</span>
+        </div>
+        <div class="check-row" onclick="toggleCheck(this, 4)">
+          <div class="check-box"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2"><polyline points="1,6 4,9 11,3"/></svg></div>
+          <span class="check-label">Ho evitato alcolici e salse energetiche</span>
+        </div>
+      </div>
+      <div class="success-banner" id="success-banner">🎉 Ottimo lavoro! Giorno completato con successo.</div>
+    </div>
+
+    <div style="margin-top:12px; text-align:center;">
+      <button onclick="resetDay()" style="font-size:12px; color:var(--text3); background:none; border:none; cursor:pointer; text-decoration:underline; font-family:inherit; padding:6px;">Azzera checklist del giorno corrente</button>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <div>Dott.ssa Serena Garifo · Dietista Nutrizionista</div>
+    <div><a href="https://www.studionutrizionegarifo.com" target="_blank">studionutrizionegarifo.com</a> · info@studionutrizionegarifo.com · 347 258 7763</div>
+    <div style="margin-top:6px; color:var(--text3)">I progressi vengono salvati automaticamente sul dispositivo</div>
+  </div>
+
+</div>
+
+<script>
+  var STATE_KEY = 'dieta_cristina_v1';
+  var state = { currentDay: 1, completedDays: [], checks: {} };
+
+  function loadState() {
+    try {
+      var saved = localStorage.getItem(STATE_KEY);
+      if (saved) state = JSON.parse(saved);
+    } catch(e) {}
+  }
+
+  function saveState() {
+    try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch(e) {}
+  }
+
+  function buildDots() {
+    var container = document.getElementById('day-dots');
+    container.innerHTML = '';
+    for (var i = 1; i <= 14; i++) {
+      var d = document.createElement('div');
+      var cls = 'day-dot';
+      if (i === state.currentDay) cls += ' active';
+      else if (state.completedDays.indexOf(i) >= 0) cls += ' done';
+      d.className = cls;
+      d.textContent = i;
+      (function(day) {
+        d.addEventListener('click', function() { selectDay(day); });
+      })(i);
+      container.appendChild(d);
+    }
+  }
+
+  function updateStats() {
+    var done = state.completedDays.length;
+    var pct = Math.round((done / 14) * 100);
+    document.getElementById('stat-done').textContent = done;
+    document.getElementById('stat-pct').textContent = pct + '%';
+    document.getElementById('prog-pct').textContent = pct + '%';
+    document.getElementById('prog-label').textContent = 'Giorno ' + state.currentDay + ' di 14';
+    document.getElementById('prog-fill').style.width = Math.max(7, pct) + '%';
+    if (document.getElementById('check-day-label'))
+      document.getElementById('check-day-label').textContent = state.currentDay;
+  }
+
+  function selectDay(day) {
+    state.currentDay = day;
+    saveState();
+    buildDots();
+    updateStats();
+    renderChecklist();
+  }
+
+  function renderChecklist() {
+    var dayKey = 'd' + state.currentDay;
+    var saved = state.checks[dayKey] || [false, false, false, false, false];
+    var rows = document.querySelectorAll('.check-row');
+    rows.forEach(function(row, i) {
+      var box = row.querySelector('.check-box');
+      if (saved[i]) {
+        box.classList.add('checked');
+        row.classList.add('checked-row');
+      } else {
+        box.classList.remove('checked');
+        row.classList.remove('checked-row');
+      }
+    });
+    checkAllDone();
+  }
+
+  function toggleCheck(row, idx) {
+    var box = row.querySelector('.check-box');
+    var isChecked = box.classList.toggle('checked');
+    row.classList.toggle('checked-row', isChecked);
+    var dayKey = 'd' + state.currentDay;
+    if (!state.checks[dayKey]) state.checks[dayKey] = [false,false,false,false,false];
+    state.checks[dayKey][idx] = isChecked;
+    saveState();
+    checkAllDone();
+  }
+
+  function checkAllDone() {
+    var dayKey = 'd' + state.currentDay;
+    var checks = state.checks[dayKey] || [];
+    var allDone = checks.length === 5 && checks.every(function(v){ return v; });
+    var banner = document.getElementById('success-banner');
+    if (allDone) {
+      banner.style.display = 'block';
+      if (state.completedDays.indexOf(state.currentDay) < 0) {
+        state.completedDays.push(state.currentDay);
+        saveState();
+        buildDots();
+        updateStats();
+      }
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+
+  function resetDay() {
+    var dayKey = 'd' + state.currentDay;
+    state.checks[dayKey] = [false,false,false,false,false];
+    var cdIdx = state.completedDays.indexOf(state.currentDay);
+    if (cdIdx >= 0) state.completedDays.splice(cdIdx, 1);
+    saveState();
+    buildDots();
+    updateStats();
+    renderChecklist();
+  }
+
+  function toggleMeal(header) {
+    var body = header.nextElementSibling;
+    var chevron = header.querySelector('.meal-chevron');
+    var isOpen = body.classList.contains('open');
+    body.classList.toggle('open', !isOpen);
+    chevron.classList.toggle('open', !isOpen);
+  }
+
+  document.querySelectorAll('.tab').forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
+      tab.classList.add('active');
+      var name = tab.getAttribute('data-tab');
+      document.getElementById('tab-piano').style.display = name === 'piano' ? '' : 'none';
+      document.getElementById('tab-proteine').style.display = name === 'proteine' ? '' : 'none';
+      document.getElementById('tab-regole').style.display = name === 'regole' ? '' : 'none';
+      if (name === 'regole') renderChecklist();
+    });
+  });
+
+  loadState();
+  buildDots();
+  updateStats();
+</script>
+</body>
+</html>
