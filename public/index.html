@@ -290,6 +290,18 @@ tr:hover td { background: var(--surface2); }
 .alloc-bar { height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; margin: 6px 0; }
 .alloc-bar-fill { height: 100%; border-radius: 4px; background: var(--gold); }
 
+/* AutoTrader toggle */
+.toggle-switch { position: relative; display: inline-block; width: 48px; height: 26px; cursor: pointer; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 26px; transition: 0.3s; }
+.toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 4px; bottom: 4px; background: #fff; border-radius: 50%; transition: 0.3s; }
+.toggle-switch input:checked + .toggle-slider { background: var(--gold); }
+.toggle-switch input:checked + .toggle-slider:before { transform: translateX(22px); }
+.at-action-buy { color: var(--green); font-weight: 700; }
+.at-action-sell { color: var(--red); font-weight: 700; }
+.at-action-hold { color: var(--text-muted); }
+.at-action-error { color: var(--orange); }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
@@ -338,6 +350,7 @@ tr:hover td { background: var(--surface2); }
       <a data-section="trading" onclick="showSection('trading', this)">⚡ Trading</a>
       <a data-section="heatmap" onclick="showSection('heatmap', this)">🔥 Heatmap</a>
       <a data-section="watchdog" onclick="showSection('watchdog', this)">🐕 Watchdog</a>
+      <a data-section="autotrader" onclick="showSection('autotrader', this)">🤖 AutoTrader</a>
       <a data-section="screener" onclick="showSection('screener', this)">🔍 Screener</a>
       <a data-section="macro" onclick="showSection('macro', this)">🌍 Macro</a>
       <a data-section="chat" onclick="showSection('chat', this)">💬 AI Desk</a>
@@ -495,6 +508,79 @@ tr:hover td { background: var(--surface2); }
         <div class="card">
           <div class="card-title">Equity Curve — Alpaca Portfolio</div>
           <div class="chart-wrap-lg"><canvas id="chart-alpaca-history"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AutoTrader -->
+    <section id="section-autotrader" class="section">
+      <div class="grid-2" style="margin-bottom:20px">
+        <div class="card">
+          <div class="card-title">Stato AutoTrader</div>
+          <div style="margin-top:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+              <span style="font-size:0.9rem;font-weight:600">Attiva motore AI</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="at-enabled-toggle" onchange="setAutoTraderEnabled(this.checked)">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div style="font-size:0.82rem;line-height:2.2;color:var(--text-muted)">
+              Status:&nbsp;<span id="at-status-badge"><span style="color:var(--text-muted)">○ Off</span></span><br>
+              Ultima run:&nbsp;<span id="at-last-run" style="color:var(--text)">—</span><br>
+              Prossima run:&nbsp;<span id="at-next-run" style="color:var(--text)">—</span><br>
+              Trades oggi:&nbsp;<span id="at-today-trades" style="color:var(--text)">0</span>
+            </div>
+            <div id="at-halt-banner" style="display:none;margin-top:12px;padding:10px;background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.3);border-radius:8px;font-size:0.8rem;color:var(--red)">
+              <b>⛔ HALT:</b> <span id="at-halt-reason"></span>
+              <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="resetAutoTraderHalt()">Ripristina sistema</button>
+            </div>
+            <button class="btn btn-secondary" style="margin-top:14px;width:100%" onclick="runAutoTraderNow()">▶ Esegui Ricerca Ora</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Configurazione</div>
+          <div style="margin-top:12px">
+            <div class="field">
+              <label>Intervallo ricerca (minuti)</label>
+              <input type="number" id="at-interval" value="30" min="5" max="480">
+            </div>
+            <div class="field">
+              <label>Soglia confidenza minima (0.5–1.0)</label>
+              <input type="number" id="at-confidence" value="0.75" min="0.5" max="1.0" step="0.05">
+            </div>
+            <div class="form-row">
+              <div class="field">
+                <label>Max posizioni</label>
+                <input type="number" id="at-max-pos" value="5" min="1" max="20">
+              </div>
+              <div class="field">
+                <label>Max % equity/trade</label>
+                <input type="number" id="at-max-pct" value="15" min="1" max="50">
+              </div>
+            </div>
+            <button class="btn btn-primary btn-full" onclick="saveAutoTraderConfig()">Salva Configurazione</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-title">Watchlist & Logica</div>
+        <div style="margin-top:8px;font-size:0.82rem;color:var(--text)">ENB · GIL · IBKR · MC · VNET · AAPL · SPY · QQQ · LMT · RTX + posizioni aperte</div>
+        <div style="margin-top:8px;font-size:0.8rem;color:var(--text-muted);line-height:1.7">
+          Ogni ciclo: fetch 30 giorni di price bars per ogni simbolo → Claude analizza BUY/SELL/HOLD → se confidence ≥ soglia esegue ordine market su Alpaca.<br>
+          <b>Safety guards:</b> solo in orario di mercato ET · max drawdown sessione 5% → halt automatico · un trade per simbolo per giorno.
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div class="card-title" style="margin-bottom:0">Log Decisioni AI</div>
+          <button class="btn btn-secondary btn-sm" onclick="loadAutoTraderStatus()">↺ Aggiorna</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Ora</th><th>Symbol</th><th>Azione</th><th>Conf.</th><th>Eseguito</th><th>Reasoning</th></tr></thead>
+            <tbody id="at-log-tbody"><tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:24px">Nessun log — attiva il motore per iniziare</td></tr></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -851,6 +937,7 @@ const SECTION_TITLES = {
   heatmap:'Heatmap Fondamentali', watchdog:'Watchdog & Backup',
   screener:'Screener Aziende', macro:'Macro & Geopolitica',
   chat:'Trading Desk AI', allocator:'Allocatore Budget', settings:'Impostazioni',
+  autotrader:'AutoTrader — AI Trading Engine',
 };
 function showSection(id, el) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -861,6 +948,7 @@ function showSection(id, el) {
   if (id === 'trading') { loadOpenOrders(); loadOrderHistory(); loadAlpacaHistory(); }
   if (id === 'settings') updateSettingsPanel();
   if (id === 'macro') loadFX();
+  if (id === 'autotrader') loadAutoTraderStatus();
 }
 function showTab(section, tab, el) {
   document.querySelectorAll(`#section-${section} .tab`).forEach(t => t.classList.remove('active'));
@@ -883,6 +971,10 @@ function connectWS() {
     if (data.type === 'account') updateAccountKPIs(data.account);
     if (data.type === 'positions') updatePositionsTable(data.positions);
     if (data.type === 'trade_update') handleTradeUpdate(data.order);
+    if (data.type === 'autotrader_log') prependAtLogEntry(data.entry);
+    if (data.type === 'autotrader_trade') showToast(`🤖 AutoTrader: ${data.action} ${data.symbol}${data.notional ? ' $'+data.notional : data.qty ? ' '+data.qty+' shares' : ''}`, 'success');
+    if (data.type === 'autotrader_halted') { showToast('⛔ AutoTrader HALT: ' + data.reason, 'error'); loadAutoTraderStatus(); }
+    if (data.type === 'autotrader_status') updateAutoTraderUI(data.state);
   };
   ws.onclose = () => { wsConnected = false; updateWsStatus(false); setTimeout(connectWS, 3000); };
   ws.onerror = () => { wsConnected = false; updateWsStatus(false); };
@@ -1757,6 +1849,124 @@ async function executeAllOrders(amount, alloc) {
 }
 
 // ============================================================
+// AUTOTRADER
+// ============================================================
+async function loadAutoTraderStatus() {
+  try {
+    const data = await fetch('/api/autotrader/status').then(r => r.json());
+    updateAutoTraderUI(data);
+    if (data.log) renderAtLog(data.log);
+  } catch (_) {}
+}
+
+function updateAutoTraderUI(data) {
+  if (!data) return;
+  const toggle = document.getElementById('at-enabled-toggle');
+  if (toggle) toggle.checked = data.enabled;
+  const setEl = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+  setEl('at-last-run', data.lastRunAt ? new Date(data.lastRunAt).toLocaleTimeString('it-IT') : '—');
+  setEl('at-next-run', data.nextRunAt ? new Date(data.nextRunAt).toLocaleTimeString('it-IT') : '—');
+  setEl('at-today-trades', data.todayTradesCount || 0);
+  if (data.halted) {
+    setEl('at-status-badge', '<span style="color:var(--red);font-weight:700">⛔ HALTED</span>');
+    const hb = document.getElementById('at-halt-banner'); if (hb) hb.style.display = '';
+    const hr = document.getElementById('at-halt-reason'); if (hr) hr.textContent = data.haltReason;
+  } else if (data.enabled) {
+    setEl('at-status-badge', '<span style="color:var(--green)">● Running</span>');
+    const hb = document.getElementById('at-halt-banner'); if (hb) hb.style.display = 'none';
+  } else {
+    setEl('at-status-badge', '<span style="color:var(--text-muted)">○ Off</span>');
+    const hb = document.getElementById('at-halt-banner'); if (hb) hb.style.display = 'none';
+  }
+  if (data.intervalMs) { const el = document.getElementById('at-interval'); if (el) el.value = Math.round(data.intervalMs / 60000); }
+  if (data.confidenceThreshold != null) { const el = document.getElementById('at-confidence'); if (el) el.value = data.confidenceThreshold; }
+  if (data.maxPositions != null) { const el = document.getElementById('at-max-pos'); if (el) el.value = data.maxPositions; }
+  if (data.maxPositionPct != null) { const el = document.getElementById('at-max-pct'); if (el) el.value = data.maxPositionPct; }
+}
+
+const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold' };
+
+function atLogRowHtml(e) {
+  const cls = AT_ACTION_CSS[e.action] || '';
+  const confTxt = e.confidence > 0 ? (e.confidence * 100).toFixed(0) + '%' : '—';
+  const execTxt = e.executed ? `<span style="color:var(--green)">✓ ${e.executedAction||''}</span>` : '';
+  return `<tr>
+    <td style="white-space:nowrap;font-size:0.78rem">${new Date(e.ts).toLocaleTimeString('it-IT')}</td>
+    <td><b>${e.symbol}</b></td>
+    <td class="${cls}">${e.action}</td>
+    <td>${confTxt}</td>
+    <td>${execTxt}</td>
+    <td style="color:var(--text-muted);font-size:0.75rem;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${(e.reasoning||'').replace(/"/g,'&quot;')}">${e.reasoning||''}</td>
+  </tr>`;
+}
+
+function renderAtLog(log) {
+  const tbody = document.getElementById('at-log-tbody');
+  if (!tbody) return;
+  if (!log || !log.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:24px">Nessun log</td></tr>';
+    return;
+  }
+  tbody.innerHTML = log.map(atLogRowHtml).join('');
+}
+
+function prependAtLogEntry(entry) {
+  const tbody = document.getElementById('at-log-tbody');
+  if (!tbody) return;
+  const empty = tbody.querySelector('td[colspan]');
+  if (empty) tbody.innerHTML = '';
+  const tr = document.createElement('tr');
+  tr.innerHTML = atLogRowHtml(entry).replace(/^<tr>/, '').replace(/<\/tr>$/, '');
+  tbody.insertBefore(tr, tbody.firstChild);
+  while (tbody.children.length > 20) tbody.removeChild(tbody.lastChild);
+}
+
+async function setAutoTraderEnabled(enabled) {
+  try {
+    const data = await fetch('/api/autotrader/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }).then(r => r.json());
+    updateAutoTraderUI(data);
+    showToast(enabled ? '🤖 AutoTrader attivato' : 'AutoTrader disattivato', enabled ? 'success' : 'info');
+  } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+}
+
+async function saveAutoTraderConfig() {
+  const body = {
+    intervalMinutes: +document.getElementById('at-interval').value,
+    confidenceThreshold: +document.getElementById('at-confidence').value,
+    maxPositions: +document.getElementById('at-max-pos').value,
+    maxPositionPct: +document.getElementById('at-max-pct').value,
+  };
+  try {
+    const data = await fetch('/api/autotrader/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then(r => r.json());
+    updateAutoTraderUI(data);
+    showToast('Configurazione AutoTrader salvata', 'success');
+  } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+}
+
+async function resetAutoTraderHalt() {
+  try {
+    const data = await fetch('/api/autotrader/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resetHalt: true }),
+    }).then(r => r.json());
+    updateAutoTraderUI(data);
+    showToast('Halt rimosso — sistema ripristinato', 'success');
+  } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+}
+
+async function runAutoTraderNow() {
+  try {
+    await fetch('/api/autotrader/run-now', { method: 'POST' });
+    showToast('Ciclo di ricerca avviato...', 'info');
+    setTimeout(loadAutoTraderStatus, 4000);
+  } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+}
+
+// ============================================================
 // SETTINGS
 // ============================================================
 function updateSettingsPanel() {
@@ -1813,6 +2023,7 @@ async function init() {
     if (setMode) setMode.innerHTML = `<span class="badge ${modeClass}">${modeText}</span>`;
   } catch(_) {}
   setInterval(initHistoryChart, 60000);
+  loadAutoTraderStatus();
 }
 
 // Auto-init if already unlocked (session exists)

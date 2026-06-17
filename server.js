@@ -253,6 +253,13 @@ Schema: { "ticker":"", "name":"", "country":"", "sector":"", "isFX":false, "rati
 "pe":null, "pb":null, "cr":null, "fcf":null, "div":null, "cap":"", "analysis":"<h3>...</h3>..." }
 Values pe/pb/cr/fcf/div must be decimal numbers or null. analysis must be HTML string on one logical line.`;
 
+const AUTOTRADER_RESEARCH_PROMPT = `You are an automated stock research engine. Analyze the provided symbol data and output ONLY a valid JSON object — no text, no markdown, no code fences.
+Schema: {"symbol":"","action":"BUY|SELL|HOLD","confidence":0.0,"reasoning":"","suggestedNotional":0}
+action: BUY (open new position), SELL (close existing position), HOLD (no trade).
+confidence: 0.0 to 1.0 — conviction level. Use 0.9+ only when signals are very clear.
+reasoning: 1-2 sentences explaining the decision.
+suggestedNotional: USD amount to invest (0 if HOLD or SELL).`;
+
 // POST /api/chat
 app.post('/api/chat', async (req, res) => {
   try {
@@ -356,6 +363,239 @@ app.get('/health', async (req, res) => {
     paperMode: isPaper,
     ts: Date.now(),
   });
+});
+
+// ─── AutoTrader Engine ────────────────────────────────────────────────────────
+
+function getNthDayOfMonth(year, month, dayOfWeek, nth) {
+  const d = new Date(Date.UTC(year, month, 1));
+  let count = 0;
+  while (true) {
+    if (d.getUTCDay() === dayOfWeek) { count++; if (count === nth) return d.getTime(); }
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+}
+
+function isMarketHours() {
+  const now = new Date();
+  const utcMs = now.getTime();
+  const year = now.getUTCFullYear();
+  const dstStart = getNthDayOfMonth(year, 2, 0, 2);
+  const dstEnd   = getNthDayOfMonth(year, 10, 0, 1);
+  const isDST = utcMs >= dstStart && utcMs < dstEnd;
+  const et = new Date(utcMs + (isDST ? -4 : -5) * 3600000);
+  const day = et.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const mins = et.getUTCHours() * 60 + et.getUTCMinutes();
+  return mins >= 570 && mins < 960; // 9:30–16:00 ET
+}
+
+const AT = {
+  enabled: false,
+  intervalMs: 30 * 60 * 1000,
+  confidenceThreshold: 0.75,
+  maxPositions: 5,
+  maxPositionPct: 15,
+  log: [],
+  timer: null,
+  lastRunAt: null,
+  nextRunAt: null,
+  todayKey: '',
+  todayTrades: new Map(),
+  sessionStartEquity: null,
+  halted: false,
+  haltReason: '',
+  running: false,
+};
+
+const AT_WATCHLIST = ['ENB', 'GIL', 'IBKR', 'MC', 'VNET', 'AAPL', 'SPY', 'QQQ', 'LMT', 'RTX'];
+
+function atLog(entry) {
+  const e = { ...entry, ts: Date.now() };
+  AT.log.unshift(e);
+  if (AT.log.length > 50) AT.log.pop();
+  broadcast({ type: 'autotrader_log', entry: e });
+}
+
+function atPublicState() {
+  return {
+    enabled: AT.enabled,
+    intervalMs: AT.intervalMs,
+    confidenceThreshold: AT.confidenceThreshold,
+    maxPositions: AT.maxPositions,
+    maxPositionPct: AT.maxPositionPct,
+    lastRunAt: AT.lastRunAt,
+    nextRunAt: AT.nextRunAt,
+    halted: AT.halted,
+    haltReason: AT.haltReason,
+    todayTradesCount: AT.todayTrades.size,
+  };
+}
+
+async function atCycle() {
+  if (!AT.enabled || AT.running) return;
+  AT.running = true;
+  AT.lastRunAt = Date.now();
+
+  try {
+    if (AT.halted) {
+      atLog({ symbol: 'SYSTEM', action: 'HALTED', confidence: 0, reasoning: AT.haltReason, executed: false });
+      return;
+    }
+    if (!isMarketHours()) {
+      atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: 'Market closed (ET)', executed: false });
+      return;
+    }
+
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+    if (!anthropicKey) { atLog({ symbol: 'SYSTEM', action: 'ERROR', confidence: 0, reasoning: 'Anthropic key missing', executed: false }); return; }
+
+    let account, positions;
+    try {
+      const ar = await alpacaFetch('/v2/account');
+      account = await ar.json();
+      const pr = await alpacaFetch('/v2/positions');
+      positions = await pr.json();
+    } catch (e) {
+      atLog({ symbol: 'SYSTEM', action: 'ERROR', confidence: 0, reasoning: 'Alpaca fetch failed: ' + e.message, executed: false });
+      return;
+    }
+
+    const equity = +account.equity;
+    if (!AT.sessionStartEquity) AT.sessionStartEquity = equity;
+    const drawdown = (AT.sessionStartEquity - equity) / AT.sessionStartEquity;
+    if (drawdown > 0.05) {
+      AT.halted = true;
+      AT.haltReason = `Equity drawdown ${(drawdown * 100).toFixed(1)}% — emergency stop`;
+      atLog({ symbol: 'SYSTEM', action: 'HALTED', confidence: 0, reasoning: AT.haltReason, executed: false });
+      broadcast({ type: 'autotrader_halted', reason: AT.haltReason });
+      return;
+    }
+
+    const today = new Date().toDateString();
+    if (AT.todayKey !== today) { AT.todayTrades = new Map(); AT.todayKey = today; }
+
+    const openPositions = Array.isArray(positions) ? positions : [];
+    const posSymbols = new Set(openPositions.map(p => p.symbol));
+    const buyingPower = +account.buying_power;
+    const maxNotional = equity * AT.maxPositionPct / 100;
+    const targets = [...new Set([...posSymbols, ...AT_WATCHLIST])];
+
+    for (const symbol of targets) {
+      if (!AT.enabled) break;
+      if (AT.todayTrades.has(symbol)) continue;
+
+      let prices = [];
+      try {
+        const qs = new URLSearchParams({ symbols: symbol, timeframe: '1Day', limit: '30' }).toString();
+        const br = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+        const bd = await br.json();
+        prices = (bd.bars?.[symbol] || []).map(b => b.c);
+      } catch (_) {}
+
+      const hasPos = posSymbols.has(symbol);
+      const pos = openPositions.find(p => p.symbol === symbol);
+      const lastPrice = prices[prices.length - 1] || 0;
+
+      const prompt = `Symbol: ${symbol}
+Last price: $${lastPrice}
+30d closes (last 10): [${prices.slice(-10).join(', ')}]
+Has position: ${hasPos}${hasPos ? ` | qty: ${pos?.qty} | entry: $${pos?.avg_entry_price} | P&L: ${pos?.unrealized_plpc != null ? (+(pos.unrealized_plpc)*100).toFixed(1)+'%' : '?'}` : ''}
+Open positions: ${openPositions.length}/${AT.maxPositions}
+Buying power: $${buyingPower.toFixed(0)} | Max per trade: $${maxNotional.toFixed(0)}`;
+
+      let decision;
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 256, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+        });
+        const d = await res.json();
+        let raw = (d.content?.[0]?.text || '{}').trim();
+        if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+        decision = JSON.parse(raw);
+      } catch (e) {
+        atLog({ symbol, action: 'ERROR', confidence: 0, reasoning: 'AI error: ' + e.message, executed: false });
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+
+      const { action, confidence, reasoning, suggestedNotional } = decision;
+      const logEntry = { symbol, action, confidence, reasoning, suggestedNotional, executed: false };
+
+      if (confidence >= AT.confidenceThreshold) {
+        if (action === 'BUY' && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
+          const notional = Math.min(suggestedNotional || maxNotional, maxNotional, buyingPower * 0.95);
+          if (notional >= 10) {
+            try {
+              await alpacaFetch('/v2/orders', {
+                method: 'POST',
+                body: JSON.stringify({ symbol, notional: Math.floor(notional), side: 'buy', type: 'market', time_in_force: 'day', client_order_id: `nexus_at_buy_${symbol}_${Date.now()}` }),
+              });
+              logEntry.executed = true;
+              logEntry.executedAction = `BUY $${Math.floor(notional)}`;
+              AT.todayTrades.set(symbol, Date.now());
+              broadcast({ type: 'autotrader_trade', symbol, action: 'BUY', notional: Math.floor(notional), reasoning });
+            } catch (e) { logEntry.error = e.message; }
+          }
+        } else if (action === 'SELL' && hasPos) {
+          try {
+            const qty = +pos.qty;
+            await alpacaFetch('/v2/orders', {
+              method: 'POST',
+              body: JSON.stringify({ symbol, qty, side: 'sell', type: 'market', time_in_force: 'day', client_order_id: `nexus_at_sell_${symbol}_${Date.now()}` }),
+            });
+            logEntry.executed = true;
+            logEntry.executedAction = `SELL ${qty} shares`;
+            AT.todayTrades.set(symbol, Date.now());
+            broadcast({ type: 'autotrader_trade', symbol, action: 'SELL', qty, reasoning });
+          } catch (e) { logEntry.error = e.message; }
+        }
+      }
+
+      atLog(logEntry);
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  } finally {
+    AT.running = false;
+    if (AT.enabled && AT.timer) AT.nextRunAt = Date.now() + AT.intervalMs;
+    broadcast({ type: 'autotrader_status', state: atPublicState() });
+  }
+}
+
+function atSchedule() {
+  if (AT.timer) { clearInterval(AT.timer); AT.timer = null; }
+  if (AT.enabled) {
+    AT.timer = setInterval(atCycle, AT.intervalMs);
+    AT.nextRunAt = Date.now() + AT.intervalMs;
+  }
+  broadcast({ type: 'autotrader_status', state: atPublicState() });
+}
+
+// GET /api/autotrader/status
+app.get('/api/autotrader/status', (req, res) => {
+  res.json({ ...atPublicState(), log: AT.log.slice(0, 20) });
+});
+
+// POST /api/autotrader/config
+app.post('/api/autotrader/config', (req, res) => {
+  const { enabled, intervalMinutes, confidenceThreshold, maxPositions, maxPositionPct, resetHalt } = req.body;
+  if (typeof enabled === 'boolean') AT.enabled = enabled;
+  if (intervalMinutes && +intervalMinutes >= 5) AT.intervalMs = +intervalMinutes * 60 * 1000;
+  if (confidenceThreshold != null) AT.confidenceThreshold = Math.max(0.5, Math.min(1.0, +confidenceThreshold));
+  if (maxPositions != null) AT.maxPositions = Math.max(1, Math.min(20, +maxPositions));
+  if (maxPositionPct != null) AT.maxPositionPct = Math.max(1, Math.min(50, +maxPositionPct));
+  if (resetHalt) { AT.halted = false; AT.haltReason = ''; AT.sessionStartEquity = null; }
+  atSchedule();
+  res.json(atPublicState());
+});
+
+// POST /api/autotrader/run-now
+app.post('/api/autotrader/run-now', (req, res) => {
+  if (!AT.enabled) return res.status(400).json({ error: 'AutoTrader disabled' });
+  res.json({ ok: true, message: 'Research cycle started' });
+  setImmediate(atCycle);
 });
 
 // ─── WebSocket Server (local clients) ────────────────────────────────────────
