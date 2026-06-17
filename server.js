@@ -3,7 +3,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
+const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { WebSocket, WebSocketServer } = require('ws');
 
 const app = express();
@@ -16,10 +18,96 @@ const ALPACA_DATA_URL = process.env.ALPACA_DATA_URL || 'https://data.alpaca.mark
 const ALPACA_API_KEY = process.env.ALPACA_API_KEY || '';
 const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY || '';
 const ALPACA_WS_URL = process.env.ALPACA_WS_URL || 'wss://stream.data.alpaca.markets/v1beta3/iex';
+const PAPER_MODE = ALPACA_BASE_URL.includes('paper');
+const LIVE_TRADING_ENABLED = process.env.NEXUS_ENABLE_LIVE_TRADING === 'true';
+const ADMIN_TOKEN = process.env.NEXUS_ADMIN_TOKEN || crypto.randomBytes(32).toString('hex');
+const ADMIN_TOKEN_GENERATED = !process.env.NEXUS_ADMIN_TOKEN;
+const SESSION_TTL_MS = Math.max(1, Number(process.env.NEXUS_SESSION_HOURS || 12)) * 60 * 60 * 1000;
+const DATA_DIR = process.env.NEXUS_DATA_DIR || path.join(__dirname, 'data');
+const AT_STATE_FILE = path.join(DATA_DIR, 'autotrader-state.json');
+const MAX_ORDER_NOTIONAL = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_NOTIONAL || 5000));
+const MAX_ORDER_QTY = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_QTY || 1000));
+const AUTOTRADER_MAX_DAILY_TRADES = Math.max(1, Number(process.env.NEXUS_AUTOTRADER_MAX_DAILY_TRADES || 8));
+const ALLOWED_ORIGINS = new Set(
+  (process.env.NEXUS_ALLOWED_ORIGINS || `http://localhost:${PORT},http://127.0.0.1:${PORT}`)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+);
+const sessions = new Map();
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  return ALLOWED_ORIGINS.has(origin);
+}
+
+function tokenDigest(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function safeTokenEqual(a, b) {
+  const left = Buffer.from(tokenDigest(a), 'hex');
+  const right = Buffer.from(tokenDigest(b), 'hex');
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function createSession() {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  sessions.set(tokenDigest(token), { expiresAt });
+  return { token, expiresAt };
+}
+
+function getBearerToken(req) {
+  const header = req.get('authorization') || '';
+  if (header.toLowerCase().startsWith('bearer ')) return header.slice(7).trim();
+  return req.get('x-nexus-token') || '';
+}
+
+function verifySessionToken(token) {
+  const digest = tokenDigest(token);
+  const session = sessions.get(digest);
+  if (!session) return false;
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(digest);
+    return false;
+  }
+  return true;
+}
+
+function requireAuth(req, res, next) {
+  if (!verifySessionToken(getBearerToken(req))) {
+    return res.status(401).json({ error: 'Unauthorized or expired session.' });
+  }
+  next();
+}
+
+function requireTrustedOrigin(req, res, next) {
+  if (!isAllowedOrigin(req.get('origin'))) {
+    return res.status(403).json({ error: 'Origin not allowed.' });
+  }
+  next();
+}
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(cors());
-app.use(express.json());
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ws: wss:; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+  );
+  next();
+});
+app.use(cors({
+  origin(origin, cb) {
+    if (isAllowedOrigin(origin)) return cb(null, true);
+    return cb(new Error('CORS origin blocked'));
+  },
+}));
+app.use(express.json({ limit: '128kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
@@ -53,6 +141,27 @@ function rateLimit(req, res, next) {
 
 app.use(rateLimit);
 
+app.post('/api/session', requireTrustedOrigin, (req, res) => {
+  const { token } = req.body || {};
+  if (!token || !safeTokenEqual(token, ADMIN_TOKEN)) {
+    return res.status(401).json({ error: 'Invalid access token.' });
+  }
+
+  const session = createSession();
+  res.json({
+    ok: true,
+    sessionToken: session.token,
+    expiresAt: session.expiresAt,
+    paperMode: PAPER_MODE,
+    liveTradingEnabled: LIVE_TRADING_ENABLED,
+    alpacaConfigured: !!(ALPACA_API_KEY && ALPACA_SECRET_KEY),
+    anthropicKeyPresent: !!process.env.ANTHROPIC_API_KEY,
+    anthropicConfigured: !!process.env.ANTHROPIC_API_KEY,
+  });
+});
+
+app.use('/api', requireAuth, requireTrustedOrigin);
+
 // Clean up rate limit map periodically
 setInterval(() => {
   const now = Date.now();
@@ -60,6 +169,9 @@ setInterval(() => {
     if (now - entry.windowStart > 2 * 60 * 1000) {
       rateLimitMap.delete(ip);
     }
+  }
+  for (const [digest, session] of sessions.entries()) {
+    if (session.expiresAt <= now) sessions.delete(digest);
   }
 }, 60 * 1000);
 
@@ -96,27 +208,164 @@ async function alpacaDataFetch(path, options = {}) {
   return response;
 }
 
+async function parseJsonResponse(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return { error: text };
+  }
+}
+
+function httpError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function normalizeSymbol(symbol) {
+  const value = String(symbol || '').trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9.]{0,9}$/.test(value)) {
+    throw httpError(400, 'Invalid symbol.');
+  }
+  return value;
+}
+
+function parsePositiveNumber(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) throw httpError(400, `Invalid ${field}.`);
+  return n;
+}
+
+function validateOrderBody(raw) {
+  if (!PAPER_MODE && !LIVE_TRADING_ENABLED) {
+    throw httpError(403, 'Live trading is blocked. Set NEXUS_ENABLE_LIVE_TRADING=true to allow live orders.');
+  }
+
+  const body = raw || {};
+  const allowedFields = new Set([
+    'symbol', 'qty', 'notional', 'side', 'type', 'time_in_force',
+    'limit_price', 'stop_price', 'client_order_id'
+  ]);
+  const extra = Object.keys(body).filter(k => !allowedFields.has(k));
+  if (extra.length) throw httpError(400, `Unsupported order fields: ${extra.join(', ')}`);
+
+  const order = {
+    symbol: normalizeSymbol(body.symbol),
+    side: String(body.side || '').toLowerCase(),
+    type: String(body.type || '').toLowerCase(),
+    time_in_force: String(body.time_in_force || 'day').toLowerCase(),
+  };
+
+  if (!['buy', 'sell'].includes(order.side)) throw httpError(400, 'Invalid order side.');
+  if (!['market', 'limit', 'stop', 'stop_limit'].includes(order.type)) throw httpError(400, 'Invalid order type.');
+  if (!['day', 'gtc', 'opg', 'cls', 'ioc', 'fok'].includes(order.time_in_force)) {
+    throw httpError(400, 'Invalid time in force.');
+  }
+
+  const qty = parsePositiveNumber(body.qty, 'qty');
+  const notional = parsePositiveNumber(body.notional, 'notional');
+  if ((qty && notional) || (!qty && !notional)) {
+    throw httpError(400, 'Provide exactly one of qty or notional.');
+  }
+  if (qty) {
+    if (qty > MAX_ORDER_QTY) throw httpError(400, `Qty exceeds server max (${MAX_ORDER_QTY}).`);
+    order.qty = qty;
+  }
+  if (notional) {
+    if (notional > MAX_ORDER_NOTIONAL) {
+      throw httpError(400, `Notional exceeds server max ($${MAX_ORDER_NOTIONAL}).`);
+    }
+    order.notional = notional;
+  }
+
+  const limitPrice = parsePositiveNumber(body.limit_price, 'limit_price');
+  const stopPrice = parsePositiveNumber(body.stop_price, 'stop_price');
+  if (['limit', 'stop_limit'].includes(order.type)) {
+    if (!limitPrice) throw httpError(400, 'limit_price is required for this order type.');
+    order.limit_price = limitPrice;
+  }
+  if (['stop', 'stop_limit'].includes(order.type)) {
+    if (!stopPrice) throw httpError(400, 'stop_price is required for this order type.');
+    order.stop_price = stopPrice;
+  }
+
+  if (body.client_order_id) {
+    const clientId = String(body.client_order_id).trim();
+    if (!/^[A-Za-z0-9_-]{1,48}$/.test(clientId)) throw httpError(400, 'Invalid client_order_id.');
+    order.client_order_id = clientId;
+  }
+
+  return order;
+}
+
+async function ensureTradeableSymbol(symbol) {
+  const upstream = await alpacaFetch(`/v2/assets/${encodeURIComponent(symbol)}`);
+  const asset = await parseJsonResponse(upstream);
+  if (!upstream.ok) throw httpError(upstream.status, asset?.message || asset?.error || 'Symbol not found.');
+  if (!asset?.tradable) throw httpError(400, `${symbol} is not tradeable on Alpaca.`);
+  return asset;
+}
+
+let latestAccount = null;
+let latestPositions = [];
+
+async function refreshAccountSnapshot() {
+  const accountRes = await alpacaFetch('/v2/account');
+  const account = await parseJsonResponse(accountRes);
+  if (!accountRes.ok) throw httpError(accountRes.status, account?.message || account?.error || 'Unable to refresh account.');
+
+  const positionsRes = await alpacaFetch('/v2/positions');
+  const positions = await parseJsonResponse(positionsRes);
+  if (!positionsRes.ok) throw httpError(positionsRes.status, positions?.message || positions?.error || 'Unable to refresh positions.');
+
+  latestAccount = account;
+  latestPositions = Array.isArray(positions) ? positions : [];
+  broadcast({ type: 'account', account: latestAccount });
+  broadcast({ type: 'positions', positions: latestPositions });
+  return { account: latestAccount, positions: latestPositions };
+}
+
+async function submitValidatedOrder(rawOrder) {
+  const order = validateOrderBody(rawOrder);
+  await ensureTradeableSymbol(order.symbol);
+  const upstream = await alpacaFetch('/v2/orders', {
+    method: 'POST',
+    body: JSON.stringify(order),
+  });
+  const data = await parseJsonResponse(upstream);
+  if (!upstream.ok) {
+    throw httpError(upstream.status, data?.message || data?.error || 'Alpaca rejected the order.');
+  }
+  try {
+    await refreshAccountSnapshot();
+  } catch (_) {
+    // A submitted order is still returned even if the follow-up refresh fails.
+  }
+  return data;
+}
+
 // ─── Alpaca REST Proxy Endpoints ──────────────────────────────────────────────
 
 // GET /api/alpaca/account
 app.get('/api/alpaca/account', async (req, res) => {
   try {
-    const upstream = await alpacaFetch('/v2/account');
-    const data = await upstream.json();
-    res.status(upstream.status).json(data);
+    const { account } = await refreshAccountSnapshot();
+    res.json(account);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
 // GET /api/alpaca/positions
 app.get('/api/alpaca/positions', async (req, res) => {
   try {
-    const upstream = await alpacaFetch('/v2/positions');
-    const data = await upstream.json();
-    res.status(upstream.status).json(data);
+    const { positions } = await refreshAccountSnapshot();
+    res.json(positions);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -136,14 +385,10 @@ app.get('/api/alpaca/orders', async (req, res) => {
 // POST /api/alpaca/orders
 app.post('/api/alpaca/orders', async (req, res) => {
   try {
-    const upstream = await alpacaFetch('/v2/orders', {
-      method: 'POST',
-      body: JSON.stringify(req.body),
-    });
-    const data = await upstream.json();
-    res.status(upstream.status).json(data);
+    const data = await submitValidatedOrder(req.body);
+    res.status(201).json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -154,12 +399,13 @@ app.delete('/api/alpaca/orders/:id', async (req, res) => {
       method: 'DELETE',
     });
     if (upstream.status === 204) {
+      try { await refreshAccountSnapshot(); } catch (_) {}
       return res.status(204).send();
     }
-    const data = await upstream.json();
+    const data = await parseJsonResponse(upstream);
     res.status(upstream.status).json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -301,7 +547,7 @@ suggestedNotional: USD amount to invest (0 if HOLD or SELL).`;
 app.post('/api/chat', async (req, res) => {
   try {
     const { prompt, context, maxTokens } = req.body;
-    const anthropicKey = req.headers['x-anthropic-key'] || process.env.ANTHROPIC_API_KEY || '';
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
 
     if (!anthropicKey) {
       return res.status(401).json({ error: 'Anthropic API key missing.' });
@@ -335,7 +581,7 @@ app.post('/api/chat', async (req, res) => {
 app.post('/api/screen', async (req, res) => {
   try {
     const { prompt, maxTokens } = req.body;
-    const anthropicKey = req.headers['x-anthropic-key'] || process.env.ANTHROPIC_API_KEY || '';
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
 
     if (!anthropicKey) {
       return res.status(401).json({ error: 'Anthropic API key missing.' });
@@ -382,7 +628,7 @@ app.get('/api/fx', async (req, res) => {
 let alpacaConnected = false;
 let alpacaDataWsConnected = false;
 
-app.get('/health', async (req, res) => {
+app.get('/health', requireAuth, requireTrustedOrigin, async (req, res) => {
   let alpacaOk = false;
   try {
     const upstream = await alpacaFetch('/v2/account');
@@ -391,13 +637,16 @@ app.get('/health', async (req, res) => {
     alpacaOk = false;
   }
 
-  const isPaper = ALPACA_BASE_URL.includes('paper');
-
   res.json({
     ok: true,
     alpacaConnected: alpacaOk,
     anthropicKeyPresent: !!(process.env.ANTHROPIC_API_KEY),
-    paperMode: isPaper,
+    alpacaConfigured: !!(ALPACA_API_KEY && ALPACA_SECRET_KEY),
+    paperMode: PAPER_MODE,
+    liveTradingEnabled: LIVE_TRADING_ENABLED,
+    maxOrderNotional: MAX_ORDER_NOTIONAL,
+    maxOrderQty: MAX_ORDER_QTY,
+    autotraderMaxDailyTrades: AUTOTRADER_MAX_DAILY_TRADES,
     ts: Date.now(),
   });
 });
@@ -439,6 +688,7 @@ const AT = {
   nextRunAt: null,
   todayKey: '',
   todayTrades: new Map(),
+  dailyTradeHistory: {},
   sessionStartEquity: null,
   halted: false,
   haltReason: '',
@@ -449,14 +699,123 @@ const AT = {
 
 const AT_WATCHLIST = ['ENB', 'GIL', 'IBKR', 'MC', 'VNET', 'AAPL', 'SPY', 'QQQ', 'LMT', 'RTX'];
 
+function easternDateKey(date = new Date()) {
+  const utcMs = date.getTime();
+  const year = date.getUTCFullYear();
+  const dstStart = getNthDayOfMonth(year, 2, 0, 2);
+  const dstEnd = getNthDayOfMonth(year, 10, 0, 1);
+  const isDST = utcMs >= dstStart && utcMs < dstEnd;
+  const et = new Date(utcMs + (isDST ? -4 : -5) * 3600000);
+  const y = et.getUTCFullYear();
+  const m = String(et.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(et.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function ensureAtDayState() {
+  const key = easternDateKey();
+  if (AT.todayKey !== key) {
+    AT.todayKey = key;
+    AT.todayTrades = new Map();
+  }
+  if (!AT.dailyTradeHistory[AT.todayKey]) AT.dailyTradeHistory[AT.todayKey] = [];
+}
+
+function saveAtState() {
+  try {
+    ensureAtDayState();
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const state = {
+      version: 1,
+      savedAt: Date.now(),
+      config: {
+        enabled: AT.enabled,
+        intervalMs: AT.intervalMs,
+        confidenceThreshold: AT.confidenceThreshold,
+        maxPositions: AT.maxPositions,
+        maxPositionPct: AT.maxPositionPct,
+      },
+      lastRunAt: AT.lastRunAt,
+      nextRunAt: AT.nextRunAt,
+      todayKey: AT.todayKey,
+      todayTrades: Object.fromEntries(AT.todayTrades),
+      dailyTradeHistory: AT.dailyTradeHistory,
+      sessionStartEquity: AT.sessionStartEquity,
+      halted: AT.halted,
+      haltReason: AT.haltReason,
+      lastMacroBrief: AT.lastMacroBrief,
+      lastMacroTs: AT.lastMacroTs,
+      log: AT.log.slice(0, 100),
+    };
+    const tmp = `${AT_STATE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, AT_STATE_FILE);
+  } catch (err) {
+    console.error('[AutoTrader] Failed to persist state:', err.message);
+  }
+}
+
+function loadAtState() {
+  try {
+    if (!fs.existsSync(AT_STATE_FILE)) {
+      ensureAtDayState();
+      return;
+    }
+    const state = JSON.parse(fs.readFileSync(AT_STATE_FILE, 'utf8'));
+    const config = state.config || {};
+    if (typeof config.enabled === 'boolean') AT.enabled = config.enabled;
+    if (Number.isFinite(+config.intervalMs)) AT.intervalMs = Math.max(5 * 60 * 1000, +config.intervalMs);
+    if (Number.isFinite(+config.confidenceThreshold)) AT.confidenceThreshold = Math.max(0.5, Math.min(1.0, +config.confidenceThreshold));
+    if (Number.isFinite(+config.maxPositions)) AT.maxPositions = Math.max(1, Math.min(20, +config.maxPositions));
+    if (Number.isFinite(+config.maxPositionPct)) AT.maxPositionPct = Math.max(1, Math.min(50, +config.maxPositionPct));
+    AT.lastRunAt = state.lastRunAt || null;
+    AT.nextRunAt = null;
+    AT.todayKey = state.todayKey || '';
+    AT.todayTrades = new Map(Object.entries(state.todayTrades || {}));
+    AT.dailyTradeHistory = state.dailyTradeHistory || {};
+    AT.sessionStartEquity = state.sessionStartEquity || null;
+    AT.halted = !!state.halted;
+    AT.haltReason = state.haltReason || '';
+    AT.lastMacroBrief = state.lastMacroBrief || '';
+    AT.lastMacroTs = state.lastMacroTs || null;
+    AT.log = Array.isArray(state.log) ? state.log.slice(0, 100) : [];
+    ensureAtDayState();
+  } catch (err) {
+    console.error('[AutoTrader] Failed to load state:', err.message);
+    ensureAtDayState();
+  }
+}
+
+function markAutoTrade(symbol) {
+  ensureAtDayState();
+  AT.todayTrades.set(symbol, Date.now());
+  saveAtState();
+}
+
 function atLog(entry) {
+  ensureAtDayState();
   const e = { ...entry, ts: Date.now() };
   AT.log.unshift(e);
   if (AT.log.length > 50) AT.log.pop();
+  if (e.executed && e.symbol && !['SYSTEM', 'MACRO'].includes(e.symbol)) {
+    AT.dailyTradeHistory[AT.todayKey].unshift({
+      ts: e.ts,
+      symbol: e.symbol,
+      action: e.action,
+      confidence: e.confidence,
+      reasoning: e.reasoning,
+      suggestedNotional: e.suggestedNotional,
+      executedAction: e.executedAction,
+      orderId: e.orderId,
+    });
+    if (AT.dailyTradeHistory[AT.todayKey].length > 200) AT.dailyTradeHistory[AT.todayKey].pop();
+  }
+  saveAtState();
   broadcast({ type: 'autotrader_log', entry: e });
 }
 
 function atPublicState() {
+  ensureAtDayState();
   return {
     enabled: AT.enabled,
     intervalMs: AT.intervalMs,
@@ -468,6 +827,12 @@ function atPublicState() {
     halted: AT.halted,
     haltReason: AT.haltReason,
     todayTradesCount: AT.todayTrades.size,
+    todayKey: AT.todayKey,
+    todayTradeHistory: (AT.dailyTradeHistory[AT.todayKey] || []).slice(0, 50),
+    historyDates: Object.keys(AT.dailyTradeHistory).sort().reverse().slice(0, 30),
+    maxDailyTrades: AUTOTRADER_MAX_DAILY_TRADES,
+    buyingPower: latestAccount ? latestAccount.buying_power : null,
+    openPositionsCount: latestPositions.length,
     lastMacroBrief: AT.lastMacroBrief,
     lastMacroTs: AT.lastMacroTs,
   };
@@ -515,7 +880,9 @@ Be specific. No headers, no bullets — prose only. Use your latest knowledge.`;
 async function atCycle() {
   if (!AT.enabled || AT.running) return;
   AT.running = true;
+  ensureAtDayState();
   AT.lastRunAt = Date.now();
+  saveAtState();
 
   try {
     if (AT.halted) {
@@ -532,10 +899,7 @@ async function atCycle() {
 
     let account, positions;
     try {
-      const ar = await alpacaFetch('/v2/account');
-      account = await ar.json();
-      const pr = await alpacaFetch('/v2/positions');
-      positions = await pr.json();
+      ({ account, positions } = await refreshAccountSnapshot());
     } catch (e) {
       atLog({ symbol: 'SYSTEM', action: 'ERROR', confidence: 0, reasoning: 'Alpaca fetch failed: ' + e.message, executed: false });
       return;
@@ -552,12 +916,15 @@ async function atCycle() {
       return;
     }
 
-    const today = new Date().toDateString();
-    if (AT.todayKey !== today) { AT.todayTrades = new Map(); AT.todayKey = today; }
+    ensureAtDayState();
+    if (AT.todayTrades.size >= AUTOTRADER_MAX_DAILY_TRADES) {
+      atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: `Daily AutoTrader limit reached (${AUTOTRADER_MAX_DAILY_TRADES}).`, executed: false });
+      return;
+    }
 
-    const openPositions = Array.isArray(positions) ? positions : [];
-    const posSymbols = new Set(openPositions.map(p => p.symbol));
-    const buyingPower = +account.buying_power;
+    let openPositions = Array.isArray(positions) ? positions : [];
+    let posSymbols = new Set(openPositions.map(p => p.symbol));
+    let buyingPower = +account.buying_power;
     const maxNotional = equity * AT.maxPositionPct / 100;
     const targets = [...new Set([...posSymbols, ...AT_WATCHLIST])];
 
@@ -565,12 +932,17 @@ async function atCycle() {
     const { brief: macroBrief, fxStr } = await fetchMacroContext(anthropicKey);
     AT.lastMacroBrief = macroBrief;
     AT.lastMacroTs = Date.now();
+    saveAtState();
     broadcast({ type: 'autotrader_macro', brief: macroBrief, ts: AT.lastMacroTs });
     atLog({ symbol: 'MACRO', action: 'RESEARCH', confidence: 1, reasoning: macroBrief.slice(0, 150) + (macroBrief.length > 150 ? '…' : ''), executed: false });
 
     // Phase 2: per-symbol decisions using macro context
     for (const symbol of targets) {
       if (!AT.enabled) break;
+      if (AT.todayTrades.size >= AUTOTRADER_MAX_DAILY_TRADES) {
+        atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: `Daily AutoTrader limit reached (${AUTOTRADER_MAX_DAILY_TRADES}).`, executed: false });
+        break;
+      }
       if (AT.todayTrades.has(symbol)) continue;
 
       let prices = [];
@@ -620,26 +992,57 @@ Buying power: $${buyingPower.toFixed(0)} | Max per trade: $${maxNotional.toFixed
           const notional = Math.min(suggestedNotional || maxNotional, maxNotional, buyingPower * 0.95);
           if (notional >= 10) {
             try {
-              await alpacaFetch('/v2/orders', {
-                method: 'POST',
-                body: JSON.stringify({ symbol, notional: Math.floor(notional), side: 'buy', type: 'market', time_in_force: 'day', client_order_id: `nexus_at_buy_${symbol}_${Date.now()}` }),
+              const order = await submitValidatedOrder({
+                symbol,
+                notional: Math.floor(notional),
+                side: 'buy',
+                type: 'market',
+                time_in_force: 'day',
+                client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
               });
               logEntry.executed = true;
               logEntry.executedAction = `BUY $${Math.floor(notional)}`;
-              AT.todayTrades.set(symbol, Date.now());
+              logEntry.orderId = order.id;
+              markAutoTrade(symbol);
+              try {
+                ({ account, positions } = await refreshAccountSnapshot());
+                openPositions = Array.isArray(positions) ? positions : [];
+                posSymbols = new Set(openPositions.map(p => p.symbol));
+                if (!posSymbols.has(symbol)) {
+                  posSymbols.add(symbol);
+                  openPositions.push({ symbol, qty: 0, pending: true });
+                }
+                buyingPower = +account.buying_power;
+              } catch (_) {
+                posSymbols.add(symbol);
+                buyingPower = Math.max(0, buyingPower - Math.floor(notional));
+              }
               broadcast({ type: 'autotrader_trade', symbol, action: 'BUY', notional: Math.floor(notional), reasoning });
             } catch (e) { logEntry.error = e.message; }
           }
         } else if (action === 'SELL' && hasPos) {
           try {
             const qty = +pos.qty;
-            await alpacaFetch('/v2/orders', {
-              method: 'POST',
-              body: JSON.stringify({ symbol, qty, side: 'sell', type: 'market', time_in_force: 'day', client_order_id: `nexus_at_sell_${symbol}_${Date.now()}` }),
+            const order = await submitValidatedOrder({
+              symbol,
+              qty,
+              side: 'sell',
+              type: 'market',
+              time_in_force: 'day',
+              client_order_id: `nexus_at_sell_${symbol}_${Date.now()}`,
             });
             logEntry.executed = true;
             logEntry.executedAction = `SELL ${qty} shares`;
-            AT.todayTrades.set(symbol, Date.now());
+            logEntry.orderId = order.id;
+            markAutoTrade(symbol);
+            try {
+              ({ account, positions } = await refreshAccountSnapshot());
+              openPositions = Array.isArray(positions) ? positions : [];
+              posSymbols = new Set(openPositions.map(p => p.symbol));
+              buyingPower = +account.buying_power;
+            } catch (_) {
+              posSymbols.delete(symbol);
+            }
             broadcast({ type: 'autotrader_trade', symbol, action: 'SELL', qty, reasoning });
           } catch (e) { logEntry.error = e.message; }
         }
@@ -651,6 +1054,7 @@ Buying power: $${buyingPower.toFixed(0)} | Max per trade: $${maxNotional.toFixed
   } finally {
     AT.running = false;
     if (AT.enabled && AT.timer) AT.nextRunAt = Date.now() + AT.intervalMs;
+    saveAtState();
     broadcast({ type: 'autotrader_status', state: atPublicState() });
   }
 }
@@ -660,7 +1064,10 @@ function atSchedule() {
   if (AT.enabled) {
     AT.timer = setInterval(atCycle, AT.intervalMs);
     AT.nextRunAt = Date.now() + AT.intervalMs;
+  } else {
+    AT.nextRunAt = null;
   }
+  saveAtState();
   broadcast({ type: 'autotrader_status', state: atPublicState() });
 }
 
@@ -669,9 +1076,23 @@ app.get('/api/autotrader/status', (req, res) => {
   res.json({ ...atPublicState(), log: AT.log.slice(0, 20) });
 });
 
+// GET /api/autotrader/history?date=YYYY-MM-DD
+app.get('/api/autotrader/history', (req, res) => {
+  ensureAtDayState();
+  const date = req.query.date || AT.todayKey;
+  res.json({
+    date,
+    trades: (AT.dailyTradeHistory[date] || []).slice(0, 200),
+    dates: Object.keys(AT.dailyTradeHistory).sort().reverse(),
+  });
+});
+
 // POST /api/autotrader/config
 app.post('/api/autotrader/config', (req, res) => {
   const { enabled, intervalMinutes, confidenceThreshold, maxPositions, maxPositionPct, resetHalt } = req.body;
+  if (enabled === true && !PAPER_MODE && !LIVE_TRADING_ENABLED) {
+    return res.status(403).json({ error: 'Live AutoTrader is blocked. Set NEXUS_ENABLE_LIVE_TRADING=true to allow it.' });
+  }
   if (typeof enabled === 'boolean') AT.enabled = enabled;
   if (intervalMinutes && +intervalMinutes >= 5) AT.intervalMs = +intervalMinutes * 60 * 1000;
   if (confidenceThreshold != null) AT.confidenceThreshold = Math.max(0.5, Math.min(1.0, +confidenceThreshold));
@@ -693,7 +1114,17 @@ app.post('/api/autotrader/run-now', (req, res) => {
 const wss = new WebSocketServer({ server });
 const localClients = new Set();
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const origin = req.headers.origin;
+  let token = '';
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    token = url.searchParams.get('token') || '';
+  } catch (_) {}
+  if (!isAllowedOrigin(origin) || !verifySessionToken(token)) {
+    ws.close(1008, 'Unauthorized');
+    return;
+  }
   localClients.add(ws);
   ws.on('close', () => localClients.delete(ws));
   ws.on('error', () => localClients.delete(ws));
@@ -717,8 +1148,8 @@ async function pushAccountData() {
   try {
     const upstream = await alpacaFetch('/v2/account');
     if (upstream.ok) {
-      const account = await upstream.json();
-      broadcast({ type: 'account', account });
+      latestAccount = await upstream.json();
+      broadcast({ type: 'account', account: latestAccount });
     }
   } catch (_) {
     // ignore errors in background fetch
@@ -729,8 +1160,8 @@ async function pushPositionsData() {
   try {
     const upstream = await alpacaFetch('/v2/positions');
     if (upstream.ok) {
-      const positions = await upstream.json();
-      broadcast({ type: 'positions', positions });
+      latestPositions = await upstream.json();
+      broadcast({ type: 'positions', positions: latestPositions });
     }
   } catch (_) {
     // ignore errors in background fetch
@@ -882,17 +1313,32 @@ function connectAlpacaTradingWs() {
 }
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
+loadAtState();
+if (AT.enabled && !PAPER_MODE && !LIVE_TRADING_ENABLED) {
+  AT.enabled = false;
+  AT.halted = true;
+  AT.haltReason = 'Live AutoTrader disabled until NEXUS_ENABLE_LIVE_TRADING=true.';
+  saveAtState();
+}
+
 server.listen(PORT, () => {
   console.log(`[Portfolio Nexus × Trading Desk] Server running on port ${PORT}`);
   console.log(`  Alpaca Base URL : ${ALPACA_BASE_URL}`);
   console.log(`  Alpaca Data URL : ${ALPACA_DATA_URL}`);
   console.log(`  Alpaca WS URL   : ${ALPACA_WS_URL}`);
-  console.log(`  Paper mode      : ${ALPACA_BASE_URL.includes('paper')}`);
+  console.log(`  Paper mode      : ${PAPER_MODE}`);
+  console.log(`  Live orders     : ${LIVE_TRADING_ENABLED ? 'enabled' : 'blocked unless paper'}`);
+  console.log(`  Allowed origins : ${Array.from(ALLOWED_ORIGINS).join(', ')}`);
   console.log(`  Anthropic key   : ${process.env.ANTHROPIC_API_KEY ? 'present' : 'missing'}`);
+  if (ADMIN_TOKEN_GENERATED) {
+    console.warn(`  TEMP access token: ${ADMIN_TOKEN}`);
+    console.warn('  Set NEXUS_ADMIN_TOKEN in .env before exposing this server.');
+  }
 
   // Connect WebSockets
   connectAlpacaDataWs();
   connectAlpacaTradingWs();
+  atSchedule();
 });
 
 module.exports = { app, server, broadcast, subscribeSymbols };

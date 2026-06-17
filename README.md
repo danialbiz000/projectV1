@@ -28,6 +28,10 @@ Fill in:
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ALPACA_API_KEY=PKyour-alpaca-key
 ALPACA_SECRET_KEY=your-alpaca-secret
+NEXUS_ADMIN_TOKEN=use-a-long-random-private-token
+NEXUS_MAX_ORDER_NOTIONAL=5000
+NEXUS_MAX_ORDER_QTY=1000
+NEXUS_AUTOTRADER_MAX_DAILY_TRADES=8
 ```
 
 ### 4. Install & Start
@@ -39,26 +43,36 @@ node server.js
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ### 5. Login
-On the lock screen, enter:
-- Your Anthropic API key (sk-ant-...)
-- Your Alpaca API Key
-- Your Alpaca Secret Key
+On the lock screen, enter `NEXUS_ADMIN_TOKEN`.
 
-Keys are stored in `sessionStorage` only — never persisted to disk or localStorage.
+Alpaca and Anthropic keys stay server-side in `.env`. The browser stores only a short-lived session token in `sessionStorage`.
 
 ### 6. Switch from Paper to Live Trading
-Edit `.env` and change ONE line:
+Edit `.env`, change the Alpaca base URL, and explicitly enable live orders:
 ```bash
 # Paper (default — safe, simulated money)
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
 
 # Live (real money — only when ready)
 ALPACA_BASE_URL=https://api.alpaca.markets
+NEXUS_ENABLE_LIVE_TRADING=true
 ```
 
 Then restart: `node server.js`
 
 > ⚠️ **Warning**: Live trading uses real money. Only switch when you understand the risks.
+
+---
+
+## Security & AutoTrader Persistence
+
+- All `/api/*`, `/health`, and WebSocket connections require an authenticated server session.
+- `NEXUS_ADMIN_TOKEN` is exchanged for a short-lived session token; broker/API keys are never sent to the browser.
+- CORS and WebSocket origins are limited by `NEXUS_ALLOWED_ORIGINS`.
+- Order creation is validated server-side: symbol, side, order type, qty/notional, max order size, and tradeability are checked before Alpaca receives the request.
+- Live orders are blocked unless both `ALPACA_BASE_URL=https://api.alpaca.markets` and `NEXUS_ENABLE_LIVE_TRADING=true` are set.
+- AutoTrader state persists to `data/autotrader-state.json`: enabled/config state, halt state, daily trade map, decision log, and daily trade history survive restarts.
+- After each submitted BUY/SELL, the server refreshes Alpaca account and positions so buying power and open-position counts are updated before the next decision.
 
 ---
 
@@ -79,6 +93,13 @@ portfolio-nexus/
 
 ## API Endpoints
 
+All endpoints except `POST /api/session` require `Authorization: Bearer <sessionToken>`.
+
+### Auth
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | /api/session | Exchange `NEXUS_ADMIN_TOKEN` for a short-lived session token |
+
 ### Alpaca Proxy
 | Method | Path | Description |
 |--------|------|-------------|
@@ -97,6 +118,14 @@ portfolio-nexus/
 |--------|------|-------------|
 | POST | /api/chat | AI trading advisor (Italian) |
 | POST | /api/screen | Stock screener (JSON output) |
+
+### AutoTrader
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /api/autotrader/status | Current config, halt state, last log, today's persistent trade history |
+| GET | /api/autotrader/history | Persistent daily trade history (`?date=YYYY-MM-DD`) |
+| POST | /api/autotrader/config | Update persisted config and enable/disable engine |
+| POST | /api/autotrader/run-now | Run a cycle immediately when enabled |
 
 ### Market Data
 | Method | Path | Description |
