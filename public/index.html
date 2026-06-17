@@ -544,13 +544,15 @@ tr:hover td { background: var(--surface2); }
         <div class="card">
           <div class="card-title">Configurazione</div>
           <div style="margin-top:12px">
-            <div class="field">
-              <label>Intervallo ricerca (minuti)</label>
-              <input type="number" id="at-interval" value="30" min="5" max="480">
-            </div>
-            <div class="field">
-              <label>Soglia confidenza minima (0.5–1.0)</label>
-              <input type="number" id="at-confidence" value="0.75" min="0.5" max="1.0" step="0.05">
+            <div class="form-row">
+              <div class="field">
+                <label>Intervallo ricerca (min)</label>
+                <input type="number" id="at-interval" value="30" min="5" max="480">
+              </div>
+              <div class="field">
+                <label>Soglia confidenza (0.5–1.0)</label>
+                <input type="number" id="at-confidence" value="0.75" min="0.5" max="1.0" step="0.05">
+              </div>
             </div>
             <div class="form-row">
               <div class="field">
@@ -562,16 +564,48 @@ tr:hover td { background: var(--surface2); }
                 <input type="number" id="at-max-pct" value="15" min="1" max="50">
               </div>
             </div>
+            <div class="form-row">
+              <div class="field">
+                <label>Stop Loss % (bracket)</label>
+                <input type="number" id="at-stop-loss" value="8" min="1" max="50" step="0.5">
+              </div>
+              <div class="field">
+                <label>Take Profit % (bracket)</label>
+                <input type="number" id="at-take-profit" value="30" min="1" max="200" step="1">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="field">
+                <label>Drawdown Limit % (halt)</label>
+                <input type="number" id="at-drawdown-limit" value="15" min="2" max="50" step="1">
+              </div>
+              <div class="field">
+                <label>Target Volatilità Ann. %</label>
+                <input type="number" id="at-target-vol" value="20" min="5" max="100" step="1">
+              </div>
+            </div>
+            <div class="field" style="margin-bottom:12px">
+              <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+                <input type="checkbox" id="at-allow-short" style="width:auto;accent-color:var(--gold)">
+                <span>Abilita short selling (richiede conto margine)</span>
+              </label>
+            </div>
             <button class="btn btn-primary btn-full" onclick="saveAutoTraderConfig()">Salva Configurazione</button>
           </div>
         </div>
       </div>
       <div class="card" style="margin-bottom:20px">
-        <div class="card-title">Watchlist & Logica</div>
-        <div style="margin-top:8px;font-size:0.82rem;color:var(--text)">ENB · GIL · IBKR · MC · VNET · AAPL · SPY · QQQ · LMT · RTX + posizioni aperte</div>
-        <div style="margin-top:8px;font-size:0.8rem;color:var(--text-muted);line-height:1.7">
-          Ogni ciclo: fetch 30 giorni di price bars per ogni simbolo → Claude analizza BUY/SELL/HOLD → se confidence ≥ soglia esegue ordine market su Alpaca.<br>
-          <b>Safety guards:</b> solo in orario di mercato ET · max drawdown sessione 5% → halt automatico · un trade per simbolo per giorno.
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div class="card-title" style="margin-bottom:0">Watchlist Simboli</div>
+          <button class="btn btn-secondary btn-sm" onclick="saveWatchlist()">Salva</button>
+        </div>
+        <div class="field" style="margin-bottom:8px">
+          <label>Simboli separati da virgola (max 50)</label>
+          <input type="text" id="at-watchlist" value="ENB,GIL,IBKR,MC,VNET,AAPL,SPY,QQQ,LMT,RTX" placeholder="AAPL, SPY, QQQ, ...">
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.7">
+          Ogni ciclo: 60 giorni di bars → RSI · MACD · SMA · Volume rel. → Claude decide BUY/SELL/SHORT/COVER/HOLD → se confidence ≥ soglia esegue bracket order (con SL&TP automatici).<br>
+          <b>Safety:</b> solo in orario NYSE · no holiday · drawdown limit → halt · bracket automatico · sizing adattivo alla volatilità · notifiche Telegram.
         </div>
       </div>
       <div class="card" style="margin-bottom:20px">
@@ -2171,13 +2205,24 @@ function updateAutoTraderUI(data) {
     setEl('at-status-badge', '<span style="color:var(--text-muted)">○ Off</span>');
     const hb = document.getElementById('at-halt-banner'); if (hb) hb.style.display = 'none';
   }
-  if (data.intervalMs) { const el = document.getElementById('at-interval'); if (el) el.value = Math.round(data.intervalMs / 60000); }
-  if (data.confidenceThreshold != null) { const el = document.getElementById('at-confidence'); if (el) el.value = data.confidenceThreshold; }
-  if (data.maxPositions != null) { const el = document.getElementById('at-max-pos'); if (el) el.value = data.maxPositions; }
-  if (data.maxPositionPct != null) { const el = document.getElementById('at-max-pct'); if (el) el.value = data.maxPositionPct; }
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+  if (data.intervalMs) setVal('at-interval', Math.round(data.intervalMs / 60000));
+  setVal('at-confidence', data.confidenceThreshold);
+  setVal('at-max-pos', data.maxPositions);
+  setVal('at-max-pct', data.maxPositionPct);
+  setVal('at-stop-loss', data.stopLossPct);
+  setVal('at-take-profit', data.takeProfitPct);
+  setVal('at-drawdown-limit', data.drawdownLimit != null ? Math.round(data.drawdownLimit * 100) : null);
+  setVal('at-target-vol', data.targetVolatility != null ? Math.round(data.targetVolatility * 100) : null);
+  setChk('at-allow-short', data.allowShort);
+  if (Array.isArray(data.watchlist)) {
+    const el = document.getElementById('at-watchlist');
+    if (el) el.value = data.watchlist.join(', ');
+  }
 }
 
-const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold' };
+const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold' };
 
 function atLogRowHtml(e) {
   const cls = AT_ACTION_CSS[e.action] || '';
@@ -2251,11 +2296,17 @@ async function setAutoTraderEnabled(enabled) {
 }
 
 async function saveAutoTraderConfig() {
+  const g = id => document.getElementById(id);
   const body = {
-    intervalMinutes: +document.getElementById('at-interval').value,
-    confidenceThreshold: +document.getElementById('at-confidence').value,
-    maxPositions: +document.getElementById('at-max-pos').value,
-    maxPositionPct: +document.getElementById('at-max-pct').value,
+    intervalMinutes: +g('at-interval').value,
+    confidenceThreshold: +g('at-confidence').value,
+    maxPositions: +g('at-max-pos').value,
+    maxPositionPct: +g('at-max-pct').value,
+    stopLossPct: +g('at-stop-loss').value,
+    takeProfitPct: +g('at-take-profit').value,
+    drawdownLimit: +g('at-drawdown-limit').value / 100,
+    targetVolatility: +g('at-target-vol').value / 100,
+    allowShort: g('at-allow-short').checked,
   };
   try {
     const data = await secureFetch('/api/autotrader/config', {
@@ -2263,6 +2314,19 @@ async function saveAutoTraderConfig() {
     }).then(r => r.json());
     updateAutoTraderUI(data);
     showToast('Configurazione AutoTrader salvata', 'success');
+  } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+}
+
+async function saveWatchlist() {
+  const raw = (document.getElementById('at-watchlist')?.value || '').split(',');
+  const symbols = raw.map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s));
+  if (!symbols.length) return showToast('Nessun simbolo valido', 'error');
+  try {
+    const data = await secureFetch('/api/autotrader/watchlist', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbols }),
+    }).then(r => r.json());
+    document.getElementById('at-watchlist').value = data.watchlist.join(', ');
+    showToast(`Watchlist salvata: ${data.watchlist.length} simboli`, 'success');
   } catch (e) { showToast('Errore: ' + e.message, 'error'); }
 }
 
