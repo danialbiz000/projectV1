@@ -775,6 +775,23 @@ tr:hover td { background: var(--surface2); }
   <div id="detail-content"></div>
 </div>
 
+<!-- Position Candlestick Chart Modal -->
+<div class="modal-overlay" id="pos-chart-modal" onclick="if(event.target===this)closePosChart()">
+  <div class="modal" style="width:720px;max-width:96vw;padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+      <div>
+        <span id="pos-chart-title" style="font-size:1rem;font-weight:700;color:var(--gold)">—</span>
+        <span id="pos-chart-price" style="font-size:1.2rem;font-weight:700;margin-left:14px">—</span>
+        <span id="pos-chart-change" style="font-size:0.88rem;margin-left:8px"></span>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="closePosChart()">✕</button>
+    </div>
+    <div id="pos-chart-pnl" style="font-size:0.82rem;margin-bottom:10px;color:var(--text-muted)"></div>
+    <canvas id="pos-chart-canvas" height="300" style="width:100%;display:block;border-radius:8px;background:#0e0e12"></canvas>
+    <div style="margin-top:8px;font-size:0.73rem;color:var(--text-muted);text-align:right">Candele 1 minuto · aggiornamento ogni secondo</div>
+  </div>
+</div>
+
 <!-- Confirm Modal -->
 <div class="modal-overlay" id="confirm-modal">
   <div class="modal">
@@ -869,6 +886,105 @@ const CHART_SERIES = {
 };
 
 // ============================================================
+// REALTIME CANDLE CHART ENGINE
+// ============================================================
+class RealtimeCandleChart {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.candles = [];
+    this.live = null;
+    this.candleMs = 60000;
+    this.maxCandles = 60;
+  }
+  addTick(price, ts = Date.now()) {
+    price = +price;
+    const slot = Math.floor(ts / this.candleMs) * this.candleMs;
+    if (!this.live || this.live.t !== slot) {
+      if (this.live) {
+        this.candles.push({ ...this.live });
+        if (this.candles.length > this.maxCandles) this.candles.shift();
+      }
+      this.live = { t: slot, o: price, h: price, l: price, c: price };
+    } else {
+      this.live.h = Math.max(this.live.h, price);
+      this.live.l = Math.min(this.live.l, price);
+      this.live.c = price;
+    }
+  }
+  seedBars(bars) {
+    this.candles = bars.slice(-this.maxCandles).map(b => ({
+      t: new Date(b.t).getTime(), o: +b.o, h: +b.h, l: +b.l, c: +b.c,
+    }));
+  }
+  draw() {
+    const canvas = this.canvas;
+    if (!canvas || !canvas.offsetWidth) return;
+    canvas.width = canvas.offsetWidth;
+    const W = canvas.width, H = canvas.height;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0e0e12';
+    ctx.fillRect(0, 0, W, H);
+    const all = [...this.candles, ...(this.live ? [this.live] : [])];
+    if (!all.length) {
+      ctx.fillStyle = '#7a7a8e'; ctx.font = '12px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('In attesa di dati...', W / 2, H / 2); return;
+    }
+    const L = 66, R = 8, T = 10, B = 22;
+    const cW = W - L - R, cH = H - T - B;
+    let min = Math.min(...all.map(c => c.l));
+    let max = Math.max(...all.map(c => c.h));
+    const rng = max - min || min * 0.005 || 0.01;
+    min -= rng * 0.1; max += rng * 0.1;
+    const toY = p => T + cH * (1 - (p - min) / (max - min));
+    // Grid
+    ctx.font = '10px monospace'; ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+      const p = min + (max - min) * (i / 4);
+      const y = toY(p);
+      ctx.strokeStyle = 'rgba(42,42,53,0.55)'; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+      ctx.fillStyle = '#7a7a8e';
+      ctx.fillText('$' + p.toFixed(2), L - 4, y + 3);
+    }
+    // Candles
+    const n = all.length;
+    const step = cW / Math.max(n, 1);
+    const bw = Math.max(2, Math.floor(step * 0.65));
+    all.forEach((c, i) => {
+      const x = L + (i + 0.5) * step;
+      const isUp = c.c >= c.o;
+      const col = isUp ? '#2ecc71' : '#e74c3c';
+      ctx.strokeStyle = col; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, toY(c.h)); ctx.lineTo(x, toY(c.l)); ctx.stroke();
+      const by = toY(Math.max(c.o, c.c));
+      const bh = Math.max(1, Math.abs(toY(c.o) - toY(c.c)));
+      ctx.fillStyle = i === n - 1 ? col : (isUp ? 'rgba(46,204,113,0.8)' : 'rgba(231,76,60,0.8)');
+      ctx.fillRect(x - bw / 2, by, bw, bh);
+    });
+    // Current price line
+    if (this.live) {
+      const y = toY(this.live.c);
+      ctx.strokeStyle = 'rgba(200,169,110,0.65)'; ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#c8a96e'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'right';
+      ctx.fillText('$' + this.live.c.toFixed(2), L - 4, y + 3);
+    }
+    // Time labels
+    ctx.fillStyle = '#7a7a8e'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    const fmtT = t => new Date(t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    const every = Math.max(1, Math.floor(n / 6));
+    all.forEach((c, i) => {
+      if (i === 0 || i === n - 1 || i % every === 0)
+        ctx.fillText(fmtT(c.t), L + (i + 0.5) * step, H - 5);
+    });
+  }
+}
+
+// ============================================================
 // STATE
 // ============================================================
 let ws, wsConnected = false;
@@ -881,11 +997,15 @@ let currentPositions = [];
 let watchdogScores = {};
 let watchdogSettings = { pct: 25, gap: 15 };
 
-// Realtime chart state
-let rtChart = null;
+// Chart state
+let rtChart = null;        // RealtimeCandleChart in detail panel
 let rtChartSymbol = null;
 let rtChartBasePrice = null;
-const liveBuffer = {}; // symbol -> [{t, p}]
+let rtChartTimer = null;
+let posChart = null;       // RealtimeCandleChart in position modal
+let posChartSymbol = null;
+let posChartTimer = null;
+const liveBuffer = {};     // symbol -> [{t, p}]
 
 // ============================================================
 // UTILS
@@ -1017,22 +1137,15 @@ function updatePriceDisplays(symbol, price) {
   // Feed live buffer
   if (!liveBuffer[symbol]) liveBuffer[symbol] = [];
   liveBuffer[symbol].push({ t: Date.now(), p: +price });
-  if (liveBuffer[symbol].length > 300) liveBuffer[symbol].shift();
+  if (liveBuffer[symbol].length > 400) liveBuffer[symbol].shift();
 
-  // Update detail panel if open for this symbol
+  // Feed detail panel candle chart
   if (rtChartSymbol === symbol && rtChart) {
-    const labels = rtChart.data.labels;
-    const ds = rtChart.data.datasets[0];
-    labels.push(new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
-    ds.data.push(+price);
-    if (labels.length > 200) { labels.shift(); ds.data.shift(); }
-    rtChart.update('none');
-
-    // Update live price badge in panel
+    rtChart.addTick(+price);
     const priceEl = document.getElementById('dp-live-price');
     if (priceEl) priceEl.textContent = '$' + (+price).toFixed(2);
     if (rtChartBasePrice) {
-      const chg = price - rtChartBasePrice;
+      const chg = +price - rtChartBasePrice;
       const chgPct = (chg / rtChartBasePrice) * 100;
       const changeEl = document.getElementById('dp-price-change');
       if (changeEl) {
@@ -1040,6 +1153,11 @@ function updatePriceDisplays(symbol, price) {
         changeEl.className = chg >= 0 ? 'price-change-pos' : 'price-change-neg';
       }
     }
+  }
+
+  // Feed position candle chart
+  if (posChartSymbol === symbol && posChart) {
+    posChart.addTick(+price);
   }
 }
 function handleTradeUpdate(order) {
@@ -1097,7 +1215,10 @@ function updatePositionsTable(positions) {
       <td class="${cls}">${pnlVal >= 0?'+':''}${fmt$(pnlVal)}</td>
       <td class="${cls}">${fmtPct(pnlPct)}</td>
       <td>${fmt$(mv)}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="closePosition('${p.symbol}', ${qty})">Chiudi</button></td>
+      <td style="display:flex;gap:4px;flex-wrap:nowrap">
+        <button class="btn btn-secondary btn-sm" onclick="openPosChart('${p.symbol}')" title="Candlestick real-time">📊</button>
+        <button class="btn btn-danger btn-sm" onclick="closePosition('${p.symbol}', ${qty})">Chiudi</button>
+      </td>
     </tr>`;
   }).join('');
 }
@@ -1433,7 +1554,7 @@ async function openStockDetail(ticker) {
       <span id="dp-price-change" style="font-size:0.82rem;color:var(--text-muted);margin-left:8px"></span>
     </div>
     <div class="card" style="margin-bottom:14px;padding:12px">
-      <div class="card-title" style="margin-bottom:4px">Grafico Intraday — 5 min</div>
+      <div class="card-title" style="margin-bottom:4px">Candlestick Intraday — 1 min · aggiornamento /sec</div>
       <div class="chart-rt"><canvas id="rt-chart-canvas"></canvas></div>
     </div>
     <div class="card" style="margin-bottom:14px">
@@ -1456,92 +1577,64 @@ async function openStockDetail(ticker) {
 
 function closeDetailPanel() {
   document.getElementById('detail-panel').classList.remove('open');
-  if (rtChart) { rtChart.destroy(); rtChart = null; }
+  if (rtChartTimer) { clearInterval(rtChartTimer); rtChartTimer = null; }
+  rtChart = null;
   rtChartSymbol = null;
   rtChartBasePrice = null;
 }
 
 async function initRealtimeChart(symbol) {
-  if (rtChart) { rtChart.destroy(); rtChart = null; }
+  if (rtChartTimer) { clearInterval(rtChartTimer); rtChartTimer = null; }
+  rtChart = null;
   rtChartSymbol = symbol;
-  rtChartBasePrice = livePrices[symbol] || null;
 
-  // Subscribe to live quotes for this symbol
+  // Subscribe to live quotes
   fetch('/api/alpaca/subscribe', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ symbols: [symbol] }),
   }).catch(() => {});
 
-  const ctx = document.getElementById('rt-chart-canvas');
-  if (!ctx) return;
+  const canvas = document.getElementById('rt-chart-canvas');
+  if (!canvas) return;
+  canvas.height = 240;
+  canvas.width = canvas.offsetWidth || 460;
+  rtChart = new RealtimeCandleChart(canvas);
 
-  // Seed with any buffered live ticks
-  let labels = [], data = [];
-  if (liveBuffer[symbol] && liveBuffer[symbol].length) {
-    liveBuffer[symbol].forEach(pt => {
-      labels.push(new Date(pt.t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
-      data.push(pt.p);
-    });
-    rtChartBasePrice = data[0];
-  }
-
-  // Try to load intraday bars
+  // Seed 1-min historical bars
   try {
-    const res = await fetch(`/api/alpaca/bars-intraday/${symbol}`);
+    const res = await fetch(`/api/alpaca/bars-1min/${symbol}`);
     const bd = await res.json();
     const bars = bd.bars?.[symbol] || [];
     if (bars.length) {
-      labels = bars.map(b => new Date(b.t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
-      data = bars.map(b => b.c);
-      rtChartBasePrice = data[0] || livePrices[symbol] || null;
-      // Append any live ticks newer than last bar
+      rtChart.seedBars(bars);
+      rtChartBasePrice = bars[0] ? +bars[0].o : null;
+      // Replay live buffer on top
       const lastBarTs = new Date(bars[bars.length - 1].t).getTime();
-      (liveBuffer[symbol] || []).filter(pt => pt.t > lastBarTs).forEach(pt => {
-        labels.push(new Date(pt.t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
-        data.push(pt.p);
-      });
+      (liveBuffer[symbol] || []).filter(pt => pt.t > lastBarTs).forEach(pt => rtChart.addTick(pt.p, pt.t));
+    } else {
+      (liveBuffer[symbol] || []).forEach(pt => rtChart.addTick(pt.p, pt.t));
+      rtChartBasePrice = liveBuffer[symbol]?.[0]?.p || null;
     }
-  } catch (_) {}
+  } catch (_) {
+    (liveBuffer[symbol] || []).forEach(pt => rtChart.addTick(pt.p, pt.t));
+  }
 
-  // Recheck canvas (user may have closed panel)
-  const canvas = document.getElementById('rt-chart-canvas');
-  if (!canvas || rtChartSymbol !== symbol) return;
+  if (rtChartSymbol !== symbol) return;
+  rtChart.draw();
 
-  const borderColor = '#c8a96e';
-  rtChart = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: symbol,
-        data,
-        borderColor,
-        backgroundColor: 'rgba(200,169,110,0.08)',
-        borderWidth: 2,
-        pointRadius: 0,
-        fill: true,
-        tension: 0.2,
-      }],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      animation: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#7a7a8e', maxTicksLimit: 6, font: { size: 10 } }, grid: { color: 'rgba(42,42,53,0.5)' } },
-        y: { ticks: { color: '#7a7a8e', font: { size: 10 } }, grid: { color: 'rgba(42,42,53,0.5)' } },
-      },
-    },
-  });
+  // Redraw every second
+  rtChartTimer = setInterval(() => {
+    if (rtChart && rtChartSymbol) rtChart.draw();
+  }, 1000);
 
-  // Set initial change display
+  // Initial change badge
   if (rtChartBasePrice && livePrices[symbol]) {
     const chg = livePrices[symbol] - rtChartBasePrice;
     const chgPct = (chg / rtChartBasePrice) * 100;
-    const changeEl = document.getElementById('dp-price-change');
-    if (changeEl) {
-      changeEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
-      changeEl.className = chg >= 0 ? 'price-change-pos' : 'price-change-neg';
+    const el = document.getElementById('dp-price-change');
+    if (el) {
+      el.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
+      el.className = chg >= 0 ? 'price-change-pos' : 'price-change-neg';
     }
   }
 }
@@ -2124,6 +2217,84 @@ async function runAutoTraderNow() {
     showToast('Ciclo di ricerca avviato...', 'info');
     setTimeout(loadAutoTraderStatus, 4000);
   } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+}
+
+// ============================================================
+// POSITION CANDLESTICK CHART
+// ============================================================
+async function openPosChart(symbol) {
+  posChartSymbol = symbol;
+  const modal = document.getElementById('pos-chart-modal');
+  modal.classList.add('show');
+
+  // Header
+  const pos = currentPositions.find(p => p.symbol === symbol);
+  const el = id => document.getElementById(id);
+  if (el('pos-chart-title')) el('pos-chart-title').textContent = symbol;
+  const lp = livePrices[symbol];
+  if (el('pos-chart-price')) el('pos-chart-price').textContent = lp ? '$' + lp.toFixed(2) : '—';
+  if (pos && lp) {
+    const pnl = (lp - +pos.avg_entry_price) * +pos.qty;
+    const pct = ((lp - +pos.avg_entry_price) / +pos.avg_entry_price) * 100;
+    if (el('pos-chart-pnl')) el('pos-chart-pnl').innerHTML =
+      `<span style="color:${pnl>=0?'var(--green)':'var(--red)'}">P&L: ${pnl>=0?'+':''}$${pnl.toFixed(2)} (${pct>=0?'+':''}${pct.toFixed(2)}%)</span>` +
+      ` <span style="color:var(--text-muted)">· ${+pos.qty} azioni @ $${pos.avg_entry_price}</span>`;
+  }
+
+  // Canvas
+  const canvas = el('pos-chart-canvas');
+  if (!canvas) return;
+  canvas.width = canvas.offsetWidth || 680;
+
+  // Subscribe to live feed
+  fetch('/api/alpaca/subscribe', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbols: [symbol] }),
+  }).catch(() => {});
+
+  posChart = new RealtimeCandleChart(canvas);
+
+  // Seed with 1-min bars
+  try {
+    const res = await fetch(`/api/alpaca/bars-1min/${symbol}`);
+    const bd = await res.json();
+    const bars = bd.bars?.[symbol] || [];
+    if (bars.length) {
+      posChart.seedBars(bars);
+      const lastTs = new Date(bars[bars.length - 1].t).getTime();
+      (liveBuffer[symbol] || []).filter(pt => pt.t > lastTs).forEach(pt => posChart.addTick(pt.p, pt.t));
+    } else {
+      (liveBuffer[symbol] || []).forEach(pt => posChart.addTick(pt.p, pt.t));
+    }
+  } catch (_) {
+    (liveBuffer[symbol] || []).forEach(pt => posChart.addTick(pt.p, pt.t));
+  }
+
+  if (posChartSymbol !== symbol) return;
+  posChart.draw();
+
+  // Redraw every second + update P&L
+  if (posChartTimer) clearInterval(posChartTimer);
+  posChartTimer = setInterval(() => {
+    if (posChart) posChart.draw();
+    const p = currentPositions.find(x => x.symbol === posChartSymbol);
+    const price = livePrices[posChartSymbol];
+    if (price && el('pos-chart-price')) el('pos-chart-price').textContent = '$' + price.toFixed(2);
+    if (p && price) {
+      const pnl = (price - +p.avg_entry_price) * +p.qty;
+      const pct = ((price - +p.avg_entry_price) / +p.avg_entry_price) * 100;
+      if (el('pos-chart-pnl')) el('pos-chart-pnl').innerHTML =
+        `<span style="color:${pnl>=0?'var(--green)':'var(--red)'}">P&L: ${pnl>=0?'+':''}$${pnl.toFixed(2)} (${pct>=0?'+':''}${pct.toFixed(2)}%)</span>` +
+        ` <span style="color:var(--text-muted)">· ${+p.qty} azioni @ $${p.avg_entry_price}</span>`;
+    }
+  }, 1000);
+}
+
+function closePosChart() {
+  if (posChartTimer) { clearInterval(posChartTimer); posChartTimer = null; }
+  posChart = null;
+  posChartSymbol = null;
+  document.getElementById('pos-chart-modal').classList.remove('show');
 }
 
 // ============================================================

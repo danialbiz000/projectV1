@@ -220,13 +220,23 @@ app.get('/api/alpaca/bars-intraday/:symbol', async (req, res) => {
   try {
     const symbol = req.params.symbol;
     const now = new Date();
-    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30)); // 9:30 ET (UTC-4 summer)
-    const qs = new URLSearchParams({
-      symbols: symbol,
-      timeframe: '5Min',
-      start: start.toISOString(),
-      limit: '100',
-    }).toString();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
+    const qs = new URLSearchParams({ symbols: symbol, timeframe: '5Min', start: start.toISOString(), limit: '100' }).toString();
+    const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+    const data = await upstream.json();
+    res.status(upstream.status).json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/alpaca/bars-1min/:symbol  — today's 1-min bars for real-time candlestick chart
+app.get('/api/alpaca/bars-1min/:symbol', async (req, res) => {
+  try {
+    const symbol = req.params.symbol;
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
+    const qs = new URLSearchParams({ symbols: symbol, timeframe: '1Min', start: start.toISOString(), limit: '400' }).toString();
     const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
     const data = await upstream.json();
     res.status(upstream.status).json(data);
