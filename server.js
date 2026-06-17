@@ -215,6 +215,33 @@ app.get('/api/alpaca/bars/:symbol', async (req, res) => {
   }
 });
 
+// GET /api/alpaca/bars-intraday/:symbol  — today's 5-min bars
+app.get('/api/alpaca/bars-intraday/:symbol', async (req, res) => {
+  try {
+    const symbol = req.params.symbol;
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30)); // 9:30 ET (UTC-4 summer)
+    const qs = new URLSearchParams({
+      symbols: symbol,
+      timeframe: '5Min',
+      start: start.toISOString(),
+      limit: '100',
+    }).toString();
+    const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+    const data = await upstream.json();
+    res.status(upstream.status).json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/alpaca/subscribe  — add symbols to live quote stream
+app.post('/api/alpaca/subscribe', (req, res) => {
+  const { symbols } = req.body;
+  if (symbols && Array.isArray(symbols)) subscribeSymbols(symbols);
+  res.json({ ok: true, subscribed: symbols });
+});
+
 // ─── AI Proxy Endpoints ───────────────────────────────────────────────────────
 
 const CHAT_SYSTEM_PROMPT = `Sei Trading Desk — analista di trading professionale integrato in Portfolio Nexus con accesso diretto al broker Alpaca Markets.
@@ -406,6 +433,8 @@ const AT = {
   halted: false,
   haltReason: '',
   running: false,
+  lastMacroBrief: '',
+  lastMacroTs: null,
 };
 
 const AT_WATCHLIST = ['ENB', 'GIL', 'IBKR', 'MC', 'VNET', 'AAPL', 'SPY', 'QQQ', 'LMT', 'RTX'];
@@ -429,7 +458,48 @@ function atPublicState() {
     halted: AT.halted,
     haltReason: AT.haltReason,
     todayTradesCount: AT.todayTrades.size,
+    lastMacroBrief: AT.lastMacroBrief,
+    lastMacroTs: AT.lastMacroTs,
   };
+}
+
+async function fetchMacroContext(anthropicKey) {
+  let fxStr = '';
+  try {
+    const fxRes = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,CHF,CNY');
+    const fxData = await fxRes.json();
+    const r = fxData.rates || {};
+    fxStr = `EUR/USD ${r.EUR||'?'} · GBP/USD ${r.GBP||'?'} · USD/JPY ${r.JPY||'?'} · USD/CHF ${r.CHF||'?'} · USD/CNY ${r.CNY||'?'}`;
+  } catch (_) {}
+
+  const dateStr = new Date().toUTCString();
+  const macroPrompt = `Today: ${dateStr}
+Live FX rates: ${fxStr || 'unavailable'}
+
+Provide a concise macro investment brief (4-6 sentences) covering:
+1. Current global equity market sentiment and key trends
+2. Central bank policy stance: Fed, ECB, BoJ — rate direction and latest signals
+3. Top 2-3 geopolitical risks currently moving markets
+4. Sector/thematic tailwinds and headwinds for the next 1-5 trading days
+
+Be specific. No headers, no bullets — prose only. Use your latest knowledge.`;
+
+  let brief = `[${dateStr}] FX: ${fxStr}. Standard macro environment.`;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: macroPrompt }],
+      }),
+    });
+    const d = await res.json();
+    brief = d.content?.[0]?.text || brief;
+  } catch (_) {}
+
+  return { brief, fxStr, dateStr };
 }
 
 async function atCycle() {
@@ -481,6 +551,14 @@ async function atCycle() {
     const maxNotional = equity * AT.maxPositionPct / 100;
     const targets = [...new Set([...posSymbols, ...AT_WATCHLIST])];
 
+    // Phase 1: macro research
+    const { brief: macroBrief, fxStr } = await fetchMacroContext(anthropicKey);
+    AT.lastMacroBrief = macroBrief;
+    AT.lastMacroTs = Date.now();
+    broadcast({ type: 'autotrader_macro', brief: macroBrief, ts: AT.lastMacroTs });
+    atLog({ symbol: 'MACRO', action: 'RESEARCH', confidence: 1, reasoning: macroBrief.slice(0, 150) + (macroBrief.length > 150 ? '…' : ''), executed: false });
+
+    // Phase 2: per-symbol decisions using macro context
     for (const symbol of targets) {
       if (!AT.enabled) break;
       if (AT.todayTrades.has(symbol)) continue;
@@ -497,7 +575,10 @@ async function atCycle() {
       const pos = openPositions.find(p => p.symbol === symbol);
       const lastPrice = prices[prices.length - 1] || 0;
 
-      const prompt = `Symbol: ${symbol}
+      const prompt = `MACRO CONTEXT: ${macroBrief}
+FX: ${fxStr}
+
+Symbol: ${symbol}
 Last price: $${lastPrice}
 30d closes (last 10): [${prices.slice(-10).join(', ')}]
 Has position: ${hasPos}${hasPos ? ` | qty: ${pos?.qty} | entry: $${pos?.avg_entry_price} | P&L: ${pos?.unrealized_plpc != null ? (+(pos.unrealized_plpc)*100).toFixed(1)+'%' : '?'}` : ''}

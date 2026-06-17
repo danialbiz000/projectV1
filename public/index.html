@@ -290,6 +290,13 @@ tr:hover td { background: var(--surface2); }
 .alloc-bar { height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; margin: 6px 0; }
 .alloc-bar-fill { height: 100%; border-radius: 4px; background: var(--gold); }
 
+/* Realtime chart */
+.chart-rt { position: relative; height: 240px; margin-top: 16px; }
+.price-badge { display: inline-flex; align-items: center; gap: 8px; font-size: 1.4rem; font-weight: 700; }
+.price-change-pos { color: var(--green); font-size: 0.88rem; font-weight: 600; }
+.price-change-neg { color: var(--red); font-size: 0.88rem; font-weight: 600; }
+/* Macro brief */
+.macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--gold); border-radius: var(--radius); padding: 16px; font-size: 0.82rem; line-height: 1.75; color: var(--text-muted); }
 /* AutoTrader toggle */
 .toggle-switch { position: relative; display: inline-block; width: 48px; height: 26px; cursor: pointer; }
 .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
@@ -570,6 +577,13 @@ tr:hover td { background: var(--surface2); }
           Ogni ciclo: fetch 30 giorni di price bars per ogni simbolo → Claude analizza BUY/SELL/HOLD → se confidence ≥ soglia esegue ordine market su Alpaca.<br>
           <b>Safety guards:</b> solo in orario di mercato ET · max drawdown sessione 5% → halt automatico · un trade per simbolo per giorno.
         </div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div class="card-title" style="margin-bottom:0">📰 Macro Brief — AI Research</div>
+          <span id="at-macro-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
+        </div>
+        <div id="at-macro-brief" class="macro-brief-card">Nessuna ricerca macro ancora — attiva il motore per avviare il primo ciclo.</div>
       </div>
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -867,6 +881,12 @@ let currentPositions = [];
 let watchdogScores = {};
 let watchdogSettings = { pct: 25, gap: 15 };
 
+// Realtime chart state
+let rtChart = null;
+let rtChartSymbol = null;
+let rtChartBasePrice = null;
+const liveBuffer = {}; // symbol -> [{t, p}]
+
 // ============================================================
 // UTILS
 // ============================================================
@@ -975,6 +995,7 @@ function connectWS() {
     if (data.type === 'autotrader_trade') showToast(`🤖 AutoTrader: ${data.action} ${data.symbol}${data.notional ? ' $'+data.notional : data.qty ? ' '+data.qty+' shares' : ''}`, 'success');
     if (data.type === 'autotrader_halted') { showToast('⛔ AutoTrader HALT: ' + data.reason, 'error'); loadAutoTraderStatus(); }
     if (data.type === 'autotrader_status') updateAutoTraderUI(data.state);
+    if (data.type === 'autotrader_macro') updateMacroBrief(data.brief, data.ts);
   };
   ws.onclose = () => { wsConnected = false; updateWsStatus(false); setTimeout(connectWS, 3000); };
   ws.onerror = () => { wsConnected = false; updateWsStatus(false); };
@@ -987,10 +1008,39 @@ function updateWsStatus(ok) {
   if (setEl) setEl.innerHTML = ok ? '<span style="color:var(--green)">Connesso</span>' : '<span style="color:var(--red)">Disconnesso</span>';
 }
 function updatePriceDisplays(symbol, price) {
+  if (price == null) return;
   document.querySelectorAll(`[data-price="${symbol}"]`).forEach(el => {
-    el.textContent = price != null ? '$' + (+price).toFixed(2) : '—';
+    el.textContent = '$' + (+price).toFixed(2);
   });
   if (currentPositions.length) updatePositionsTable(currentPositions);
+
+  // Feed live buffer
+  if (!liveBuffer[symbol]) liveBuffer[symbol] = [];
+  liveBuffer[symbol].push({ t: Date.now(), p: +price });
+  if (liveBuffer[symbol].length > 300) liveBuffer[symbol].shift();
+
+  // Update detail panel if open for this symbol
+  if (rtChartSymbol === symbol && rtChart) {
+    const labels = rtChart.data.labels;
+    const ds = rtChart.data.datasets[0];
+    labels.push(new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
+    ds.data.push(+price);
+    if (labels.length > 200) { labels.shift(); ds.data.shift(); }
+    rtChart.update('none');
+
+    // Update live price badge in panel
+    const priceEl = document.getElementById('dp-live-price');
+    if (priceEl) priceEl.textContent = '$' + (+price).toFixed(2);
+    if (rtChartBasePrice) {
+      const chg = price - rtChartBasePrice;
+      const chgPct = (chg / rtChartBasePrice) * 100;
+      const changeEl = document.getElementById('dp-price-change');
+      if (changeEl) {
+        changeEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
+        changeEl.className = chg >= 0 ? 'price-change-pos' : 'price-change-neg';
+      }
+    }
+  }
 }
 function handleTradeUpdate(order) {
   if (!order) return;
@@ -1369,30 +1419,132 @@ async function openStockDetail(ticker) {
   if (!s) return;
   const panel = document.getElementById('detail-panel');
   document.getElementById('detail-title').textContent = `${s.ticker} — ${s.name}`;
+
+  const livePrice = livePrices[ticker];
   document.getElementById('detail-content').innerHTML = `
-    <div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
-      ${badgeHtml(s.rating)} <span class="badge" style="background:rgba(200,169,110,0.1);color:var(--gold)">${s.country}</span>
+    <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">
+      ${badgeHtml(s.rating)}
+      <span class="badge" style="background:rgba(200,169,110,0.1);color:var(--gold)">${s.country}</span>
       <span class="badge" style="background:var(--surface2);color:var(--text-muted)">${s.sector}</span>
       ${s.tradeable ? '<span class="badge badge-tradeable">Tradeable</span>' : ''}
     </div>
-    <div class="card" style="margin-bottom:16px">
+    <div style="margin-bottom:14px">
+      <div class="price-badge" id="dp-live-price">${livePrice ? '$'+livePrice.toFixed(2) : '—'}</div>
+      <span id="dp-price-change" style="font-size:0.82rem;color:var(--text-muted);margin-left:8px"></span>
+    </div>
+    <div class="card" style="margin-bottom:14px;padding:12px">
+      <div class="card-title" style="margin-bottom:4px">Grafico Intraday — 5 min</div>
+      <div class="chart-rt"><canvas id="rt-chart-canvas"></canvas></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
       <div class="card-title">Fondamentali</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;font-size:0.85rem;line-height:2">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;font-size:0.85rem;line-height:2">
         <div>P/E: <b>${s.pe ?? '—'}</b></div><div>P/B: <b>${s.pb ?? '—'}</b></div>
         <div>C.Ratio: <b>${s.cr ?? '—'}</b></div><div>FCF Yield: <b>${s.fcf ?? '—'}%</b></div>
         <div>Dividendo: <b>${s.div}%</b></div><div>Market Cap: <b>${s.cap}</b></div>
       </div>
     </div>
-    <div style="display:flex;gap:8px;margin-bottom:16px">
+    <div style="display:flex;gap:8px;margin-bottom:14px">
       ${s.tradeable ? `<button class="btn btn-primary btn-sm" onclick="openOrderPanel({symbol:'${s.ticker}'})">Trade</button>` : ''}
       <button class="btn btn-secondary btn-sm" onclick="analyzeStock('${s.ticker}')">Analisi AI →</button>
     </div>
     <div id="stock-ai-analysis" style="font-size:0.85rem;line-height:1.6"></div>
   `;
   panel.classList.add('open');
+  initRealtimeChart(ticker);
 }
 
-function closeDetailPanel() { document.getElementById('detail-panel').classList.remove('open'); }
+function closeDetailPanel() {
+  document.getElementById('detail-panel').classList.remove('open');
+  if (rtChart) { rtChart.destroy(); rtChart = null; }
+  rtChartSymbol = null;
+  rtChartBasePrice = null;
+}
+
+async function initRealtimeChart(symbol) {
+  if (rtChart) { rtChart.destroy(); rtChart = null; }
+  rtChartSymbol = symbol;
+  rtChartBasePrice = livePrices[symbol] || null;
+
+  // Subscribe to live quotes for this symbol
+  fetch('/api/alpaca/subscribe', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbols: [symbol] }),
+  }).catch(() => {});
+
+  const ctx = document.getElementById('rt-chart-canvas');
+  if (!ctx) return;
+
+  // Seed with any buffered live ticks
+  let labels = [], data = [];
+  if (liveBuffer[symbol] && liveBuffer[symbol].length) {
+    liveBuffer[symbol].forEach(pt => {
+      labels.push(new Date(pt.t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
+      data.push(pt.p);
+    });
+    rtChartBasePrice = data[0];
+  }
+
+  // Try to load intraday bars
+  try {
+    const res = await fetch(`/api/alpaca/bars-intraday/${symbol}`);
+    const bd = await res.json();
+    const bars = bd.bars?.[symbol] || [];
+    if (bars.length) {
+      labels = bars.map(b => new Date(b.t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
+      data = bars.map(b => b.c);
+      rtChartBasePrice = data[0] || livePrices[symbol] || null;
+      // Append any live ticks newer than last bar
+      const lastBarTs = new Date(bars[bars.length - 1].t).getTime();
+      (liveBuffer[symbol] || []).filter(pt => pt.t > lastBarTs).forEach(pt => {
+        labels.push(new Date(pt.t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
+        data.push(pt.p);
+      });
+    }
+  } catch (_) {}
+
+  // Recheck canvas (user may have closed panel)
+  const canvas = document.getElementById('rt-chart-canvas');
+  if (!canvas || rtChartSymbol !== symbol) return;
+
+  const borderColor = '#c8a96e';
+  rtChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: symbol,
+        data,
+        borderColor,
+        backgroundColor: 'rgba(200,169,110,0.08)',
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.2,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#7a7a8e', maxTicksLimit: 6, font: { size: 10 } }, grid: { color: 'rgba(42,42,53,0.5)' } },
+        y: { ticks: { color: '#7a7a8e', font: { size: 10 } }, grid: { color: 'rgba(42,42,53,0.5)' } },
+      },
+    },
+  });
+
+  // Set initial change display
+  if (rtChartBasePrice && livePrices[symbol]) {
+    const chg = livePrices[symbol] - rtChartBasePrice;
+    const chgPct = (chg / rtChartBasePrice) * 100;
+    const changeEl = document.getElementById('dp-price-change');
+    if (changeEl) {
+      changeEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
+      changeEl.className = chg >= 0 ? 'price-change-pos' : 'price-change-neg';
+    }
+  }
+}
 
 async function analyzeStock(ticker) {
   const s = STOCKS.find(x => x.ticker === ticker);
@@ -1851,11 +2003,19 @@ async function executeAllOrders(amount, alloc) {
 // ============================================================
 // AUTOTRADER
 // ============================================================
+function updateMacroBrief(brief, ts) {
+  const el = document.getElementById('at-macro-brief');
+  if (el && brief) el.textContent = brief;
+  const tsEl = document.getElementById('at-macro-ts');
+  if (tsEl && ts) tsEl.textContent = new Date(ts).toLocaleTimeString('it-IT');
+}
+
 async function loadAutoTraderStatus() {
   try {
     const data = await fetch('/api/autotrader/status').then(r => r.json());
     updateAutoTraderUI(data);
     if (data.log) renderAtLog(data.log);
+    if (data.lastMacroBrief) updateMacroBrief(data.lastMacroBrief, data.lastMacroTs);
   } catch (_) {}
 }
 
