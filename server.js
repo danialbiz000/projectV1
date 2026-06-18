@@ -392,29 +392,39 @@ app.get('/api/alpaca/assets/:symbol', async (req, res) => {
 
 app.get('/api/alpaca/bars/:symbol', async (req, res) => {
   try {
-    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Day', limit: '30', feed: 'iex' });
-    const upstream = await alpacaDataFetch(`/v2/stocks/bars?${qs}`);
-    res.status(upstream.status).json(await upstream.json());
+    const sym = req.params.symbol;
+    const qs = new URLSearchParams({ timeframe: '1Day', limit: '30', feed: 'iex' });
+    const upstream = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(sym)}/bars?${qs}`);
+    const bd = await upstream.json();
+    // Normalise to multi-symbol format expected by frontend: { bars: { SYM: [...] } }
+    const bars = Array.isArray(bd.bars) ? bd.bars : [];
+    res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/alpaca/bars-intraday/:symbol', async (req, res) => {
   try {
+    const sym = req.params.symbol;
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
-    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '5Min', start: start.toISOString(), limit: '100', feed: 'iex' });
-    const upstream = await alpacaDataFetch(`/v2/stocks/bars?${qs}`);
-    res.status(upstream.status).json(await upstream.json());
+    const qs = new URLSearchParams({ timeframe: '5Min', start: start.toISOString(), limit: '100', feed: 'iex' });
+    const upstream = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(sym)}/bars?${qs}`);
+    const bd = await upstream.json();
+    const bars = Array.isArray(bd.bars) ? bd.bars : [];
+    res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/alpaca/bars-1min/:symbol', async (req, res) => {
   try {
+    const sym = req.params.symbol;
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
-    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Min', start: start.toISOString(), limit: '400', feed: 'iex' });
-    const upstream = await alpacaDataFetch(`/v2/stocks/bars?${qs}`);
-    res.status(upstream.status).json(await upstream.json());
+    const qs = new URLSearchParams({ timeframe: '1Min', start: start.toISOString(), limit: '400', feed: 'iex' });
+    const upstream = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(sym)}/bars?${qs}`);
+    const bd = await upstream.json();
+    const bars = Array.isArray(bd.bars) ? bd.bars : [];
+    res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1027,12 +1037,12 @@ async function atCycle() {
       // Fetch price bars + volumes for technicals
       let closes = [], volumes = [];
       try {
-        const qs = new URLSearchParams({ symbols: symbol, timeframe: '1Day', limit: '60', feed: 'iex' });
-        const br = await alpacaDataFetch(`/v2/stocks/bars?${qs}`);
+        const qs = new URLSearchParams({ timeframe: '1Day', limit: '60', feed: 'iex' });
+        const br = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?${qs}`);
         const bd = await br.json();
-        if (bd.bars?.[symbol]?.length) {
-          closes = bd.bars[symbol].map(b => b.c);
-          volumes = bd.bars[symbol].map(b => b.v);
+        if (Array.isArray(bd.bars) && bd.bars.length) {
+          closes = bd.bars.map(b => b.c);
+          volumes = bd.bars.map(b => b.v);
         } else {
           const errMsg = bd.message || bd.error || JSON.stringify(bd).slice(0, 120);
           atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Alpaca bars error: ${errMsg}`, executed: false });
