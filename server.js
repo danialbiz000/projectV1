@@ -393,7 +393,7 @@ app.get('/api/alpaca/assets/:symbol', async (req, res) => {
 app.get('/api/alpaca/bars/:symbol', async (req, res) => {
   try {
     const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Day', limit: '30', feed: 'iex' });
-    const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+    const upstream = await alpacaDataFetch(`/v2/stocks/bars?${qs}`);
     res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -403,7 +403,7 @@ app.get('/api/alpaca/bars-intraday/:symbol', async (req, res) => {
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
     const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '5Min', start: start.toISOString(), limit: '100', feed: 'iex' });
-    const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+    const upstream = await alpacaDataFetch(`/v2/stocks/bars?${qs}`);
     res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -413,7 +413,7 @@ app.get('/api/alpaca/bars-1min/:symbol', async (req, res) => {
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
     const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Min', start: start.toISOString(), limit: '400', feed: 'iex' });
-    const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+    const upstream = await alpacaDataFetch(`/v2/stocks/bars?${qs}`);
     res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1028,7 +1028,7 @@ async function atCycle() {
       let closes = [], volumes = [];
       try {
         const qs = new URLSearchParams({ symbols: symbol, timeframe: '1Day', limit: '60', feed: 'iex' });
-        const br = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+        const br = await alpacaDataFetch(`/v2/stocks/bars?${qs}`);
         const bd = await br.json();
         if (bd.bars?.[symbol]?.length) {
           closes = bd.bars[symbol].map(b => b.c);
