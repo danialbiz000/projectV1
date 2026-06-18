@@ -392,7 +392,7 @@ app.get('/api/alpaca/assets/:symbol', async (req, res) => {
 
 app.get('/api/alpaca/bars/:symbol', async (req, res) => {
   try {
-    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Day', limit: '30' });
+    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Day', limit: '30', feed: 'iex' });
     const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
     res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -402,7 +402,7 @@ app.get('/api/alpaca/bars-intraday/:symbol', async (req, res) => {
   try {
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
-    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '5Min', start: start.toISOString(), limit: '100' });
+    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '5Min', start: start.toISOString(), limit: '100', feed: 'iex' });
     const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
     res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -412,7 +412,7 @@ app.get('/api/alpaca/bars-1min/:symbol', async (req, res) => {
   try {
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
-    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Min', start: start.toISOString(), limit: '400' });
+    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Min', start: start.toISOString(), limit: '400', feed: 'iex' });
     const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
     res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -921,7 +921,7 @@ Be specific and data-oriented. Prose format, no headers or bullets. Max 10 sente
 async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
   const universe = [...new Set([...STOCK_UNIVERSE, ...openSymbols])];
   const n = Math.max(5, Math.min(20, AT.watchlistSize || 10));
-  const prompt = `MACRO CONTEXT:\n${macroBrief}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades (BUY, SELL, SHORT, or COVER) in the next trading session given current macro conditions. Prioritize high-conviction setups: momentum plays, mean-reversion candidates, sector leaders in inflow/outflow rotation, and any with near-term catalysts.\n\nUNIVERSE: ${universe.join(', ')}\n\nAlways include these open positions (they must be monitored): ${openSymbols.join(', ') || 'none'}.\n\nRespond with ONLY a JSON array of ticker strings, no explanation. Example: ["NVDA","TSLA","SPY"]`;
+  const prompt = `MACRO CONTEXT:\n${macroBrief}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades (BUY, SELL, SHORT, or COVER) in the next trading session given current macro conditions. Prioritize high-conviction setups: momentum plays, mean-reversion candidates, sector leaders in inflow/outflow rotation, and any with near-term catalysts.\n\nIMPORTANT: only pick symbols from the universe list below — all are primary US-listed NYSE/NASDAQ stocks with live IEX data on Alpaca paper trading. Do NOT invent or add any ticker not in this list.\n\nUNIVERSE: ${universe.join(', ')}\n\nAlways include these open positions (they must be monitored): ${openSymbols.join(', ') || 'none'}.\n\nRespond with ONLY a JSON array of ticker strings, no explanation. Example: ["NVDA","TSLA","SPY"]`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1027,13 +1027,21 @@ async function atCycle() {
       // Fetch price bars + volumes for technicals
       let closes = [], volumes = [];
       try {
-        const qs = new URLSearchParams({ symbols: symbol, timeframe: '1Day', limit: '60' });
+        const qs = new URLSearchParams({ symbols: symbol, timeframe: '1Day', limit: '60', feed: 'iex' });
         const br = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
         const bd = await br.json();
-        const bars = bd.bars?.[symbol] || [];
-        closes = bars.map(b => b.c);
-        volumes = bars.map(b => b.v);
-      } catch (_) {}
+        if (bd.bars?.[symbol]?.length) {
+          closes = bd.bars[symbol].map(b => b.c);
+          volumes = bd.bars[symbol].map(b => b.v);
+        } else {
+          const errMsg = bd.message || bd.error || JSON.stringify(bd).slice(0, 120);
+          atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Alpaca bars error: ${errMsg}`, executed: false });
+          continue;
+        }
+      } catch (e) {
+        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Bars fetch failed: ${e.message}`, executed: false });
+        continue;
+      }
 
       const pos = posMap.get(symbol);
       const isLong = pos?.side === 'long';
