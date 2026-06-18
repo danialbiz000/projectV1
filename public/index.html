@@ -596,16 +596,28 @@ tr:hover td { background: var(--surface2); }
       </div>
       <div class="card" style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <div class="card-title" style="margin-bottom:0">Watchlist Simboli</div>
-          <button class="btn btn-secondary btn-sm" onclick="saveWatchlist()">Salva</button>
+          <div class="card-title" style="margin-bottom:0">🤖 Selezione Simboli</div>
+          <button class="btn btn-secondary btn-sm" onclick="saveWatchlistConfig()">Salva</button>
         </div>
-        <div class="field" style="margin-bottom:8px">
-          <label>Simboli separati da virgola (max 50)</label>
-          <input type="text" id="at-watchlist" value="ENB,GIL,IBKR,MC,VNET,AAPL,SPY,QQQ,LMT,RTX" placeholder="AAPL, SPY, QQQ, ...">
+        <div class="field" style="margin-bottom:8px;display:flex;align-items:center;gap:10px">
+          <input type="checkbox" id="at-ai-managed" style="width:auto;accent-color:var(--gold)" checked onchange="toggleWatchlistMode()">
+          <label for="at-ai-managed" style="margin:0;cursor:pointer"><b>Claude sceglie autonomamente i simboli</b> — seleziona ogni ciclo i migliori titoli dall'universo di 70+ azioni in base al contesto macro</label>
+        </div>
+        <div id="at-ai-watchlist-info" style="margin-bottom:12px;padding:10px;background:var(--surface2);border-radius:8px;font-size:0.8rem;color:var(--text-muted)">
+          <div>Universo disponibile: AAPL · MSFT · NVDA · TSLA · SPY · QQQ · JPM · XOM · AMZN · GOOGL · LMT · NVDA · PLTR · COIN · CRWD · GLD · TLT · e altri 55+</div>
+          <div style="margin-top:6px">Ultima selezione AI: <span id="at-ai-selected" style="color:var(--gold)">—</span></div>
+        </div>
+        <div class="field" style="margin-bottom:8px" id="at-watchlist-size-row">
+          <label>Quanti simboli analizzare per ciclo (3–20)</label>
+          <input type="number" id="at-watchlist-size" value="10" min="3" max="20" step="1">
+        </div>
+        <div class="field" style="margin-bottom:8px" id="at-watchlist-manual-row" style="display:none">
+          <label>Watchlist manuale — simboli separati da virgola (max 50)</label>
+          <input type="text" id="at-watchlist" value="AAPL,MSFT,NVDA,TSLA,SPY,QQQ,AMZN,GOOGL,JPM,XOM" placeholder="AAPL, SPY, QQQ, ...">
         </div>
         <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.7">
-          Ogni ciclo: 60 giorni di bars → RSI · MACD · SMA · Volume rel. → Claude decide BUY/SELL/SHORT/COVER/HOLD → se confidence ≥ soglia esegue bracket order (con SL&TP automatici).<br>
-          <b>Safety:</b> solo in orario NYSE · no holiday · drawdown limit → halt · bracket automatico · sizing adattivo alla volatilità · notifiche Telegram.
+          Ogni ciclo: macro brief → AI seleziona i simboli → 60gg bars → RSI · MACD · SMA · Volume → Claude decide BUY/SELL/SHORT/COVER/HOLD → bracket order automatico.<br>
+          <b>Safety:</b> solo NYSE · no holiday · drawdown limit → halt · bracket SL&amp;TP · sizing adattivo · Telegram.
         </div>
       </div>
       <div class="card" style="margin-bottom:20px">
@@ -2216,13 +2228,30 @@ function updateAutoTraderUI(data) {
   setVal('at-drawdown-limit', data.drawdownLimit != null ? Math.round(data.drawdownLimit * 100) : null);
   setVal('at-target-vol', data.targetVolatility != null ? Math.round(data.targetVolatility * 100) : null);
   setChk('at-allow-short', data.allowShort);
+  setChk('at-ai-managed', data.aiManagedWatchlist !== false);
+  setVal('at-watchlist-size', data.watchlistSize || 10);
   if (Array.isArray(data.watchlist)) {
     const el = document.getElementById('at-watchlist');
     if (el) el.value = data.watchlist.join(', ');
   }
+  if (Array.isArray(data.aiSelectedWatchlist) && data.aiSelectedWatchlist.length) {
+    const el = document.getElementById('at-ai-selected');
+    if (el) el.textContent = data.aiSelectedWatchlist.join(' · ');
+  }
+  toggleWatchlistMode();
 }
 
-const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold' };
+function toggleWatchlistMode() {
+  const aiMode = document.getElementById('at-ai-managed')?.checked;
+  const manualRow = document.getElementById('at-watchlist-manual-row');
+  const infoBox = document.getElementById('at-ai-watchlist-info');
+  const sizeRow = document.getElementById('at-watchlist-size-row');
+  if (manualRow) manualRow.style.display = aiMode ? 'none' : '';
+  if (infoBox) infoBox.style.display = aiMode ? '' : 'none';
+  if (sizeRow) sizeRow.style.display = aiMode ? '' : 'none';
+}
+
+const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold', WATCHLIST:'at-action-hold' };
 
 function atLogRowHtml(e) {
   const cls = AT_ACTION_CSS[e.action] || '';
@@ -2317,17 +2346,31 @@ async function saveAutoTraderConfig() {
   } catch (e) { showToast('Errore: ' + e.message, 'error'); }
 }
 
-async function saveWatchlist() {
-  const raw = (document.getElementById('at-watchlist')?.value || '').split(',');
-  const symbols = raw.map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s));
-  if (!symbols.length) return showToast('Nessun simbolo valido', 'error');
+async function saveWatchlistConfig() {
+  const g = id => document.getElementById(id);
+  const aiManaged = g('at-ai-managed')?.checked ?? true;
+  const watchlistSize = +(g('at-watchlist-size')?.value || 10);
+  // Save ai mode + size via config endpoint
   try {
-    const data = await secureFetch('/api/autotrader/watchlist', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbols }),
+    await secureFetch('/api/autotrader/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aiManagedWatchlist: aiManaged, watchlistSize }),
     }).then(r => r.json());
-    document.getElementById('at-watchlist').value = data.watchlist.join(', ');
-    showToast(`Watchlist salvata: ${data.watchlist.length} simboli`, 'success');
-  } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+  } catch (_) {}
+  if (!aiManaged) {
+    // also save manual watchlist
+    const raw = (g('at-watchlist')?.value || '').split(',');
+    const symbols = raw.map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s));
+    if (!symbols.length) return showToast('Nessun simbolo valido', 'error');
+    try {
+      const data = await secureFetch('/api/autotrader/watchlist', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbols }),
+      }).then(r => r.json());
+      document.getElementById('at-watchlist').value = data.watchlist.join(', ');
+      showToast(`Watchlist salvata: ${data.watchlist.length} simboli`, 'success');
+    } catch (e) { showToast('Errore: ' + e.message, 'error'); return; }
+  }
+  showToast('Impostazioni watchlist salvate', 'success');
 }
 
 async function resetAutoTraderHalt() {

@@ -664,7 +664,27 @@ function adaptiveNotional(equity, annualizedVol, targetVol, maxPositionPct) {
 }
 
 // ─── AutoTrader Engine ────────────────────────────────────────────────────────
-const AT_WATCHLIST_DEFAULT = ['ENB', 'GIL', 'IBKR', 'MC', 'VNET', 'AAPL', 'SPY', 'QQQ', 'LMT', 'RTX'];
+
+// Universe of liquid US-listed stocks Claude can pick from when aiManagedWatchlist is enabled.
+// All are NYSE/NASDAQ primary-listed with strong IEX data availability.
+const STOCK_UNIVERSE = [
+  // Mega-cap tech
+  'AAPL','MSFT','NVDA','GOOGL','AMZN','META','TSLA','AVGO','ORCL','AMD',
+  // Financials
+  'JPM','BAC','GS','MS','BLK','AXP','V','MA','PYPL','SCHW',
+  // Healthcare & pharma
+  'UNH','JNJ','LLY','PFE','ABBV','MRK','CVS','AMGN','GILD','ISRG',
+  // Energy & industrials
+  'XOM','CVX','COP','LMT','RTX','CAT','HON','GE','BA','UPS',
+  // Consumer & retail
+  'WMT','COST','HD','TGT','NKE','SBUX','MCD','PG','KO','PEP',
+  // ETFs for broad exposure
+  'SPY','QQQ','IWM','XLK','XLF','XLE','XLV','XLI','GLD','TLT',
+  // Growth / high-momentum
+  'PLTR','COIN','CRWD','NET','DDOG','SNOW','ZS','MSTR','RBLX','HOOD',
+];
+
+const AT_WATCHLIST_DEFAULT = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'AMZN', 'GOOGL', 'JPM', 'XOM'];
 
 const AT = {
   enabled: false,
@@ -677,7 +697,10 @@ const AT = {
   drawdownLimit: 0.15,
   allowShort: false,
   targetVolatility: 0.20,
+  aiManagedWatchlist: true,   // Claude picks symbols each cycle from STOCK_UNIVERSE
+  watchlistSize: 10,          // how many symbols Claude picks per cycle
   watchlist: [...AT_WATCHLIST_DEFAULT],
+  aiSelectedWatchlist: [],    // what Claude picked last cycle
   log: [],
   timer: null,
   lastRunAt: null,
@@ -741,6 +764,8 @@ function saveAtState() {
         drawdownLimit: AT.drawdownLimit,
         allowShort: AT.allowShort,
         targetVolatility: AT.targetVolatility,
+        aiManagedWatchlist: AT.aiManagedWatchlist,
+        watchlistSize: AT.watchlistSize,
         watchlist: AT.watchlist,
       },
       lastRunAt: AT.lastRunAt,
@@ -777,6 +802,8 @@ function loadAtState() {
     if (Number.isFinite(+cfg.drawdownLimit)) AT.drawdownLimit = Math.max(0.02, Math.min(0.50, +cfg.drawdownLimit));
     if (typeof cfg.allowShort === 'boolean') AT.allowShort = cfg.allowShort;
     if (Number.isFinite(+cfg.targetVolatility)) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +cfg.targetVolatility));
+    if (typeof cfg.aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = cfg.aiManagedWatchlist;
+    if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(20, +cfg.watchlistSize));
     if (Array.isArray(cfg.watchlist) && cfg.watchlist.length) AT.watchlist = cfg.watchlist;
     AT.lastRunAt = state.lastRunAt || null;
     AT.nextRunAt = null;
@@ -833,6 +860,9 @@ function atPublicState() {
     allowShort: AT.allowShort,
     targetVolatility: AT.targetVolatility,
     watchlist: AT.watchlist,
+    aiManagedWatchlist: AT.aiManagedWatchlist,
+    watchlistSize: AT.watchlistSize,
+    aiSelectedWatchlist: AT.aiSelectedWatchlist,
     lastRunAt: AT.lastRunAt,
     nextRunAt: AT.nextRunAt,
     halted: AT.halted,
@@ -886,6 +916,31 @@ Be specific and data-oriented. Prose format, no headers or bullets. Max 10 sente
   } catch (_) {}
 
   return { brief, fxStr, dateStr };
+}
+
+async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
+  const universe = [...new Set([...STOCK_UNIVERSE, ...openSymbols])];
+  const n = Math.max(5, Math.min(20, AT.watchlistSize || 10));
+  const prompt = `MACRO CONTEXT:\n${macroBrief}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades (BUY, SELL, SHORT, or COVER) in the next trading session given current macro conditions. Prioritize high-conviction setups: momentum plays, mean-reversion candidates, sector leaders in inflow/outflow rotation, and any with near-term catalysts.\n\nUNIVERSE: ${universe.join(', ')}\n\nAlways include these open positions (they must be monitored): ${openSymbols.join(', ') || 'none'}.\n\nRespond with ONLY a JSON array of ticker strings, no explanation. Example: ["NVDA","TSLA","SPY"]`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 200, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const d = await res.json();
+    let raw = (d.content?.[0]?.text || '[]').trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+    const picks = JSON.parse(raw);
+    if (Array.isArray(picks) && picks.length) {
+      const validated = picks.map(s => String(s).toUpperCase().replace(/[^A-Z0-9.]/g, '')).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s)).slice(0, 20);
+      // Always include open positions
+      const merged = [...new Set([...openSymbols, ...validated])];
+      return merged;
+    }
+  } catch (_) {}
+  return [...new Set([...openSymbols, ...AT_WATCHLIST_DEFAULT.slice(0, n)])];
 }
 
 async function atCycle() {
@@ -950,8 +1005,17 @@ async function atCycle() {
     broadcast({ type: 'autotrader_macro', brief: macroBrief, ts: AT.lastMacroTs });
     atLog({ symbol: 'MACRO', action: 'RESEARCH', confidence: 1, reasoning: macroBrief.slice(0, 200) + (macroBrief.length > 200 ? '…' : ''), executed: false });
 
-    // Phase 2: per-symbol decisions
-    const targets = [...new Set([...posMap.keys(), ...AT.watchlist])];
+    // Phase 2: symbol selection
+    let targets;
+    if (AT.aiManagedWatchlist) {
+      const openSymbols = [...posMap.keys()];
+      targets = await aiSelectWatchlist(anthropicKey, macroBrief, openSymbols);
+      AT.aiSelectedWatchlist = targets;
+      broadcast({ type: 'autotrader_watchlist', watchlist: targets });
+      atLog({ symbol: 'SYSTEM', action: 'WATCHLIST', confidence: 1, reasoning: `AI selected ${targets.length} symbols: ${targets.join(', ')}`, executed: false });
+    } else {
+      targets = [...new Set([...posMap.keys(), ...AT.watchlist])];
+    }
 
     for (const symbol of targets) {
       if (!AT.enabled) break;
