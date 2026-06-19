@@ -1307,6 +1307,21 @@ app.post('/api/autotrader/run-now', (req, res) => {
   setImmediate(atCycle);
 });
 
+app.post('/api/autotrader/refresh-macro', async (req, res) => {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) return res.status(500).json({ error: 'No Anthropic key' });
+  try {
+    const { brief, fxStr, dateStr } = await getMacroBrief(anthropicKey);
+    AT.lastMacroBrief = brief;
+    AT.lastMacroTs = Date.now();
+    saveAtState();
+    broadcast({ type: 'autotrader_macro', brief, ts: AT.lastMacroTs });
+    res.json({ ok: true, brief, ts: AT.lastMacroTs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/autotrader/watchlist
 app.get('/api/autotrader/watchlist', (req, res) => {
   res.json({ watchlist: AT.watchlist });
