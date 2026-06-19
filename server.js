@@ -902,19 +902,20 @@ async function fetchMacroContext(anthropicKey) {
   const macroPrompt = `Today: ${dateStr}
 Live FX rates: ${fxStr}
 
-Provide a detailed macro investment brief covering ALL of the following:
-1. Global equity sentiment (US, EU, Asia) — current risk-on/risk-off regime, key index momentum
-2. Central banks: Fed (rate path, dot plot, recent statements), ECB, BoJ, PBoC — explicit policy direction
-3. US Treasury yields: 2Y and 10Y current levels, yield curve shape (inverted/flat/steep), credit spreads
-4. Commodities: WTI crude, Brent, Gold, key moves and drivers
-5. Top 3 geopolitical risks currently affecting markets — be specific (country, event, impact)
-6. Sector rotation: which sectors are seeing inflows/outflows and why
-7. Critical macro events next 48-72h: FOMC, CPI, NFP, earnings, central bank meetings
-8. Overall regime: RISK-ON / RISK-OFF / NEUTRAL with brief justification
+Return a JSON object (no markdown, no explanation) with exactly these keys:
+{
+  "regime": "RISK-ON" | "RISK-OFF" | "NEUTRAL",
+  "regime_reason": "one sentence why",
+  "equity": "US/EU/Asia equity sentiment in 1-2 sentences",
+  "central_banks": "Fed/ECB/BoJ/PBoC policy direction in 1-2 sentences",
+  "yields": "US 2Y and 10Y levels, curve shape, credit spreads in 1 sentence",
+  "commodities": "WTI, Gold, key commodity moves in 1 sentence",
+  "geopolitical": "top 2-3 risks, specific countries/events in 1-2 sentences",
+  "sectors": "which sectors seeing inflows/outflows and why in 1 sentence",
+  "events": "critical macro events next 48-72h (FOMC, CPI, NFP, earnings) in 1 sentence"
+}`;
 
-Be specific and data-oriented. Prose format, no headers or bullets. Max 10 sentences.`;
-
-  let brief = `[${dateStr}] FX: ${fxStr}. Standard macro environment — no specific signals.`;
+  let brief = JSON.stringify({ regime: 'NEUTRAL', regime_reason: 'No data.', equity: fxStr, central_banks: '', yields: '', commodities: '', geopolitical: '', sectors: '', events: '' });
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -922,7 +923,10 @@ Be specific and data-oriented. Prose format, no headers or bullets. Max 10 sente
       body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 800, messages: [{ role: 'user', content: macroPrompt }] }),
     });
     const d = await res.json();
-    brief = d.content?.[0]?.text || brief;
+    let raw = (d.content?.[0]?.text || '').trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+    JSON.parse(raw); // validate — throws if invalid
+    brief = raw;
   } catch (_) {}
 
   return { brief, fxStr, dateStr };

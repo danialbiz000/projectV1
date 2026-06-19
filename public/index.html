@@ -298,7 +298,7 @@ tr:hover td { background: var(--surface2); }
 .price-change-pos { color: var(--green); font-size: 0.88rem; font-weight: 600; }
 .price-change-neg { color: var(--red); font-size: 0.88rem; font-weight: 600; }
 /* Macro brief */
-.macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--gold); border-radius: var(--radius); padding: 16px; font-size: 0.82rem; line-height: 1.75; color: var(--text-muted); }
+.macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
 /* AutoTrader toggle */
 .toggle-switch { position: relative; display: inline-block; width: 48px; height: 26px; cursor: pointer; }
 .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
@@ -2181,9 +2181,40 @@ async function executeAllOrders(amount, alloc) {
 // ============================================================
 function updateMacroBrief(brief, ts) {
   const el = document.getElementById('at-macro-brief');
-  if (el && brief) el.textContent = brief;
   const tsEl = document.getElementById('at-macro-ts');
   if (tsEl && ts) tsEl.textContent = new Date(ts).toLocaleTimeString('it-IT');
+  if (!el || !brief) return;
+
+  let data;
+  try { data = typeof brief === 'string' ? JSON.parse(brief) : brief; } catch (_) {
+    el.textContent = brief; return;
+  }
+
+  const regimeColor = data.regime === 'RISK-ON' ? 'var(--green)' : data.regime === 'RISK-OFF' ? 'var(--red)' : 'var(--gold)';
+  const regimeIcon  = data.regime === 'RISK-ON' ? '▲' : data.regime === 'RISK-OFF' ? '▼' : '◆';
+
+  const row = (icon, label, text) => text ? `
+    <div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="min-width:22px;text-align:center;font-size:1rem">${icon}</div>
+      <div>
+        <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:3px">${label}</div>
+        <div style="font-size:0.83rem;line-height:1.55;color:var(--text)">${text}</div>
+      </div>
+    </div>` : '';
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;padding-bottom:14px;border-bottom:2px solid ${regimeColor}">
+      <div style="font-size:1.6rem;font-weight:900;color:${regimeColor}">${regimeIcon} ${data.regime || 'NEUTRAL'}</div>
+      <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.4">${data.regime_reason || ''}</div>
+    </div>
+    ${row('🌐', 'Equity Globale', data.equity)}
+    ${row('🏦', 'Banche Centrali', data.central_banks)}
+    ${row('📈', 'Treasury & Spread', data.yields)}
+    ${row('🛢️', 'Commodity', data.commodities)}
+    ${row('⚠️', 'Rischi Geopolitici', data.geopolitical)}
+    ${row('🔄', 'Rotazione Settoriale', data.sectors)}
+    ${row('📅', 'Prossimi Eventi', data.events)}
+  `;
 }
 
 async function loadAutoTraderStatus() {
