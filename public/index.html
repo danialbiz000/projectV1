@@ -888,12 +888,34 @@ const STOCKS = [
 ];
 
 const WATCHDOG_PAIRS = [
-  {primary:'ENB',  backup:'TRP'   }, {primary:'JDSC',  backup:'HLMA'  },
-  {primary:'MFG',  backup:'SMFG'  }, {primary:'KT',    backup:'SKT'   },
-  {primary:'MC',   backup:'PJT'   }, {primary:'JM',    backup:'OCPNY' },
-  {primary:'BPOST',backup:'PostNL'}, {primary:'SDVX',  backup:'ATKR'  },
-  {primary:'LGEN', backup:'JUST'  }, {primary:'VNET',  backup:'GDS'   },
-  {primary:'GIL',  backup:'HBI'   }, {primary:'KPELY', backup:'SCI'   },
+  // Mega-cap tech
+  { primary:'AAPL',  backup:'MSFT',  label:'Big Tech'      },
+  { primary:'NVDA',  backup:'AMD',   label:'Semiconduttori' },
+  { primary:'GOOGL', backup:'META',  label:'Digital Ads'   },
+  { primary:'AMZN',  backup:'COST',  label:'E-Commerce'    },
+  // Finanziari
+  { primary:'JPM',   backup:'BAC',   label:'Banking'       },
+  { primary:'GS',    backup:'MS',    label:'Investment Bank'},
+  { primary:'V',     backup:'MA',    label:'Payments'      },
+  { primary:'BLK',   backup:'SCHW',  label:'Asset Mgmt'    },
+  // Energia
+  { primary:'XOM',   backup:'CVX',   label:'Oil Majors'    },
+  { primary:'COP',   backup:'XLE',   label:'E&P vs ETF'    },
+  // Difesa & Industriali
+  { primary:'LMT',   backup:'RTX',   label:'Defense'       },
+  { primary:'CAT',   backup:'HON',   label:'Industriali'   },
+  // Pharma
+  { primary:'LLY',   backup:'JNJ',   label:'Pharma'        },
+  { primary:'ABBV',  backup:'MRK',   label:'Biopharma'     },
+  // Consumer
+  { primary:'WMT',   backup:'TGT',   label:'Retail'        },
+  { primary:'MCD',   backup:'SBUX',  label:'Food & Bev'    },
+  // ETF macro
+  { primary:'SPY',   backup:'QQQ',   label:'Broad Market'  },
+  { primary:'GLD',   backup:'TLT',   label:'Safe Haven'    },
+  // Growth
+  { primary:'PLTR',  backup:'CRWD',  label:'AI/Cyber'      },
+  { primary:'COIN',  backup:'MSTR',  label:'Crypto Proxy'  },
 ];
 
 const MACRO_GEO = [
@@ -1839,6 +1861,7 @@ function renderWatchdog() {
       <div class="pair-row">
         <div>
           <span class="pair-ticker">${pair.primary}</span>
+          ${pair.label ? `<span style="font-size:0.7rem;color:var(--text-muted);margin-left:6px">${pair.label}</span>` : ''}
           ${isAlert ? '<span style="color:var(--orange);margin-left:6px;font-size:0.75rem">⚠ ALERT</span>' : ''}
         </div>
         <div class="pair-score">Score: <b>${primaryScore}</b></div>
@@ -1849,7 +1872,7 @@ function renderWatchdog() {
       </div>
       ${isAlert ? `
         <div style="margin-top:10px;font-size:0.78rem;color:var(--orange)">Backup supera primario di ${backupScore-primaryScore} punti</div>
-        ${isTradeable ? `<button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="watchdogSwap('${pair.primary}','${pair.backup}')">Vendi ${pair.primary} / Compra ${pair.backup}</button>` : ''}
+        <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="watchdogSwap('${pair.primary}','${pair.backup}')">Vendi ${pair.primary} / Compra ${pair.backup}</button>
       ` : ''}
     </div>`;
   }).join('');
