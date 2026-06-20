@@ -652,6 +652,46 @@ function computeAnnualizedVol(closes) {
   return Math.sqrt(variance * 252);
 }
 
+// Standard normal CDF via Abramowitz & Stegun approximation (max error 7.5e-8)
+function normalCDF(x) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const pdf = Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+  const cdf = 1 - pdf * poly;
+  return x >= 0 ? cdf : 1 - cdf;
+}
+
+// Black-Scholes probability metrics for stock selection
+// Returns risk-neutral probabilities using historical vol as σ proxy
+function computeBlackScholes(S, sigma, T = 60 / 252, r = 0.043) {
+  if (!S || !sigma || sigma <= 0 || S <= 0) return null;
+  const sqrtT = Math.sqrt(T);
+  // ATM (K=S): probability stock ends above current price
+  const d2_atm = (r - 0.5 * sigma * sigma) * T / (sigma * sqrtT);
+  const probAbove = normalCDF(d2_atm);          // P(S_T > S_0)
+
+  // Probability of reaching take-profit target
+  const K_tp = S * (1 + AT.takeProfitPct / 100);
+  const d2_tp = (Math.log(S / K_tp) + (r - 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+  const probTP = normalCDF(d2_tp);              // P(S_T > TP)
+
+  // Probability of hitting stop-loss
+  const K_sl = S * (1 - AT.stopLossPct / 100);
+  const d2_sl = (Math.log(S / K_sl) + (r - 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+  const probSL = 1 - normalCDF(d2_sl);         // P(S_T < SL)
+
+  // Call delta (ATM) — directional momentum proxy
+  const d1_atm = (r + 0.5 * sigma * sigma) * T / (sigma * sqrtT);
+  const callDelta = normalCDF(d1_atm);
+
+  return {
+    probAbove: Math.round(probAbove * 100),     // % P(price > current in 60d)
+    probTP:    Math.round(probTP * 100),         // % P(reach take-profit)
+    probSL:    Math.round(probSL * 100),         // % P(hit stop-loss)
+    callDelta: Math.round(callDelta * 100) / 100,
+  };
+}
+
 // ─── Telegram Notifications ───────────────────────────────────────────────────
 async function sendTelegram(text) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
@@ -1071,6 +1111,7 @@ async function atCycle() {
       const sma20 = computeSMA(closes, 20);
       const sma50 = computeSMA(closes, 50);
       const annVol = computeAnnualizedVol(closes);
+      const bs = computeBlackScholes(lastPrice, annVol);
 
       const prompt = `MACRO CONTEXT:
 ${macroBrief}
@@ -1086,6 +1127,12 @@ MACD(12,26): ${macd != null ? macd.toFixed(3) : '?'}
 SMA20: ${sma20 != null ? '$' + sma20.toFixed(2) : '?'} | SMA50: ${sma50 != null ? '$' + sma50.toFixed(2) : '?'}
 Relative Volume: ${relVolume != null ? relVolume.toFixed(2) + 'x avg' : '?'}
 Annualized Volatility: ${annVol != null ? (annVol * 100).toFixed(1) + '%' : '?'}
+
+BLACK-SCHOLES (60-day horizon, r=4.3%, σ=historical vol):
+P(price > current in 60d): ${bs ? bs.probAbove + '%' : '?'}
+P(reach TP +${AT.takeProfitPct}%): ${bs ? bs.probTP + '%' : '?'}
+P(hit SL -${AT.stopLossPct}%): ${bs ? bs.probSL + '%' : '?'}
+ATM call delta: ${bs ? bs.callDelta : '?'}
 
 POSITION:
 hasPosition: ${hasPos}
