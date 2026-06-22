@@ -1570,6 +1570,23 @@ app.put('/api/autotrader/watchlist', (req, res) => {
   res.json({ watchlist: AT.watchlist });
 });
 
+// GET /api/autotrader/intraday/:symbol
+app.get('/api/autotrader/intraday/:symbol', async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  try {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const start = `${today}T13:30:00Z`;
+    const url = `/v2/stocks/${symbol}/bars?timeframe=1Min&start=${encodeURIComponent(start)}&limit=400&feed=iex`;
+    const r = await alpacaDataFetch(url);
+    const json = await parseJsonResponse(r);
+    const rawBars = (json && json.bars) || [];
+    const bars = rawBars.map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }));
+    res.json({ symbol, bars });
+  } catch (_) {
+    res.json({ symbol, bars: [] });
+  }
+});
+
 // ─── WebSocket Server (local clients) ─────────────────────────────────────────
 const wss = new WebSocketServer({ server });
 const localClients = new Set();
