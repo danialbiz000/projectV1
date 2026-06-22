@@ -767,22 +767,22 @@ const STOCK_UNIVERSE = [
   // Growth / high-momentum (large)
   'PLTR','COIN','CRWD','NET','DDOG','SNOW','ZS','MSTR','RBLX','HOOD',
   // ── Mid-cap growth ──────────────────────────────────────────────────────────
-  // AI & Quantum computing
-  'IONQ','RGTI','QUBT','SOUN','AI','PATH','BBAI','ARQQ',
+  // AI & Quantum computing (liquid, Alpaca IEX-covered)
+  'IONQ','RGTI','QUBT','SOUN','AI','PATH',
   // Fintech & neobanks
-  'SQ','AFRM','SOFI','UPST','NU','OPEN','RELY','DAVE',
+  'SQ','AFRM','SOFI','UPST','NU',
   // SaaS & software
-  'SHOP','HUBS','BILL','GTLB','MNDY','BRZE','DOMO','APP',
+  'SHOP','HUBS','BILL','GTLB','MNDY','BRZE','APP',
   // Biotech & health innovation
-  'MRNA','BNTX','RXRX','BEAM','EDIT','NTLA','HIMS','TDOC','ACMR',
+  'MRNA','BNTX','RXRX','BEAM','EDIT','NTLA','HIMS','TDOC',
   // Clean energy & EV
   'FSLR','ENPH','PLUG','RIVN','LCID','QS','BE','RUN','CHPT',
-  // Space, defense innovation & drones
-  'RKLB','LUNR','PL','ASTS','RDW','JOBY','ACHR','LILM',
-  // Retail disruptors & consumer tech
-  'ETSY','W','CHWY','WISH','CPNG','GRAB',
+  // Space & defense innovation
+  'RKLB','ASTS','PL',
+  // Retail & consumer tech
+  'ETSY','W','CHWY','CPNG','GRAB',
   // Semiconductors (mid)
-  'SMCI','WOLF','AMBA','FORM','CRUS','LSCC',
+  'SMCI','AMBA','CRUS','LSCC',
   // Media & streaming
   'NFLX','DIS','PARA','WBD','SPOT','ROKU',
 ];
@@ -1440,6 +1440,12 @@ async function atCycle() {
         }
       } catch (e) {
         atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Bars fetch failed: ${e.message}`, executed: false });
+        continue;
+      }
+
+      // Skip symbols with insufficient history for MACD (needs 26+) — avoid wasting AI calls
+      if (closes.length < 27 && !posMap.has(symbol)) {
+        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Insufficient history: ${closes.length} bars (need ≥27 for MACD/RSI). Skipping AI call.`, executed: false });
         continue;
       }
 
