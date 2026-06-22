@@ -1175,7 +1175,7 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     let annVol = null, closes = [], rsi = null, macd = null, sma20 = null, sma50 = null;
     let lastPrice = +pos.current_price || +pos.avg_entry_price;
     try {
-      const qs = new URLSearchParams({ timeframe: '1Day', limit: '60', feed: 'iex' });
+      const qs = new URLSearchParams({ timeframe: '1Day', limit: '60' });
       const bd = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
       if (Array.isArray(bd.bars) && bd.bars.length) {
         closes = bd.bars.map(b => b.c);
@@ -1427,7 +1427,7 @@ async function atCycle() {
       // Fetch price bars + volumes for technicals
       let closes = [], volumes = [];
       try {
-        const qs = new URLSearchParams({ timeframe: '1Day', limit: '60', feed: 'iex' });
+        const qs = new URLSearchParams({ timeframe: '1Day', limit: '60' });
         const br = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?${qs}`);
         const bd = await br.json();
         if (Array.isArray(bd.bars) && bd.bars.length) {
@@ -1745,6 +1745,12 @@ app.post('/api/autotrader/config', (req, res) => {
   if (targetVolatility != null) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +targetVolatility));
   if (resetHalt) { AT.halted = false; AT.haltReason = ''; AT.sessionStartEquity = null; }
 
+  // Watchlist/AI-managed settings
+  const { aiManagedWatchlist, watchlistSize } = req.body;
+  if (typeof aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = aiManagedWatchlist;
+  if (watchlistSize != null && Number.isFinite(+watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(50, +watchlistSize));
+
+  saveAtState();
   atSchedule();
   res.json(atPublicState());
 });
