@@ -613,8 +613,8 @@ tr:hover td { background: var(--surface2); }
           <div style="margin-top:6px">Ultima selezione AI: <span id="at-ai-selected" style="color:var(--gold)">—</span></div>
         </div>
         <div class="field" style="margin-bottom:8px" id="at-watchlist-size-row">
-          <label>Quanti simboli analizzare per ciclo (3–20)</label>
-          <input type="number" id="at-watchlist-size" value="10" min="3" max="20" step="1">
+          <label>Quanti simboli analizzare per ciclo (3–50)</label>
+          <input type="number" id="at-watchlist-size" value="30" min="3" max="50" step="1">
         </div>
         <div class="field" style="margin-bottom:8px" id="at-watchlist-manual-row" style="display:none">
           <label>Watchlist manuale — simboli separati da virgola (max 50)</label>
@@ -2358,7 +2358,7 @@ function updateAutoTraderUI(data) {
   setVal('at-target-vol', data.targetVolatility != null ? Math.round(data.targetVolatility * 100) : null);
   setChk('at-allow-short', data.allowShort);
   setChk('at-ai-managed', data.aiManagedWatchlist !== false);
-  setVal('at-watchlist-size', data.watchlistSize || 10);
+  setVal('at-watchlist-size', data.watchlistSize || 30);
   if (Array.isArray(data.watchlist)) {
     const el = document.getElementById('at-watchlist');
     if (el) el.value = data.watchlist.join(', ');

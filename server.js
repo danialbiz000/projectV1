@@ -870,7 +870,7 @@ const AT = {
   allowShort: false,
   targetVolatility: 0.20,
   aiManagedWatchlist: true,   // Claude picks symbols each cycle from STOCK_UNIVERSE
-  watchlistSize: 10,          // how many symbols Claude picks per cycle
+  watchlistSize: 30,          // how many symbols Claude picks per cycle
   watchlist: [...AT_WATCHLIST_DEFAULT],
   aiSelectedWatchlist: [],    // what Claude picked last cycle
   log: [],
@@ -981,7 +981,7 @@ function loadAtState() {
     if (typeof cfg.allowShort === 'boolean') AT.allowShort = cfg.allowShort;
     if (Number.isFinite(+cfg.targetVolatility)) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +cfg.targetVolatility));
     if (typeof cfg.aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = cfg.aiManagedWatchlist;
-    if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(20, +cfg.watchlistSize));
+    if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(50, +cfg.watchlistSize));
     if (Array.isArray(cfg.watchlist) && cfg.watchlist.length) AT.watchlist = cfg.watchlist;
     AT.lastRunAt = state.lastRunAt || null;
     AT.nextRunAt = null;
