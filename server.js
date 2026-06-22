@@ -478,23 +478,26 @@ Values pe/pb/cr/fcf/div must be decimal numbers or null. analysis must be HTML s
 
 const AUTOTRADER_RESEARCH_PROMPT = `You are a quantitative trading engine. Analyze the provided market data and output ONLY a valid JSON object — no text, no markdown, no code fences.
 
-Schema: {"symbol":"","action":"BUY|SELL|SHORT|COVER|HOLD","confidence":0.0,"reasoning":"","suggestedNotional":0}
+Schema: {"symbol":"","action":"BUY|SELL|SHORT|COVER|HOLD|REPLACE","confidence":0.0,"reasoning":"","suggestedNotional":0,"replaceSymbol":""}
 
 Action definitions:
-- BUY: open a new long position (only valid when hasPosition is false and positionSide is none)
-- SELL: close an existing long position (only valid when positionSide is long)
-- SHORT: open a new short position (only valid when hasPosition is false and allowShort is true)
-- COVER: close an existing short position (only valid when positionSide is short)
+- BUY: open a new long position (only when hasPosition is false)
+- SELL: close an existing long position (only when positionSide is long)
+- SHORT: open a new short position (only when hasPosition is false and allowShort is true)
+- COVER: close an existing short position (only when positionSide is short)
 - HOLD: take no action
+- REPLACE: sector rotation — close replaceSymbol (weakest in sector) and open this symbol instead. Only when SECTOR ROTATION AVAILABLE is shown and the new setup is clearly superior.
 
 Rules:
 - confidence: 0.0–1.0. Use ≥0.85 only when multiple signals strongly align.
-- reasoning: 2-3 sentences combining technical + macro rationale. Be specific.
-- suggestedNotional: USD amount (0 for HOLD/SELL/COVER).
-- RSI interpretation: <30 oversold (bullish long bias), >70 overbought (bearish / short bias)
-- MACD: positive = bullish momentum, negative = bearish momentum
-- Volatility: high vol = smaller position, low vol = larger position (already handled by server)
-- ALWAYS integrate the macro context. Geopolitical or CB events override technicals.
+- reasoning: 2-3 sentences combining technical + macro + Black-Scholes rationale. Be specific.
+- suggestedNotional: USD amount ≤ maxBudgetForThisTrade shown in prompt. Use 0 for HOLD/SELL/COVER.
+- replaceSymbol: only required for REPLACE action, otherwise omit or use "".
+- RSI: <30 oversold (bullish bias), >70 overbought (bearish/short bias).
+- MACD: positive = bullish momentum, negative = bearish.
+- Black-Scholes: P(TP) vs P(SL) ratio guides conviction. Favor setups where P(TP) > 2× P(SL).
+- Diversification: prefer sectors not yet in portfolio. Accept concentration only with very high conviction.
+- ALWAYS integrate macro context. CB/geopolitical events override technicals.
 - Prefer HOLD over low-conviction trades. A missed opportunity is better than a forced loss.`;
 
 app.post('/api/chat', async (req, res) => {
@@ -785,9 +788,9 @@ const AT = {
   enabled: false,
   intervalMs: 30 * 60 * 1000,
   confidenceThreshold: 0.75,
-  maxPositions: 5,
+  maxPositions: 20,
   maxPositionPct: 15,
-  maxPositionsPerSector: 2,   // max open positions in same sector
+  maxPositionsPerSector: 3,   // soft guideline — AT can exceed via REPLACE action
   stopLossPct: 8,
   takeProfitPct: 30,
   drawdownLimit: 0.15,
@@ -1163,16 +1166,21 @@ async function atCycle() {
       const sector = getSector(symbol);
       const secExp = sectorExposure(openPositions);
       const sectorCount = secExp[sector] || 0;
-      const sectorBlocked = !hasPos && sectorCount >= AT.maxPositionsPerSector;
+      const sectorAtLimit = !hasPos && sectorCount >= AT.maxPositionsPerSector;
 
-      // Hard diversification check — skip BUY/SHORT if sector is full
-      if (sectorBlocked) {
-        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Sector limit: ${sector} already has ${sectorCount}/${AT.maxPositionsPerSector} positions`, executed: false });
-        continue;
-      }
+      // Positions in same sector — AI may choose to replace the weakest one
+      const sectorPositions = openPositions.filter(p => getSector(p.symbol) === sector && p.symbol !== symbol);
+      const weakestInSector = sectorPositions.length
+        ? sectorPositions.sort((a, b) => (+a.unrealized_plpc || 0) - (+b.unrealized_plpc || 0))[0]
+        : null;
 
       const sectorSummary = Object.entries(secExp).map(([s, n]) => `${s}:${n}`).join(', ') || 'none';
       const maxBudget = Math.min(equity * AT.maxPositionPct / 100, buyingPower * 0.95);
+
+      const replaceBlock = sectorAtLimit && weakestInSector ? `
+SECTOR ROTATION AVAILABLE: ${sector} is at soft limit (${sectorCount}/${AT.maxPositionsPerSector}).
+You may use action=REPLACE and replaceSymbol="${weakestInSector.symbol}" to close it (P&L: ${(+(weakestInSector.unrealized_plpc||0)*100).toFixed(1)}%) and open ${symbol} instead.
+Only do this if ${symbol} setup is clearly superior. Otherwise HOLD.` : '';
 
       const prompt = `MACRO CONTEXT:
 ${macroBrief}
@@ -1201,14 +1209,12 @@ positionSide: ${isLong ? 'long' : isShort ? 'short' : 'none'}
 ${hasPos ? `qty: ${pos.qty} | entry: $${pos.avg_entry_price} | unrealizedP&L: ${pos.unrealized_plpc != null ? (+(pos.unrealized_plpc) * 100).toFixed(2) + '%' : '?'}` : ''}
 
 PORTFOLIO DIVERSIFICATION:
-openPositions: ${openPositions.length}/${AT.maxPositions}
+openPositions: ${openPositions.length} (soft cap: ${AT.maxPositions})
 sectorExposure: ${sectorSummary}
-${sector} positions: ${sectorCount}/${AT.maxPositionsPerSector} (max per sector)
-maxBudgetForThisTrade: $${maxBudget.toFixed(0)} (${AT.maxPositionPct}% of equity)
-totalEquity: $${equity.toFixed(0)} | buyingPower: $${buyingPower.toFixed(0)}
-allowShort: ${AT.allowShort}
-
-DIVERSIFICATION RULES: Suggest suggestedNotional <= $${maxBudget.toFixed(0)}. Prefer sectors not yet represented in portfolio.`;
+${sector} positions: ${sectorCount} (soft guideline: ${AT.maxPositionsPerSector}/sector)
+maxBudgetForThisTrade: $${maxBudget.toFixed(0)} (${AT.maxPositionPct}% of $${equity.toFixed(0)} equity, vol-adjusted)
+buyingPower: $${buyingPower.toFixed(0)} | allowShort: ${AT.allowShort}
+${replaceBlock}`;
 
       let decision;
       try {
@@ -1227,7 +1233,7 @@ DIVERSIFICATION RULES: Suggest suggestedNotional <= $${maxBudget.toFixed(0)}. Pr
         continue;
       }
 
-      const { action, confidence, reasoning, suggestedNotional } = decision;
+      const { action, confidence, reasoning, suggestedNotional, replaceSymbol } = decision;
       const logEntry = { symbol, action, confidence, reasoning, suggestedNotional, executed: false };
 
       // Check if this exact action was already taken today
@@ -1236,6 +1242,28 @@ DIVERSIFICATION RULES: Suggest suggestedNotional <= $${maxBudget.toFixed(0)}. Pr
         atLog(logEntry);
         await new Promise(r => setTimeout(r, 500));
         continue;
+      }
+
+      // ── REPLACE (sector rotation) ────────────────────────────────────────────
+      // AI closes the weakest position in sector, then opens the new one
+      if (action === 'REPLACE' && confidence >= AT.confidenceThreshold && replaceSymbol) {
+        const replacePos = posMap.get(replaceSymbol);
+        if (replacePos && replacePos.side === 'long') {
+          try {
+            await alpacaFetch(`/v2/positions/${replaceSymbol}`, { method: 'DELETE' });
+            logEntry.executedAction = `REPLACE: closed ${replaceSymbol} (P&L: ${(+(replacePos.unrealized_plpc||0)*100).toFixed(1)}%), opening ${symbol}`;
+            markAutoTrade(replaceSymbol, 'SELL');
+            await sendTelegram(`🔄 <b>AutoTrader REPLACE</b> — chiuso <b>${replaceSymbol}</b> (P&L: ${(+(replacePos.unrealized_plpc||0)*100).toFixed(1)}%) per aprire <b>${symbol}</b>\n🧠 ${reasoning}`);
+            // Refresh snapshot before opening new position
+            try { ({ account, positions } = await refreshAccountSnapshot()); openPositions = Array.isArray(positions) ? positions : []; posMap = new Map(openPositions.map(p => [p.symbol, p])); buyingPower = +account.buying_power; } catch(_) {}
+            // Fall through to BUY logic below by re-mapping action
+            decision.action = 'BUY';
+          } catch(e) {
+            logEntry.reasoning = `REPLACE failed (close ${replaceSymbol}): ${e.message}`;
+            atLog(logEntry);
+            continue;
+          }
+        }
       }
 
       if (confidence >= AT.confidenceThreshold) {
