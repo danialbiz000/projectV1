@@ -2491,7 +2491,7 @@ async function runAutoTraderNow() {
 // ============================================================
 // INTRADAY CHARTS GRID
 // ============================================================
-const intradayCharts = {};
+const intradayCharts = {};  // symbol -> Chart instance
 let intradayRefreshTimer = null;
 
 async function refreshIntradayCharts() {
@@ -2504,41 +2504,44 @@ async function refreshIntradayCharts() {
     return;
   }
 
+  // Add a canvas for each position not yet present
   const symbols = positions.map(p => p.symbol);
   symbols.forEach(sym => {
-    if (!document.getElementById('intraday-canvas-' + sym)) {
+    if (!document.getElementById(`intraday-canvas-${sym}`)) {
       const div = document.createElement('div');
       div.className = 'card';
       div.style.padding = '14px';
-      div.id = 'intraday-card-' + sym;
-      div.innerHTML =
-        '<div style="display:flex;justify-content:space-between;align-items:center">' +
-          '<span style="font-weight:700;color:var(--gold)">' + sym + '</span>' +
-          '<span id="intraday-price-' + sym + '" style="font-size:0.9rem;font-weight:700">—</span>' +
-          '<span id="intraday-chg-' + sym + '" style="font-size:0.78rem;margin-left:6px">—</span>' +
-        '</div>' +
-        '<div class="intraday-chart-wrap"><canvas id="intraday-canvas-' + sym + '"></canvas></div>';
+      div.id = `intraday-card-${sym}`;
+      div.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-weight:700;color:var(--gold)">${sym}</span>
+          <span id="intraday-price-${sym}" style="font-size:0.9rem;font-weight:700">—</span>
+          <span id="intraday-chg-${sym}" style="font-size:0.78rem;margin-left:6px">—</span>
+        </div>
+        <div class="intraday-chart-wrap"><canvas id="intraday-canvas-${sym}"></canvas></div>`;
       grid.appendChild(div);
     }
   });
 
+  // Remove cards for closed positions
   Object.keys(intradayCharts).forEach(sym => {
     if (!symbols.includes(sym)) {
       intradayCharts[sym].destroy();
       delete intradayCharts[sym];
-      const el = document.getElementById('intraday-card-' + sym);
+      const el = document.getElementById(`intraday-card-${sym}`);
       if (el) el.remove();
     }
   });
 
+  // Fetch bars for each symbol
   const token = sessionStorage.getItem('nexus_token');
-  await Promise.all(symbols.map(async function(sym) {
+  await Promise.all(symbols.map(async sym => {
     try {
-      const res = await fetch('/api/autotrader/intraday/' + sym, { headers: { Authorization: 'Bearer ' + token } });
+      const res = await fetch(`/api/autotrader/intraday/${sym}`, { headers: { Authorization: 'Bearer ' + token } });
       const data = await res.json();
       if (!data.bars || !data.bars.length) return;
-      renderIntradayChart(sym, data.bars, positions.find(function(p){ return p.symbol === sym; }));
-    } catch(e) {}
+      renderIntradayChart(sym, data.bars, positions.find(p => p.symbol === sym));
+    } catch(_) {}
   }));
 
   const ts = document.getElementById('at-intraday-ts');
@@ -2546,31 +2549,47 @@ async function refreshIntradayCharts() {
 }
 
 function renderIntradayChart(sym, bars, pos) {
-  const canvas = document.getElementById('intraday-canvas-' + sym);
+  const canvas = document.getElementById(`intraday-canvas-${sym}`);
   if (!canvas) return;
-  const labels = bars.map(function(b) {
-    return new Date(b.t).toLocaleTimeString('it-IT', {hour:'2-digit',minute:'2-digit',timeZone:'America/New_York'});
+
+  const labels = bars.map(b => {
+    const d = new Date(b.t);
+    return d.toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit', timeZone:'America/New_York'});
   });
-  const prices = bars.map(function(b){ return b.c; });
+  const prices = bars.map(b => b.c);
   const last = prices[prices.length - 1];
   const first = prices[0];
-  const chgPct = (last - first) / first * 100;
+  const chgPct = ((last - first) / first * 100);
   const color = chgPct >= 0 ? '#2ecc71' : '#e74c3c';
 
-  const priceEl = document.getElementById('intraday-price-' + sym);
-  const chgEl = document.getElementById('intraday-chg-' + sym);
+  // Update price badge
+  const priceEl = document.getElementById(`intraday-price-${sym}`);
+  const chgEl = document.getElementById(`intraday-chg-${sym}`);
   if (priceEl) priceEl.textContent = '$' + last.toFixed(2);
   if (chgEl) { chgEl.textContent = (chgPct >= 0 ? '+' : '') + chgPct.toFixed(2) + '%'; chgEl.style.color = color; }
 
+  // Entry price line if position exists
   const entryPrice = pos ? +pos.avg_entry_price : null;
+
   const datasets = [{
-    label: sym, data: prices, borderColor: color, backgroundColor: color + '18',
-    borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.1,
+    label: sym,
+    data: prices,
+    borderColor: color,
+    backgroundColor: color + '18',
+    borderWidth: 1.5,
+    pointRadius: 0,
+    fill: true,
+    tension: 0.1,
   }];
   if (entryPrice) {
     datasets.push({
-      label: 'Entry', data: prices.map(function(){ return entryPrice; }),
-      borderColor: '#f39c12', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false,
+      label: 'Entry',
+      data: prices.map(() => entryPrice),
+      borderColor: '#f39c12',
+      borderWidth: 1,
+      borderDash: [4, 4],
+      pointRadius: 0,
+      fill: false,
     });
   }
 
@@ -2580,7 +2599,7 @@ function renderIntradayChart(sym, bars, pos) {
     intradayCharts[sym].data.datasets[0].borderColor = color;
     intradayCharts[sym].data.datasets[0].backgroundColor = color + '18';
     if (entryPrice && intradayCharts[sym].data.datasets[1]) {
-      intradayCharts[sym].data.datasets[1].data = prices.map(function(){ return entryPrice; });
+      intradayCharts[sym].data.datasets[1].data = prices.map(() => entryPrice);
     }
     intradayCharts[sym].update('none');
     return;
@@ -2590,14 +2609,19 @@ function renderIntradayChart(sym, bars, pos) {
     type: 'line',
     data: { labels, datasets },
     options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
       plugins: {
         legend: { display: false },
-        tooltip: { mode: 'index', intersect: false, callbacks: { label: function(ctx){ return '$' + ctx.parsed.y.toFixed(2); } } }
+        tooltip: {
+          mode: 'index', intersect: false,
+          callbacks: { label: ctx => `$${ctx.parsed.y.toFixed(2)}` }
+        }
       },
       scales: {
         x: { ticks: { color: '#888', font: { size: 9 }, maxTicksLimit: 8 }, grid: { color: '#ffffff08' } },
-        y: { ticks: { color: '#888', font: { size: 9 }, callback: function(v){ return '$' + v.toFixed(0); } }, grid: { color: '#ffffff08' } }
+        y: { ticks: { color: '#888', font: { size: 9 }, callback: v => '$' + v.toFixed(0) }, grid: { color: '#ffffff08' } }
       }
     }
   });
@@ -2605,7 +2629,8 @@ function renderIntradayChart(sym, bars, pos) {
 
 function startIntradayAutoRefresh() {
   if (intradayRefreshTimer) clearInterval(intradayRefreshTimer);
-  intradayRefreshTimer = setInterval(function() {
+  intradayRefreshTimer = setInterval(() => {
+    // Only refresh during market hours (roughly 09:00–16:30 ET = 13:00–20:30 UTC)
     const now = new Date();
     const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
     if (utcH >= 13.0 && utcH <= 20.5) refreshIntradayCharts();
