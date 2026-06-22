@@ -294,6 +294,7 @@ tr:hover td { background: var(--surface2); }
 
 /* Realtime chart */
 .chart-rt { position: relative; height: 240px; margin-top: 16px; }
+.intraday-chart-wrap { position:relative; height:180px; margin-top:8px; }
 .price-badge { display: inline-flex; align-items: center; gap: 8px; font-size: 1.4rem; font-weight: 700; }
 .price-change-pos { color: var(--green); font-size: 0.88rem; font-weight: 600; }
 .price-change-neg { color: var(--red); font-size: 0.88rem; font-weight: 600; }
@@ -658,6 +659,20 @@ tr:hover td { background: var(--surface2); }
             <thead><tr><th>Ora</th><th>Symbol</th><th>Azione</th><th>Conf.</th><th>Ordine</th><th>Reasoning</th></tr></thead>
             <tbody id="at-history-tbody"><tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:24px">Nessun trade automatico registrato oggi</td></tr></tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Intraday Charts -->
+      <div class="card" style="margin-top:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div class="card-title" style="margin-bottom:0">📈 Intraday — Posizioni Aperte (dalla 15:00)</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="at-intraday-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
+            <button class="btn btn-secondary btn-sm" onclick="refreshIntradayCharts()">↺ Aggiorna</button>
+          </div>
+        </div>
+        <div id="at-intraday-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
+          <div style="color:var(--text-muted);font-size:0.82rem;padding:24px;text-align:center">Nessuna posizione aperta</div>
         </div>
       </div>
     </section>
@@ -1227,7 +1242,7 @@ function connectWS() {
     try { data = JSON.parse(e.data); } catch(_) { return; }
     if (data.type === 'quote') { livePrices[data.symbol] = data.price; updatePriceDisplays(data.symbol, data.price); }
     if (data.type === 'account') updateAccountKPIs(data.account);
-    if (data.type === 'positions') updatePositionsTable(data.positions);
+    if (data.type === 'positions') { updatePositionsTable(data.positions); refreshIntradayCharts(); }
     if (data.type === 'trade_update') handleTradeUpdate(data.order);
     if (data.type === 'autotrader_log') prependAtLogEntry(data.entry);
     if (data.type === 'autotrader_trade') showToast(`🤖 AutoTrader: ${data.action} ${data.symbol}${data.notional ? ' $'+data.notional : data.qty ? ' '+data.qty+' shares' : ''}`, 'success');
@@ -2474,6 +2489,130 @@ async function runAutoTraderNow() {
 }
 
 // ============================================================
+// INTRADAY CHARTS GRID
+// ============================================================
+const intradayCharts = {};
+let intradayRefreshTimer = null;
+
+async function refreshIntradayCharts() {
+  const positions = currentPositions || [];
+  const grid = document.getElementById('at-intraday-grid');
+  if (!grid) return;
+
+  if (!positions.length) {
+    grid.innerHTML = '<div style="color:var(--text-muted);font-size:0.82rem;padding:24px;text-align:center">Nessuna posizione aperta</div>';
+    return;
+  }
+
+  const symbols = positions.map(p => p.symbol);
+  symbols.forEach(sym => {
+    if (!document.getElementById('intraday-canvas-' + sym)) {
+      const div = document.createElement('div');
+      div.className = 'card';
+      div.style.padding = '14px';
+      div.id = 'intraday-card-' + sym;
+      div.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<span style="font-weight:700;color:var(--gold)">' + sym + '</span>' +
+          '<span id="intraday-price-' + sym + '" style="font-size:0.9rem;font-weight:700">—</span>' +
+          '<span id="intraday-chg-' + sym + '" style="font-size:0.78rem;margin-left:6px">—</span>' +
+        '</div>' +
+        '<div class="intraday-chart-wrap"><canvas id="intraday-canvas-' + sym + '"></canvas></div>';
+      grid.appendChild(div);
+    }
+  });
+
+  Object.keys(intradayCharts).forEach(sym => {
+    if (!symbols.includes(sym)) {
+      intradayCharts[sym].destroy();
+      delete intradayCharts[sym];
+      const el = document.getElementById('intraday-card-' + sym);
+      if (el) el.remove();
+    }
+  });
+
+  const token = sessionStorage.getItem('nexus_token');
+  await Promise.all(symbols.map(async function(sym) {
+    try {
+      const res = await fetch('/api/autotrader/intraday/' + sym, { headers: { Authorization: 'Bearer ' + token } });
+      const data = await res.json();
+      if (!data.bars || !data.bars.length) return;
+      renderIntradayChart(sym, data.bars, positions.find(function(p){ return p.symbol === sym; }));
+    } catch(e) {}
+  }));
+
+  const ts = document.getElementById('at-intraday-ts');
+  if (ts) ts.textContent = 'Aggiornato ' + new Date().toLocaleTimeString('it-IT', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+function renderIntradayChart(sym, bars, pos) {
+  const canvas = document.getElementById('intraday-canvas-' + sym);
+  if (!canvas) return;
+  const labels = bars.map(function(b) {
+    return new Date(b.t).toLocaleTimeString('it-IT', {hour:'2-digit',minute:'2-digit',timeZone:'America/New_York'});
+  });
+  const prices = bars.map(function(b){ return b.c; });
+  const last = prices[prices.length - 1];
+  const first = prices[0];
+  const chgPct = (last - first) / first * 100;
+  const color = chgPct >= 0 ? '#2ecc71' : '#e74c3c';
+
+  const priceEl = document.getElementById('intraday-price-' + sym);
+  const chgEl = document.getElementById('intraday-chg-' + sym);
+  if (priceEl) priceEl.textContent = '$' + last.toFixed(2);
+  if (chgEl) { chgEl.textContent = (chgPct >= 0 ? '+' : '') + chgPct.toFixed(2) + '%'; chgEl.style.color = color; }
+
+  const entryPrice = pos ? +pos.avg_entry_price : null;
+  const datasets = [{
+    label: sym, data: prices, borderColor: color, backgroundColor: color + '18',
+    borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.1,
+  }];
+  if (entryPrice) {
+    datasets.push({
+      label: 'Entry', data: prices.map(function(){ return entryPrice; }),
+      borderColor: '#f39c12', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false,
+    });
+  }
+
+  if (intradayCharts[sym]) {
+    intradayCharts[sym].data.labels = labels;
+    intradayCharts[sym].data.datasets[0].data = prices;
+    intradayCharts[sym].data.datasets[0].borderColor = color;
+    intradayCharts[sym].data.datasets[0].backgroundColor = color + '18';
+    if (entryPrice && intradayCharts[sym].data.datasets[1]) {
+      intradayCharts[sym].data.datasets[1].data = prices.map(function(){ return entryPrice; });
+    }
+    intradayCharts[sym].update('none');
+    return;
+  }
+
+  intradayCharts[sym] = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { mode: 'index', intersect: false, callbacks: { label: function(ctx){ return '$' + ctx.parsed.y.toFixed(2); } } }
+      },
+      scales: {
+        x: { ticks: { color: '#888', font: { size: 9 }, maxTicksLimit: 8 }, grid: { color: '#ffffff08' } },
+        y: { ticks: { color: '#888', font: { size: 9 }, callback: function(v){ return '$' + v.toFixed(0); } }, grid: { color: '#ffffff08' } }
+      }
+    }
+  });
+}
+
+function startIntradayAutoRefresh() {
+  if (intradayRefreshTimer) clearInterval(intradayRefreshTimer);
+  intradayRefreshTimer = setInterval(function() {
+    const now = new Date();
+    const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
+    if (utcH >= 13.0 && utcH <= 20.5) refreshIntradayCharts();
+  }, 30000);
+}
+
+// ============================================================
 // POSITION CANDLESTICK CHART
 // ============================================================
 async function openPosChart(symbol) {
@@ -2611,6 +2750,7 @@ async function init() {
   } catch(_) {}
   setInterval(initHistoryChart, 60000);
   loadAutoTraderStatus();
+  refreshIntradayCharts(); startIntradayAutoRefresh();
 }
 
 // Auto-init if already unlocked (session exists)

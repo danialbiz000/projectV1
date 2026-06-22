@@ -1557,6 +1557,23 @@ app.get('/api/autotrader/watchlist', (req, res) => {
   res.json({ watchlist: AT.watchlist });
 });
 
+app.get('/api/autotrader/intraday/:symbol', requireAuth, async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  try {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const start = `${dateStr}T13:30:00Z`; // 09:30 ET = 13:30 UTC
+    const qs = new URLSearchParams({ timeframe: '1Min', start, limit: '400', feed: 'iex' });
+    const r = await fetch(`${ALPACA_DATA_URL}/v2/stocks/${encodeURIComponent(symbol)}/bars?${qs}`, {
+      headers: alpacaHeaders(),
+    });
+    const data = await r.json();
+    res.json({ symbol, bars: Array.isArray(data.bars) ? data.bars : [] });
+  } catch (e) {
+    res.json({ symbol, bars: [] });
+  }
+});
+
 // PUT /api/autotrader/watchlist  — body: { symbols: ['AAPL', 'SPY', ...] }
 app.put('/api/autotrader/watchlist', (req, res) => {
   const { symbols } = req.body;
