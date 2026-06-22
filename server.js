@@ -298,6 +298,35 @@ function validateOrderBody(raw) {
     }
   }
 
+  }
+
+  if (body.client_order_id) {
+    const clientId = String(body.client_order_id).trim();
+    if (!/^[A-Za-z0-9_-]{1,48}$/.test(clientId)) throw httpError(400, 'Invalid client_order_id.');
+    order.client_order_id = clientId;
+  }
+
+  // Bracket order support
+  if (body.order_class) {
+    const oc = String(body.order_class).toLowerCase();
+    if (!['simple', 'bracket', 'oco', 'oto'].includes(oc)) throw httpError(400, 'Invalid order_class.');
+    order.order_class = oc;
+  }
+  if (body.take_profit && typeof body.take_profit === 'object') {
+    const tp = body.take_profit;
+    const tpPrice = parsePositiveNumber(tp.limit_price, 'take_profit.limit_price');
+    if (tpPrice) order.take_profit = { limit_price: String(tpPrice.toFixed(2)) };
+  }
+  if (body.stop_loss && typeof body.stop_loss === 'object') {
+    const sl = body.stop_loss;
+    const slStop = parsePositiveNumber(sl.stop_price, 'stop_loss.stop_price');
+    const slLimit = parsePositiveNumber(sl.limit_price, 'stop_loss.limit_price');
+    if (slStop) {
+      order.stop_loss = { stop_price: String(slStop.toFixed(2)) };
+      if (slLimit) order.stop_loss.limit_price = String(slLimit.toFixed(2));
+    }
+  }
+
   return order;
 }
 
@@ -392,6 +421,13 @@ app.get('/api/alpaca/assets/:symbol', async (req, res) => {
 
 app.get('/api/alpaca/bars/:symbol', async (req, res) => {
   try {
+    const sym = req.params.symbol;
+    const qs = new URLSearchParams({ timeframe: '1Day', limit: '30', feed: 'iex' });
+    const upstream = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(sym)}/bars?${qs}`);
+    const bd = await upstream.json();
+    // Normalise to multi-symbol format expected by frontend: { bars: { SYM: [...] } }
+    const bars = Array.isArray(bd.bars) ? bd.bars : [];
+    res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
     const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Day', limit: '30' });
     const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
     res.status(upstream.status).json(await upstream.json());
@@ -400,6 +436,14 @@ app.get('/api/alpaca/bars/:symbol', async (req, res) => {
 
 app.get('/api/alpaca/bars-intraday/:symbol', async (req, res) => {
   try {
+    const sym = req.params.symbol;
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
+    const qs = new URLSearchParams({ timeframe: '5Min', start: start.toISOString(), limit: '100', feed: 'iex' });
+    const upstream = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(sym)}/bars?${qs}`);
+    const bd = await upstream.json();
+    const bars = Array.isArray(bd.bars) ? bd.bars : [];
+    res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
     const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '5Min', start: start.toISOString(), limit: '100' });
@@ -410,6 +454,14 @@ app.get('/api/alpaca/bars-intraday/:symbol', async (req, res) => {
 
 app.get('/api/alpaca/bars-1min/:symbol', async (req, res) => {
   try {
+    const sym = req.params.symbol;
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
+    const qs = new URLSearchParams({ timeframe: '1Min', start: start.toISOString(), limit: '400', feed: 'iex' });
+    const upstream = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(sym)}/bars?${qs}`);
+    const bd = await upstream.json();
+    const bars = Array.isArray(bd.bars) ? bd.bars : [];
+    res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
     const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Min', start: start.toISOString(), limit: '400' });
@@ -467,6 +519,50 @@ Schema: { "ticker":"", "name":"", "country":"", "sector":"", "isFX":false, "rati
 Values pe/pb/cr/fcf/div must be decimal numbers or null. analysis must be HTML string on one logical line.`;
 
 const AUTOTRADER_RESEARCH_PROMPT = `You are a quantitative trading engine. Analyze the provided market data and output ONLY a valid JSON object — no text, no markdown, no code fences.
+
+Schema: {"symbol":"","action":"BUY|SELL|SHORT|COVER|HOLD|REPLACE","confidence":0.0,"reasoning":"","suggestedNotional":0,"replaceSymbol":""}
+
+Action definitions:
+- BUY: open a new long position (only when hasPosition is false)
+- SELL: close an existing long position (only when positionSide is long)
+- SHORT: open a new short position (only when hasPosition is false and allowShort is true)
+- COVER: close an existing short position (only when positionSide is short)
+- HOLD: take no action
+- REPLACE: sector rotation — close replaceSymbol (weakest in sector) and open this symbol instead. Only when SECTOR ROTATION AVAILABLE is shown and the new setup is clearly superior.
+
+Rules:
+- confidence: 0.0–1.0. Use ≥0.85 only when multiple signals strongly align.
+- reasoning: 2-3 sentences combining technical + macro + Black-Scholes rationale. Be specific.
+- suggestedNotional: USD amount ≤ maxBudgetForThisTrade shown in prompt. Use 0 for HOLD/SELL/COVER.
+- replaceSymbol: only required for REPLACE action, otherwise omit or use "".
+- RSI: <30 oversold (bullish bias), >70 overbought (bearish/short bias).
+- MACD: positive = bullish momentum, negative = bearish.
+- Black-Scholes: P(TP) vs P(SL) ratio guides conviction. Favor setups where P(TP) > 2× P(SL).
+- Diversification: prefer sectors not yet in portfolio. Accept concentration only with very high conviction.
+- ALWAYS integrate macro context. CB/geopolitical events override technicals.
+- Prefer HOLD over low-conviction trades. A missed opportunity is better than a forced loss.`;
+
+const POSITION_REVIEW_PROMPT = `You are a risk manager reviewing a losing position. Given technicals, volatility, and macro context, decide what to do.
+
+For LONG positions (price fell):
+- HOLD: vol-driven dip, recovery likely — keep position
+- CLOSE: trend broken, thesis invalid — sell to market
+- ADD: high-conviction dip at technical support — buy more shares (averaging down)
+
+For SHORT positions (price rose against us):
+- HOLD: temporary spike, short thesis intact — keep short
+- CLOSE: uptrend is breaking out, cover the short immediately
+- ADD: price at resistance, strong conviction for reversal — add more short
+
+Output ONLY valid JSON, no markdown:
+{"action":"HOLD"|"CLOSE"|"ADD","confidence":0.0-1.0,"reasoning":"<2 sentences max>","addNotional":number|null}
+
+Rules:
+- ADD requires confidence ≥ 0.82, and for longs: price near SMA20 or SMA50 support, RSI oversold, high annVol (≥ 40%)
+- ADD for shorts requires: price at clear resistance, RSI overbought (>70), negative MACD
+- CLOSE (or COVER for shorts) if: clear trend break, RSI still moving against position, P&L < -2× adaptive SL
+- HOLD is the default for high-vol stocks with temporary moves against position
+- addNotional: max $5000, only for ADD action, null otherwise`;
 
 Schema: {"symbol":"","action":"BUY|SELL|SHORT|COVER|HOLD","confidence":0.0,"reasoning":"","suggestedNotional":0}
 
@@ -642,6 +738,250 @@ function computeAnnualizedVol(closes) {
   return Math.sqrt(variance * 252);
 }
 
+// Standard normal CDF via Abramowitz & Stegun approximation (max error 7.5e-8)
+function normalCDF(x) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const pdf = Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+  const cdf = 1 - pdf * poly;
+  return x >= 0 ? cdf : 1 - cdf;
+}
+
+// Adaptive bracket orders scaled to 60-day expected move
+// TP = 1.5× expected move, SL = 0.55× expected move
+function computeAdaptiveBrackets(annVol, defaultTP = AT.takeProfitPct, defaultSL = AT.stopLossPct) {
+  if (!annVol || annVol <= 0) return { tpPct: defaultTP, slPct: defaultSL, adaptive: false };
+  const expectedMove60d = annVol * Math.sqrt(60 / 252) * 100; // in %
+  const tpPct = Math.min(80, Math.max(8,  Math.round(expectedMove60d * 1.5)));
+  const slPct = Math.min(25, Math.max(3,  Math.round(expectedMove60d * 0.55)));
+  return { tpPct, slPct, adaptive: true };
+}
+
+// Black-Scholes probability metrics — uses adaptive brackets if provided
+function computeBlackScholes(S, sigma, tpPct, slPct, T = 60 / 252, r = 0.043) {
+  if (!S || !sigma || sigma <= 0 || S <= 0) return null;
+  const sqrtT = Math.sqrt(T);
+  // ATM (K=S): probability stock ends above current price
+  const d2_atm = (r - 0.5 * sigma * sigma) * T / (sigma * sqrtT);
+  const probAbove = normalCDF(d2_atm);          // P(S_T > S_0)
+
+  // Probability of reaching take-profit target
+  const K_tp = S * (1 + tpPct / 100);
+  const d2_tp = (Math.log(S / K_tp) + (r - 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+  const probTP = normalCDF(d2_tp);              // P(S_T > TP)
+
+  // Probability of hitting stop-loss
+  const K_sl = S * (1 - slPct / 100);
+  const d2_sl = (Math.log(S / K_sl) + (r - 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+  const probSL = 1 - normalCDF(d2_sl);         // P(S_T < SL)
+
+  // Call delta (ATM) — directional momentum proxy
+  const d1_atm = (r + 0.5 * sigma * sigma) * T / (sigma * sqrtT);
+  const callDelta = normalCDF(d1_atm);
+
+  return {
+    probAbove: Math.round(probAbove * 100),     // % P(price > current in 60d)
+    probTP:    Math.round(probTP * 100),         // % P(reach take-profit)
+    probSL:    Math.round(probSL * 100),         // % P(hit stop-loss)
+    callDelta: Math.round(callDelta * 100) / 100,
+  };
+}
+
+// ─── Telegram Notifications ───────────────────────────────────────────────────
+async function sendTelegram(text) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
+    });
+  } catch (_) {}
+}
+
+// ─── Adaptive Position Sizing ─────────────────────────────────────────────────
+function adaptiveNotional(equity, annualizedVol, targetVol, maxPositionPct) {
+  const maxNotional = equity * maxPositionPct / 100;
+  if (!annualizedVol || annualizedVol <= 0) return maxNotional;
+  // Scale position size inversely with volatility, capped at 1.5× base
+  const scaleFactor = Math.min(targetVol / annualizedVol, 1.5);
+  return Math.min(maxNotional * scaleFactor, equity * 0.30); // hard cap at 30% of equity
+}
+
+// ─── AutoTrader Engine ────────────────────────────────────────────────────────
+
+// Universe of US-listed stocks Claude can pick from when aiManagedWatchlist is enabled.
+// Covers mega-cap anchors + mid/small-cap growth. Supplemented each cycle by live market movers.
+const STOCK_UNIVERSE = [
+  // Mega-cap tech
+  'AAPL','MSFT','NVDA','GOOGL','AMZN','META','TSLA','AVGO','ORCL','AMD',
+  // Financials (large)
+  'JPM','BAC','GS','MS','BLK','AXP','V','MA','PYPL','SCHW',
+  // Healthcare & pharma (large)
+  'UNH','JNJ','LLY','PFE','ABBV','MRK','CVS','AMGN','GILD','ISRG',
+  // Energy & industrials
+  'XOM','CVX','COP','LMT','RTX','CAT','HON','GE','BA','UPS',
+  // Consumer & retail
+  'WMT','COST','HD','TGT','NKE','SBUX','MCD','PG','KO','PEP',
+  // ETFs for broad exposure
+  'SPY','QQQ','IWM','XLK','XLF','XLE','XLV','XLI','GLD','TLT',
+  // Growth / high-momentum (large)
+  'PLTR','COIN','CRWD','NET','DDOG','SNOW','ZS','MSTR','RBLX','HOOD',
+  // ── Mid-cap growth ──────────────────────────────────────────────────────────
+  // AI & Quantum computing (liquid, Alpaca IEX-covered)
+  'IONQ','RGTI','QUBT','SOUN','AI','PATH',
+  // Fintech & neobanks
+  'SQ','AFRM','SOFI','UPST','NU',
+  // SaaS & software
+  'SHOP','HUBS','BILL','GTLB','MNDY','BRZE','APP',
+  // Biotech & health innovation
+  'MRNA','BNTX','RXRX','BEAM','EDIT','NTLA','HIMS','TDOC',
+  // Clean energy & EV
+  'FSLR','ENPH','PLUG','RIVN','LCID','QS','BE','RUN','CHPT',
+  // Space & defense innovation
+  'RKLB','ASTS','PL',
+  // Retail & consumer tech
+  'ETSY','W','CHWY','CPNG','GRAB',
+  // Semiconductors (mid)
+  'SMCI','AMBA','CRUS','LSCC',
+  // Media & streaming
+  'NFLX','DIS','PARA','WBD','SPOT','ROKU',
+];
+
+// Sector mapping for diversification — 'Other' is assigned to dynamic movers not in this map
+const SYMBOL_SECTOR = {
+  // Tech (large)
+  AAPL:'Tech', MSFT:'Tech', NVDA:'Tech', GOOGL:'Tech', AMZN:'Tech',
+  META:'Tech', TSLA:'Tech', AVGO:'Tech', ORCL:'Tech', AMD:'Tech', XLK:'Tech',
+  // Financials
+  JPM:'Financials', BAC:'Financials', GS:'Financials', MS:'Financials',
+  BLK:'Financials', AXP:'Financials', V:'Financials', MA:'Financials',
+  PYPL:'Financials', SCHW:'Financials', XLF:'Financials',
+  SQ:'Fintech', AFRM:'Fintech', SOFI:'Fintech', UPST:'Fintech',
+  NU:'Fintech', OPEN:'Fintech', RELY:'Fintech', DAVE:'Fintech',
+  // Healthcare
+  UNH:'Healthcare', JNJ:'Healthcare', LLY:'Healthcare', PFE:'Healthcare',
+  ABBV:'Healthcare', MRK:'Healthcare', CVS:'Healthcare', AMGN:'Healthcare',
+  GILD:'Healthcare', ISRG:'Healthcare', XLV:'Healthcare',
+  MRNA:'Biotech', BNTX:'Biotech', RXRX:'Biotech', BEAM:'Biotech',
+  EDIT:'Biotech', NTLA:'Biotech', HIMS:'Biotech', TDOC:'Biotech', ACMR:'Biotech',
+  // Energy
+  XOM:'Energy', CVX:'Energy', COP:'Energy', XLE:'Energy',
+  FSLR:'CleanEnergy', ENPH:'CleanEnergy', PLUG:'CleanEnergy',
+  BE:'CleanEnergy', RUN:'CleanEnergy', CHPT:'CleanEnergy',
+  // EV
+  RIVN:'EV', LCID:'EV', QS:'EV',
+  // Industrials & Defense
+  LMT:'Industrials', RTX:'Industrials', CAT:'Industrials', HON:'Industrials',
+  GE:'Industrials', BA:'Industrials', UPS:'Industrials', XLI:'Industrials',
+  // Space & Aerospace
+  RKLB:'Space', LUNR:'Space', PL:'Space', ASTS:'Space',
+  RDW:'Space', JOBY:'Space', ACHR:'Space', LILM:'Space',
+  // Consumer
+  WMT:'Consumer', COST:'Consumer', HD:'Consumer', TGT:'Consumer',
+  NKE:'Consumer', SBUX:'Consumer', MCD:'Consumer', PG:'Consumer',
+  KO:'Consumer', PEP:'Consumer',
+  ETSY:'Consumer', W:'Consumer', CHWY:'Consumer', WISH:'Consumer',
+  CPNG:'Consumer', GRAB:'Consumer',
+  // ETF
+  SPY:'ETF', QQQ:'ETF', IWM:'ETF',
+  // Bonds & Commodities
+  GLD:'Commodities', TLT:'Bonds',
+  // Growth / Speculative
+  PLTR:'Growth', COIN:'Growth', CRWD:'Growth', NET:'Growth',
+  DDOG:'Growth', SNOW:'Growth', ZS:'Growth', MSTR:'Growth',
+  RBLX:'Growth', HOOD:'Growth',
+  // AI & Quantum
+  IONQ:'AIQuantum', RGTI:'AIQuantum', QUBT:'AIQuantum', SOUN:'AIQuantum',
+  AI:'AIQuantum', PATH:'AIQuantum', BBAI:'AIQuantum', ARQQ:'AIQuantum',
+  // SaaS
+  SHOP:'SaaS', HUBS:'SaaS', BILL:'SaaS', GTLB:'SaaS',
+  MNDY:'SaaS', BRZE:'SaaS', DOMO:'SaaS', APP:'SaaS',
+  // Semiconductors (mid)
+  SMCI:'Semiconductors', WOLF:'Semiconductors', AMBA:'Semiconductors',
+  FORM:'Semiconductors', CRUS:'Semiconductors', LSCC:'Semiconductors',
+  // Media & streaming
+  NFLX:'Media', DIS:'Media', PARA:'Media', WBD:'Media', SPOT:'Media', ROKU:'Media',
+};
+
+function getSector(symbol) { return SYMBOL_SECTOR[symbol] || 'Other'; }
+
+// Returns a map of sector -> count of open positions in that sector
+function sectorExposure(openPositions) {
+  const map = {};
+  for (const p of openPositions) {
+    const s = getSector(p.symbol);
+    map[s] = (map[s] || 0) + 1;
+  }
+  return map;
+}
+
+const AT_WATCHLIST_DEFAULT = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'AMZN', 'GOOGL', 'JPM', 'XOM'];
+
+const AT = {
+  enabled: false,
+  intervalMs: 30 * 60 * 1000,
+  confidenceThreshold: 0.75,
+  maxPositions: 20,
+  maxPositionPct: 15,
+  maxPositionsPerSector: 3,   // soft guideline — AT can exceed via REPLACE action
+  stopLossPct: 8,
+  takeProfitPct: 30,
+  drawdownLimit: 0.15,
+  allowShort: false,
+  targetVolatility: 0.20,
+  aiManagedWatchlist: true,   // Claude picks symbols each cycle from STOCK_UNIVERSE
+  watchlistSize: 30,          // how many symbols Claude picks per cycle
+  watchlist: [...AT_WATCHLIST_DEFAULT],
+  aiSelectedWatchlist: [],    // what Claude picked last cycle
+  log: [],
+  timer: null,
+  lastRunAt: null,
+  nextRunAt: null,
+  todayKey: '',
+  // Map<symbol, string[]> — tracks which actions were taken today per symbol
+  todayTrades: new Map(),
+  dailyTradeHistory: {},
+  // Persistent across days: tracks ADD count and last review date per symbol
+  addHistory: {},       // { [symbol]: addCount }
+  lastReviewDate: {},   // { [symbol]: 'YYYY-MM-DD' }
+  sessionStartEquity: null,
+  halted: false,
+  haltReason: '',
+  running: false,
+  lastMacroBrief: '',
+  lastMacroTs: null,
+};
+
+function ensureAtDayState() {
+  const key = easternDateKey();
+  if (AT.todayKey !== key) {
+    AT.todayKey = key;
+    AT.todayTrades = new Map();
+  }
+  if (!AT.dailyTradeHistory[AT.todayKey]) AT.dailyTradeHistory[AT.todayKey] = [];
+}
+
+function countTodayTrades() {
+  let count = 0;
+  for (const actions of AT.todayTrades.values()) count += actions.length;
+  return count;
+}
+
+function hasTradedToday(symbol, action) {
+  return (AT.todayTrades.get(symbol) || []).includes(action);
+}
+
+function markAutoTrade(symbol, action) {
+  ensureAtDayState();
+  const actions = AT.todayTrades.get(symbol) || [];
+  actions.push(action);
+  AT.todayTrades.set(symbol, actions);
+  saveAtState();
+}
+
+function saveAtState() {
+  try {
 // ─── Telegram Notifications ───────────────────────────────────────────────────
 async function sendTelegram(text) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
@@ -736,17 +1076,22 @@ function saveAtState() {
         confidenceThreshold: AT.confidenceThreshold,
         maxPositions: AT.maxPositions,
         maxPositionPct: AT.maxPositionPct,
+        maxPositionsPerSector: AT.maxPositionsPerSector,
         stopLossPct: AT.stopLossPct,
         takeProfitPct: AT.takeProfitPct,
         drawdownLimit: AT.drawdownLimit,
         allowShort: AT.allowShort,
         targetVolatility: AT.targetVolatility,
+        aiManagedWatchlist: AT.aiManagedWatchlist,
+        watchlistSize: AT.watchlistSize,
         watchlist: AT.watchlist,
       },
       lastRunAt: AT.lastRunAt,
       todayKey: AT.todayKey,
       todayTrades: todayTradesObj,
       dailyTradeHistory: AT.dailyTradeHistory,
+      addHistory: AT.addHistory,
+      lastReviewDate: AT.lastReviewDate,
       sessionStartEquity: AT.sessionStartEquity,
       halted: AT.halted,
       haltReason: AT.haltReason,
@@ -777,6 +1122,8 @@ function loadAtState() {
     if (Number.isFinite(+cfg.drawdownLimit)) AT.drawdownLimit = Math.max(0.02, Math.min(0.50, +cfg.drawdownLimit));
     if (typeof cfg.allowShort === 'boolean') AT.allowShort = cfg.allowShort;
     if (Number.isFinite(+cfg.targetVolatility)) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +cfg.targetVolatility));
+    if (typeof cfg.aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = cfg.aiManagedWatchlist;
+    if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(50, +cfg.watchlistSize));
     if (Array.isArray(cfg.watchlist) && cfg.watchlist.length) AT.watchlist = cfg.watchlist;
     AT.lastRunAt = state.lastRunAt || null;
     AT.nextRunAt = null;
@@ -788,6 +1135,8 @@ function loadAtState() {
       else if (typeof val === 'number') AT.todayTrades.set(sym, ['BUY']); // migration
     }
     AT.dailyTradeHistory = state.dailyTradeHistory || {};
+    AT.addHistory = state.addHistory || {};
+    AT.lastReviewDate = state.lastReviewDate || {};
     AT.sessionStartEquity = state.sessionStartEquity || null;
     AT.halted = !!state.halted;
     AT.haltReason = state.haltReason || '';
@@ -827,12 +1176,16 @@ function atPublicState() {
     confidenceThreshold: AT.confidenceThreshold,
     maxPositions: AT.maxPositions,
     maxPositionPct: AT.maxPositionPct,
+        maxPositionsPerSector: AT.maxPositionsPerSector,
     stopLossPct: AT.stopLossPct,
     takeProfitPct: AT.takeProfitPct,
     drawdownLimit: AT.drawdownLimit,
     allowShort: AT.allowShort,
     targetVolatility: AT.targetVolatility,
     watchlist: AT.watchlist,
+    aiManagedWatchlist: AT.aiManagedWatchlist,
+    watchlistSize: AT.watchlistSize,
+    aiSelectedWatchlist: AT.aiSelectedWatchlist,
     lastRunAt: AT.lastRunAt,
     nextRunAt: AT.nextRunAt,
     halted: AT.halted,
@@ -862,6 +1215,20 @@ async function fetchMacroContext(anthropicKey) {
   const macroPrompt = `Today: ${dateStr}
 Live FX rates: ${fxStr}
 
+Return a JSON object (no markdown, no explanation) with exactly these keys:
+{
+  "regime": "RISK-ON" | "RISK-OFF" | "NEUTRAL",
+  "regime_reason": "one sentence why",
+  "equity": "US/EU/Asia equity sentiment in 1-2 sentences",
+  "central_banks": "Fed/ECB/BoJ/PBoC policy direction in 1-2 sentences",
+  "yields": "US 2Y and 10Y levels, curve shape, credit spreads in 1 sentence",
+  "commodities": "WTI, Gold, key commodity moves in 1 sentence",
+  "geopolitical": "top 2-3 risks, specific countries/events in 1-2 sentences",
+  "sectors": "which sectors seeing inflows/outflows and why in 1 sentence",
+  "events": "critical macro events next 48-72h (FOMC, CPI, NFP, earnings) in 1 sentence"
+}`;
+
+  let brief = JSON.stringify({ regime: 'NEUTRAL', regime_reason: 'No data.', equity: fxStr, central_banks: '', yields: '', commodities: '', geopolitical: '', sectors: '', events: '' });
 Provide a detailed macro investment brief covering ALL of the following:
 1. Global equity sentiment (US, EU, Asia) — current risk-on/risk-off regime, key index momentum
 2. Central banks: Fed (rate path, dot plot, recent statements), ECB, BoJ, PBoC — explicit policy direction
@@ -882,11 +1249,624 @@ Be specific and data-oriented. Prose format, no headers or bullets. Max 10 sente
       body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 800, messages: [{ role: 'user', content: macroPrompt }] }),
     });
     const d = await res.json();
+    let raw = (d.content?.[0]?.text || '').trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+    JSON.parse(raw); // validate — throws if invalid
+    brief = raw;
     brief = d.content?.[0]?.text || brief;
   } catch (_) {}
 
   return { brief, fxStr, dateStr };
 }
+
+// Fetch top movers and most-active from Alpaca screener — dynamic market discovery
+async function fetchMarketMovers() {
+  const VALID = /^[A-Z][A-Z0-9]{0,8}$/; // no dots — avoids preferred shares, ETNs
+  const filter = syms => syms
+    .map(s => String(s).toUpperCase().trim())
+    .filter(s => VALID.test(s) && !s.endsWith('W') && !s.endsWith('R')); // strip warrants/rights
+
+  let movers = [];
+  try {
+    const r1 = await alpacaDataFetch('/v1beta1/screener/stocks/most-active?top=30&by=volume');
+    const d1 = await r1.json();
+    const active = (d1.most_actives || []).map(x => x.symbol);
+    movers.push(...active);
+  } catch (_) {}
+  try {
+    const r2 = await alpacaDataFetch('/v1beta1/screener/stocks/movers?top=20');
+    const d2 = await r2.json();
+    const gainers = (d2.gainers || []).map(x => x.symbol);
+    const losers  = (d2.losers  || []).map(x => x.symbol);
+    movers.push(...gainers, ...losers);
+  } catch (_) {}
+
+  return [...new Set(filter(movers))];
+}
+
+async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
+  const n = Math.max(5, Math.min(50, AT.watchlistSize || 30));
+
+  // Combine static universe with live market movers
+  const dynamicMovers = await fetchMarketMovers();
+  const universe = [...new Set([...STOCK_UNIVERSE, ...dynamicMovers, ...openSymbols])];
+
+  const moversLabel = dynamicMovers.length
+    ? `\n\nLIVE MARKET MOVERS (most active + top gainers/losers today): ${dynamicMovers.slice(0, 30).join(', ')}`
+    : '';
+
+  const prompt = `MACRO CONTEXT:\n${macroBrief}${moversLabel}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades in the next session. Prioritize: live movers with momentum, mean-reversion candidates, sector rotation leaders, mid/small-cap growth with catalysts. Do NOT invent tickers not in the list.\n\nFULL UNIVERSE (${universe.length} symbols): ${universe.join(', ')}\n\nMust include open positions: ${openSymbols.join(', ') || 'none'}.\n\nRespond ONLY with a JSON array. Example: ["NVDA","IONQ","RKLB"]`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 200, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const d = await res.json();
+    let raw = (d.content?.[0]?.text || '[]').trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+    const picks = JSON.parse(raw);
+    if (Array.isArray(picks) && picks.length) {
+      const validated = picks.map(s => String(s).toUpperCase().replace(/[^A-Z0-9.]/g, '')).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s)).slice(0, 30);
+      const merged = [...new Set([...openSymbols, ...validated])];
+      return { targets: merged, dynamicMovers };
+    }
+  } catch (_) {}
+  return { targets: [...new Set([...openSymbols, ...AT_WATCHLIST_DEFAULT.slice(0, n)])], dynamicMovers };
+}
+
+// ── Volatility-aware position review (runs before new-trade scan) ────────────
+async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, fxStr, equity, buyingPower, posMap) {
+  const todayDate = easternDateKey(); // 'YYYY-MM-DD'
+
+  for (const pos of openPositions) {
+    const isLongPos = pos.side === 'long';
+    const isShortPos = pos.side === 'short';
+    if (!isLongPos && !isShortPos) continue;
+    const plPct = +(pos.unrealized_plpc || 0) * 100; // e.g. -12.5
+    if (plPct >= 0) continue;
+
+    // Fetch bars
+    let annVol = null, closes = [], rsi = null, macd = null, sma20 = null, sma50 = null;
+    let lastPrice = +pos.current_price || +pos.avg_entry_price;
+    try {
+      const qs = new URLSearchParams({ timeframe: '1Day', limit: '60' });
+      const bd = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
+      if (Array.isArray(bd.bars) && bd.bars.length) {
+        closes = bd.bars.map(b => b.c);
+        lastPrice = closes[closes.length - 1] || lastPrice;
+        annVol = computeAnnualizedVol(closes);
+        rsi = computeRSI(closes);
+        macd = computeMACD(closes);
+        sma20 = computeSMA(closes, 20);
+        sma50 = computeSMA(closes, 50);
+      }
+    } catch (_) {}
+
+    const brackets = computeAdaptiveBrackets(annVol);
+    const reviewThreshold = -(brackets.slPct * 0.6); // trigger at 60% of adaptive SL
+    if (plPct > reviewThreshold) continue;
+
+    // Emergency hard close at 2.2× adaptive SL — immediate, no AI
+    const emergencyThreshold = -(brackets.slPct * 2.2);
+    if (plPct <= emergencyThreshold) {
+      try {
+        await alpacaFetch(`/v2/positions/${pos.symbol}`, { method: 'DELETE' });
+        const msg = `🚨 <b>AutoTrader EMERGENCY CLOSE</b> — <b>${pos.symbol}</b>\n📉 P&L: ${plPct.toFixed(1)}% (hard stop: -${(brackets.slPct*2.2).toFixed(0)}%)\nChiusura immediata senza AI — perdita estrema.`;
+        atLog({ symbol: pos.symbol, action: 'CLOSE', confidence: 1, reasoning: `Emergency hard stop at ${plPct.toFixed(1)}%`, executed: true, executedAction: `EMERGENCY CLOSE ${pos.qty} shares` });
+        markAutoTrade(pos.symbol, 'SELL');
+        delete AT.addHistory[pos.symbol];
+        delete AT.lastReviewDate[pos.symbol];
+        broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'EMERGENCY_CLOSE' });
+        await sendTelegram(msg);
+      } catch (e) {
+        atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: `Emergency close failed: ${e.message}`, executed: false });
+      }
+      await new Promise(r => setTimeout(r, 800));
+      continue;
+    }
+
+    // 2-day cooldown between reviews
+    const lastReview = AT.lastReviewDate[pos.symbol];
+    if (lastReview) {
+      const daysSince = (Date.parse(todayDate) - Date.parse(lastReview)) / 86400000;
+      if (daysSince < 2) continue;
+    }
+
+    // Run AI review
+    const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct);
+    const addsDone = AT.addHistory[pos.symbol] || 0;
+    const canAdd = addsDone < 1 && buyingPower > 500; // max 1 ADD per position lifetime
+
+    const reviewPrompt = `MACRO: ${macroBrief}\nFX: ${fxStr}
+
+POSITION UNDER REVIEW: ${pos.symbol}
+Entry price: $${pos.avg_entry_price} | Current price: $${lastPrice.toFixed(2)}
+Unrealized P&L: ${plPct.toFixed(2)}% (${(+(pos.unrealized_pl||0)).toFixed(2)} USD)
+Qty held: ${pos.qty} shares
+Previous ADDs on this position: ${addsDone}/1 (max 1 total)
+
+TECHNICALS:
+RSI(14): ${rsi != null ? rsi.toFixed(1) : '?'}
+MACD: ${macd != null ? macd.toFixed(3) : '?'}
+SMA20: ${sma20 != null ? '$' + sma20.toFixed(2) : '?'} | SMA50: ${sma50 != null ? '$' + sma50.toFixed(2) : '?'}
+Price vs SMA20: ${sma20 ? ((lastPrice/sma20-1)*100).toFixed(1)+'%' : '?'} | Price vs SMA50: ${sma50 ? ((lastPrice/sma50-1)*100).toFixed(1)+'%' : '?'}
+Annualized Volatility: ${annVol != null ? (annVol*100).toFixed(1)+'%' : '?'}
+
+BLACK-SCHOLES (60d):
+P(price above current in 60d): ${bs ? bs.probAbove+'%' : '?'}
+P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP+'%' : '?'}
+ATM call delta: ${bs ? bs.callDelta : '?'}
+
+Position side: ${isLongPos ? 'LONG (price fell)' : 'SHORT (price rose against us)'}
+REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brackets.slPct}% | hard stop: -${(brackets.slPct*2.2).toFixed(0)}%
+${canAdd ? '' : 'NOTE: ADD not available (max 1 ADD already used or insufficient buying power)'}
+Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}`;
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, system: POSITION_REVIEW_PROMPT, messages: [{ role: 'user', content: reviewPrompt }] }),
+      });
+      const d = await res.json();
+      let raw = (d.content?.[0]?.text || '{}').trim().replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+      const review = JSON.parse(raw);
+      const { action: rAction, confidence: rConf, reasoning: rReason, addNotional } = review;
+
+      AT.lastReviewDate[pos.symbol] = todayDate;
+      atLog({ symbol: pos.symbol, action: `REVIEW:${rAction}`, confidence: rConf, reasoning: `[P&L ${plPct.toFixed(1)}%] ${rReason}`, executed: false });
+
+      if (rAction === 'CLOSE' && rConf >= 0.72) {
+        const closeSide = isLongPos ? 'sell' : 'buy'; // buy to cover short
+        const closeQty = Math.abs(+pos.qty);
+        const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: pos.symbol, qty: closeQty, side: closeSide, type: 'market', time_in_force: 'day', client_order_id: `nexus_review_close_${pos.symbol}_${Date.now()}` }) });
+        atLog({ symbol: pos.symbol, action: isShortPos ? 'COVER' : 'CLOSE', confidence: rConf, reasoning: rReason, executed: true, executedAction: `${isShortPos ? 'COVER' : 'CLOSE'} (AI review) ${closeQty} shares | P&L ${plPct.toFixed(1)}%`, orderId: order?.id });
+        markAutoTrade(pos.symbol, isShortPos ? 'COVER' : 'SELL');
+        delete AT.addHistory[pos.symbol];
+        delete AT.lastReviewDate[pos.symbol];
+        broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: isShortPos ? 'COVER' : 'CLOSE', qty: closeQty, reasoning: rReason });
+        await sendTelegram(`${isShortPos ? '🔵' : '🔴'} <b>AutoTrader ${isShortPos ? 'COVER' : 'CLOSE'}</b> (AI review) — <b>${pos.symbol}</b>\n📉 ${closeQty} shares | P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
+
+      } else if (rAction === 'ADD' && canAdd && rConf >= 0.82 && addNotional > 0) {
+        const addQty = Math.floor(Math.min(addNotional, 5000, buyingPower * 0.9) / lastPrice);
+        if (addQty >= 1) {
+          const addSide = isLongPos ? 'buy' : 'sell';
+          const totalQty = Math.abs(+pos.qty) + addQty;
+
+          // Cancel any open TP limit orders for this symbol before placing unified TP
+          try {
+            const openOrders = await alpacaFetch(`/v2/orders?status=open&symbols=${pos.symbol}&limit=50`);
+            if (Array.isArray(openOrders)) {
+              for (const o of openOrders) {
+                const isTP = (isLongPos && o.side === 'sell' && o.type === 'limit') ||
+                             (isShortPos && o.side === 'buy' && o.type === 'limit');
+                if (isTP) {
+                  await alpacaFetch(`/v2/orders/${o.id}`, { method: 'DELETE' });
+                }
+              }
+            }
+          } catch (_) { /* best-effort: cancel original TP */ }
+
+          // Place the ADD order
+          const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol: pos.symbol, qty: addQty, side: addSide, type: 'market', time_in_force: 'day', client_order_id: `nexus_review_add_${pos.symbol}_${Date.now()}` }) });
+
+          // Unified TP limit sell/buy for total position
+          const tpPrice = isLongPos
+            ? +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2)
+            : +(lastPrice * (1 - brackets.tpPct / 100)).toFixed(2);
+          const tpSide = isLongPos ? 'sell' : 'buy';
+          try {
+            await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ symbol: pos.symbol, qty: totalQty, side: tpSide, type: 'limit', limit_price: tpPrice, time_in_force: 'gtc', client_order_id: `nexus_unified_tp_${pos.symbol}_${Date.now()}` }) });
+          } catch (_) { /* best-effort */ }
+
+          AT.addHistory[pos.symbol] = addsDone + 1;
+          const addLabel = isLongPos ? 'ADD (avg-down)' : 'ADD (avg-up short)';
+          atLog({ symbol: pos.symbol, action: 'ADD', confidence: rConf, reasoning: rReason, executed: true, executedAction: `${addLabel} ${addQty} shares @ $${lastPrice.toFixed(2)} | Unified TP @ $${tpPrice} for ${totalQty} shares total`, orderId: order?.id });
+          markAutoTrade(pos.symbol, 'ADD');
+          broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'ADD', qty: addQty, reasoning: rReason });
+          await sendTelegram(`🔵 <b>AutoTrader ${addLabel}</b> — <b>${pos.symbol}</b>\n📈 +${addQty} shares @ $${lastPrice.toFixed(2)} | TP unificato @ $${tpPrice} per ${totalQty} azioni totali\nPos P&L: ${plPct.toFixed(1)}% | Questo è l'unico ADD consentito.\n🧠 ${rReason}`);
+          buyingPower -= addQty * lastPrice;
+        }
+
+      } else {
+        // HOLD
+        atLog({ symbol: pos.symbol, action: 'HOLD', confidence: rConf, reasoning: `[Review: holding through dip] ${rReason}`, executed: false });
+        await sendTelegram(`⏸ <b>AutoTrader HOLD</b> (review) — <b>${pos.symbol}</b>\n📊 P&L: ${plPct.toFixed(1)}% | Vol: ${annVol ? (annVol*100).toFixed(0)+'%' : '?'} | Prossima review tra 2gg\n🧠 ${rReason}`);
+      }
+
+      saveAtState();
+    } catch (e) {
+      atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: `Position review failed: ${e.message}`, executed: false });
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return buyingPower;
+}
+
+async function atCycle() {
+  if (!AT.enabled || AT.running) return;
+  AT.running = true;
+  ensureAtDayState();
+  AT.lastRunAt = Date.now();
+  saveAtState();
+
+  try {
+    if (AT.halted) {
+      atLog({ symbol: 'SYSTEM', action: 'HALTED', confidence: 0, reasoning: AT.haltReason, executed: false });
+      return;
+    }
+    if (!isMarketHours()) {
+      const reason = isHoliday() ? 'NYSE holiday — market closed' : 'Market closed (ET hours)';
+      atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: reason, executed: false });
+      return;
+    }
+
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+    if (!anthropicKey) {
+      atLog({ symbol: 'SYSTEM', action: 'ERROR', confidence: 0, reasoning: 'Anthropic key missing', executed: false });
+      return;
+    }
+
+    let account, positions;
+    try {
+      ({ account, positions } = await refreshAccountSnapshot());
+    } catch (e) {
+      atLog({ symbol: 'SYSTEM', action: 'ERROR', confidence: 0, reasoning: 'Alpaca fetch failed: ' + e.message, executed: false });
+      return;
+    }
+
+    const equity = +account.equity;
+    if (!AT.sessionStartEquity) AT.sessionStartEquity = equity;
+    const drawdown = (AT.sessionStartEquity - equity) / AT.sessionStartEquity;
+    if (drawdown > AT.drawdownLimit) {
+      AT.halted = true;
+      AT.haltReason = `Equity drawdown ${(drawdown * 100).toFixed(1)}% exceeds limit ${(AT.drawdownLimit * 100).toFixed(0)}% — emergency stop`;
+      atLog({ symbol: 'SYSTEM', action: 'HALTED', confidence: 0, reasoning: AT.haltReason, executed: false });
+      broadcast({ type: 'autotrader_halted', reason: AT.haltReason });
+      await sendTelegram(`🚨 <b>AutoTrader HALTED</b>\n${AT.haltReason}`);
+      return;
+    }
+
+    ensureAtDayState();
+    if (countTodayTrades() >= AUTOTRADER_MAX_DAILY_TRADES) {
+      atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: `Daily trade limit reached (${AUTOTRADER_MAX_DAILY_TRADES}).`, executed: false });
+      return;
+    }
+
+    let openPositions = Array.isArray(positions) ? positions : [];
+    let posMap = new Map(openPositions.map(p => [p.symbol, p]));
+    let buyingPower = +account.buying_power;
+
+    // Phase 1: macro research
+    const { brief: macroBrief, fxStr } = await fetchMacroContext(anthropicKey);
+    AT.lastMacroBrief = macroBrief;
+    AT.lastMacroTs = Date.now();
+    saveAtState();
+    broadcast({ type: 'autotrader_macro', brief: macroBrief, ts: AT.lastMacroTs });
+    atLog({ symbol: 'MACRO', action: 'RESEARCH', confidence: 1, reasoning: macroBrief.slice(0, 200) + (macroBrief.length > 200 ? '…' : ''), executed: false });
+
+    // Phase 2: symbol selection
+    let targets;
+    if (AT.aiManagedWatchlist) {
+      const openSymbols = [...posMap.keys()];
+      const { targets: aiTargets, dynamicMovers } = await aiSelectWatchlist(anthropicKey, macroBrief, openSymbols);
+      targets = aiTargets;
+      AT.aiSelectedWatchlist = targets;
+      broadcast({ type: 'autotrader_watchlist', watchlist: targets });
+      const moversNote = dynamicMovers.length ? ` | Market movers discovered: ${dynamicMovers.slice(0,10).join(', ')}${dynamicMovers.length > 10 ? '…' : ''}` : '';
+      atLog({ symbol: 'SYSTEM', action: 'WATCHLIST', confidence: 1, reasoning: `AI selected ${targets.length} symbols from ${STOCK_UNIVERSE.length + dynamicMovers.length} universe: ${targets.join(', ')}${moversNote}`, executed: false });
+    } else {
+      targets = [...new Set([...posMap.keys(), ...AT.watchlist])];
+    }
+
+    // Phase 2.5: volatility-aware position review for losing positions
+    if (openPositions.some(p => p.side === 'long' && +(p.unrealized_plpc||0) < 0)) {
+      atLog({ symbol: 'SYSTEM', action: 'REVIEW', confidence: 1, reasoning: `Reviewing ${openPositions.filter(p=>+(p.unrealized_plpc||0)<0).length} losing position(s) before new trades…`, executed: false });
+      buyingPower = await reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, fxStr, equity, buyingPower, posMap);
+      // Refresh positions after any closes/adds
+      try { ({ account, positions } = await refreshAccountSnapshot()); openPositions = Array.isArray(positions) ? positions : []; posMap = new Map(openPositions.map(p => [p.symbol, p])); buyingPower = +account.buying_power; } catch(_) {}
+    }
+
+    for (const symbol of targets) {
+      if (!AT.enabled) break;
+      if (countTodayTrades() >= AUTOTRADER_MAX_DAILY_TRADES) {
+        atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: `Daily trade limit reached (${AUTOTRADER_MAX_DAILY_TRADES}).`, executed: false });
+        break;
+      }
+
+      // Fetch price bars + volumes for technicals
+      let closes = [], volumes = [];
+      try {
+        const qs = new URLSearchParams({ timeframe: '1Day', limit: '60' });
+        const br = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?${qs}`);
+        const bd = await br.json();
+        if (Array.isArray(bd.bars) && bd.bars.length) {
+          closes = bd.bars.map(b => b.c);
+          volumes = bd.bars.map(b => b.v);
+        } else {
+          const errMsg = bd.message || bd.error || JSON.stringify(bd).slice(0, 120);
+          atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Alpaca bars error: ${errMsg}`, executed: false });
+          continue;
+        }
+      } catch (e) {
+        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Bars fetch failed: ${e.message}`, executed: false });
+        continue;
+      }
+
+      // Skip symbols with insufficient history for MACD (needs 26+) — avoid wasting AI calls
+      if (closes.length < 27 && !posMap.has(symbol)) {
+        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Insufficient history: ${closes.length} bars (need ≥27 for MACD/RSI). Skipping AI call.`, executed: false });
+        continue;
+      }
+
+      const pos = posMap.get(symbol);
+      const isLong = pos?.side === 'long';
+      const isShort = pos?.side === 'short';
+      const hasPos = !!(pos);
+      const lastPrice = closes[closes.length - 1] || 0;
+      const lastVolume = volumes[volumes.length - 1] || 0;
+      const avgVolume = volumes.length > 1 ? volumes.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, volumes.length) : 0;
+      const relVolume = avgVolume > 0 ? lastVolume / avgVolume : null;
+
+      const rsi = computeRSI(closes);
+      const macd = computeMACD(closes);
+      const sma20 = computeSMA(closes, 20);
+      const sma50 = computeSMA(closes, 50);
+      const annVol = computeAnnualizedVol(closes);
+      const brackets = computeAdaptiveBrackets(annVol);
+      const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct);
+      const sector = getSector(symbol);
+      const secExp = sectorExposure(openPositions);
+      const sectorCount = secExp[sector] || 0;
+      const sectorAtLimit = !hasPos && sectorCount >= AT.maxPositionsPerSector;
+
+      // Positions in same sector — AI may choose to replace the weakest one
+      const sectorPositions = openPositions.filter(p => getSector(p.symbol) === sector && p.symbol !== symbol);
+      const weakestInSector = sectorPositions.length
+        ? sectorPositions.sort((a, b) => (+a.unrealized_plpc || 0) - (+b.unrealized_plpc || 0))[0]
+        : null;
+
+      const sectorSummary = Object.entries(secExp).map(([s, n]) => `${s}:${n}`).join(', ') || 'none';
+      const maxBudget = Math.min(equity * AT.maxPositionPct / 100, buyingPower * 0.95);
+
+      const replaceBlock = sectorAtLimit && weakestInSector ? `
+SECTOR ROTATION AVAILABLE: ${sector} is at soft limit (${sectorCount}/${AT.maxPositionsPerSector}).
+You may use action=REPLACE and replaceSymbol="${weakestInSector.symbol}" to close it (P&L: ${(+(weakestInSector.unrealized_plpc||0)*100).toFixed(1)}%) and open ${symbol} instead.
+Only do this if ${symbol} setup is clearly superior. Otherwise HOLD.` : '';
+
+      const prompt = `MACRO CONTEXT:
+${macroBrief}
+FX: ${fxStr}
+
+SYMBOL: ${symbol} | SECTOR: ${sector}
+Last price: $${lastPrice.toFixed(2)}
+30d closes (latest 10): [${closes.slice(-10).map(c => c.toFixed(2)).join(', ')}]
+
+TECHNICALS:
+RSI(14): ${rsi != null ? rsi.toFixed(1) : '?'}
+MACD(12,26): ${macd != null ? macd.toFixed(3) : '?'}
+SMA20: ${sma20 != null ? '$' + sma20.toFixed(2) : '?'} | SMA50: ${sma50 != null ? '$' + sma50.toFixed(2) : '?'}
+Relative Volume: ${relVolume != null ? relVolume.toFixed(2) + 'x avg' : '?'}
+Annualized Volatility: ${annVol != null ? (annVol * 100).toFixed(1) + '%' : '?'}
+
+BLACK-SCHOLES (60-day horizon, r=4.3%, σ=historical vol):
+P(price > current in 60d): ${bs ? bs.probAbove + '%' : '?'}
+P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP + '%' : '?'}
+P(hit SL -${brackets.slPct}%): ${bs ? bs.probSL + '%' : '?'}
+Adaptive brackets: ${brackets.adaptive ? `TP +${brackets.tpPct}% / SL -${brackets.slPct}% (σ-scaled)` : 'default'}
+ATM call delta: ${bs ? bs.callDelta : '?'}
+
+POSITION:
+hasPosition: ${hasPos}
+positionSide: ${isLong ? 'long' : isShort ? 'short' : 'none'}
+${hasPos ? `qty: ${pos.qty} | entry: $${pos.avg_entry_price} | unrealizedP&L: ${pos.unrealized_plpc != null ? (+(pos.unrealized_plpc) * 100).toFixed(2) + '%' : '?'}` : ''}
+
+PORTFOLIO DIVERSIFICATION:
+openPositions: ${openPositions.length} (soft cap: ${AT.maxPositions})
+sectorExposure: ${sectorSummary}
+${sector} positions: ${sectorCount} (soft guideline: ${AT.maxPositionsPerSector}/sector)
+maxBudgetForThisTrade: $${maxBudget.toFixed(0)} (${AT.maxPositionPct}% of $${equity.toFixed(0)} equity, vol-adjusted)
+buyingPower: $${buyingPower.toFixed(0)} | allowShort: ${AT.allowShort}
+${replaceBlock}`;
+
+      let decision;
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 300, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+        });
+        const d = await res.json();
+        let raw = (d.content?.[0]?.text || '{}').trim();
+        if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+        decision = JSON.parse(raw);
+      } catch (e) {
+        atLog({ symbol, action: 'ERROR', confidence: 0, reasoning: 'AI parse error: ' + e.message, executed: false });
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+
+      const { action, confidence, reasoning, suggestedNotional, replaceSymbol } = decision;
+      const logEntry = { symbol, action, confidence, reasoning, suggestedNotional, executed: false };
+
+      // Check if this exact action was already taken today
+      if (hasTradedToday(symbol, action)) {
+        logEntry.reasoning = (reasoning || '') + ' [already done today]';
+        atLog(logEntry);
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+
+      // ── REPLACE (sector rotation) ────────────────────────────────────────────
+      // AI closes the weakest position in sector, then opens the new one
+      if (action === 'REPLACE' && confidence >= AT.confidenceThreshold && replaceSymbol) {
+        const replacePos = posMap.get(replaceSymbol);
+        if (replacePos && replacePos.side === 'long') {
+          try {
+            await alpacaFetch(`/v2/positions/${replaceSymbol}`, { method: 'DELETE' });
+            logEntry.executedAction = `REPLACE: closed ${replaceSymbol} (P&L: ${(+(replacePos.unrealized_plpc||0)*100).toFixed(1)}%), opening ${symbol}`;
+            markAutoTrade(replaceSymbol, 'SELL');
+            await sendTelegram(`🔄 <b>AutoTrader REPLACE</b> — chiuso <b>${replaceSymbol}</b> (P&L: ${(+(replacePos.unrealized_plpc||0)*100).toFixed(1)}%) per aprire <b>${symbol}</b>\n🧠 ${reasoning}`);
+            // Refresh snapshot before opening new position
+            try { ({ account, positions } = await refreshAccountSnapshot()); openPositions = Array.isArray(positions) ? positions : []; posMap = new Map(openPositions.map(p => [p.symbol, p])); buyingPower = +account.buying_power; } catch(_) {}
+            // Fall through to BUY logic below by re-mapping action
+            decision.action = 'BUY';
+          } catch(e) {
+            logEntry.reasoning = `REPLACE failed (close ${replaceSymbol}): ${e.message}`;
+            atLog(logEntry);
+            continue;
+          }
+        }
+      }
+
+      if (confidence >= AT.confidenceThreshold) {
+        // ── BUY (open long) ────────────────────────────────────────────────────
+        if (action === 'BUY' && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
+          const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct);
+          const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
+          const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
+          if (tradeNotional >= 10) {
+            try {
+              const useBracket = estQty >= 1;
+              const orderBody = useBracket ? {
+                symbol, qty: estQty, side: 'buy', type: 'market', time_in_force: 'day',
+                order_class: 'oto',
+                take_profit: { limit_price: +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2) },
+                // No bracket stop_loss — AI position review handles drawdown intelligently
+                client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
+              } : {
+                symbol, notional: Math.floor(tradeNotional), side: 'buy', type: 'market',
+                time_in_force: 'day', client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
+              };
+              const order = await submitValidatedOrder(orderBody);
+              logEntry.executed = true;
+              logEntry.executedAction = `BUY ${useBracket ? estQty + ' shares' : '$' + Math.floor(tradeNotional)} | TP: +${brackets.tpPct}% | AI-managed SL (review at -${brackets.slPct}%)`;
+              logEntry.orderId = order.id;
+              markAutoTrade(symbol, 'BUY');
+              try {
+                ({ account, positions } = await refreshAccountSnapshot());
+                openPositions = Array.isArray(positions) ? positions : [];
+                posMap = new Map(openPositions.map(p => [p.symbol, p]));
+                buyingPower = +account.buying_power;
+              } catch (_) {
+                buyingPower = Math.max(0, buyingPower - Math.floor(tradeNotional));
+              }
+              broadcast({ type: 'autotrader_trade', symbol, action: 'BUY', notional: Math.floor(tradeNotional), reasoning });
+              await sendTelegram(`🟢 <b>AutoTrader BUY</b> — <b>${symbol}</b>\n💰 $${Math.floor(tradeNotional)} | TP: +${brackets.tpPct}%${brackets.adaptive ? ' (σ-adaptive)' : ''} | AI-SL review at -${brackets.slPct}%\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'} | Vol: ${annVol != null ? (annVol*100).toFixed(0)+'%' : '?'}\n🧠 ${reasoning}`);
+            } catch (e) { logEntry.error = e.message; }
+          }
+        }
+        // ── SELL (close long) ──────────────────────────────────────────────────
+        else if (action === 'SELL' && isLong) {
+          try {
+            const order = await submitValidatedOrder({
+              symbol, qty: +pos.qty, side: 'sell', type: 'market', time_in_force: 'day',
+              client_order_id: `nexus_at_sell_${symbol}_${Date.now()}`,
+            });
+            logEntry.executed = true;
+            logEntry.executedAction = `SELL ${pos.qty} shares`;
+            logEntry.orderId = order.id;
+            markAutoTrade(symbol, 'SELL');
+            delete AT.addHistory[symbol];
+            delete AT.lastReviewDate[symbol];
+            try {
+              ({ account, positions } = await refreshAccountSnapshot());
+              openPositions = Array.isArray(positions) ? positions : [];
+              posMap = new Map(openPositions.map(p => [p.symbol, p]));
+              buyingPower = +account.buying_power;
+            } catch (_) { posMap.delete(symbol); }
+            broadcast({ type: 'autotrader_trade', symbol, action: 'SELL', qty: +pos.qty, reasoning });
+            const plPct = pos.unrealized_plpc != null ? (+(pos.unrealized_plpc) * 100).toFixed(2) + '%' : '?';
+            await sendTelegram(`🔴 <b>AutoTrader SELL</b> — <b>${symbol}</b>\n📉 ${pos.qty} shares | P&L: ${plPct}\n🧠 ${reasoning}`);
+          } catch (e) { logEntry.error = e.message; }
+        }
+        // ── SHORT (open short) ─────────────────────────────────────────────────
+        else if (action === 'SHORT' && AT.allowShort && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
+          const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct);
+          const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
+          const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
+          if (estQty >= 1 && tradeNotional >= 10) {
+            try {
+              const order = await submitValidatedOrder({
+                symbol, qty: estQty, side: 'sell', type: 'market', time_in_force: 'day',
+                order_class: 'oto',
+                take_profit: { limit_price: +(lastPrice * (1 - brackets.tpPct / 100)).toFixed(2) },
+                // No bracket stop_loss — AI position review handles drawdown intelligently
+                client_order_id: `nexus_at_short_${symbol}_${Date.now()}`,
+              });
+              logEntry.executed = true;
+              logEntry.executedAction = `SHORT ${estQty} shares | SL: +${brackets.slPct}% | TP: -${brackets.tpPct}%`;
+              logEntry.orderId = order.id;
+              markAutoTrade(symbol, 'SHORT');
+              try {
+                ({ account, positions } = await refreshAccountSnapshot());
+                openPositions = Array.isArray(positions) ? positions : [];
+                posMap = new Map(openPositions.map(p => [p.symbol, p]));
+                buyingPower = +account.buying_power;
+              } catch (_) { buyingPower = Math.max(0, buyingPower - Math.floor(tradeNotional)); }
+              broadcast({ type: 'autotrader_trade', symbol, action: 'SHORT', qty: estQty, reasoning });
+              await sendTelegram(`🩳 <b>AutoTrader SHORT</b> — <b>${symbol}</b>\n📉 ${estQty} shares | SL: +${brackets.slPct}% | TP: -${brackets.tpPct}%${brackets.adaptive ? ' (σ-adaptive)' : ''}\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'}\n🧠 ${reasoning}`);
+            } catch (e) { logEntry.error = e.message; }
+          }
+        }
+        // ── COVER (close short) ────────────────────────────────────────────────
+        else if (action === 'COVER' && isShort) {
+          try {
+            const shortQty = Math.abs(+pos.qty);
+            const order = await submitValidatedOrder({
+              symbol, qty: shortQty, side: 'buy', type: 'market', time_in_force: 'day',
+              client_order_id: `nexus_at_cover_${symbol}_${Date.now()}`,
+            });
+            logEntry.executed = true;
+            logEntry.executedAction = `COVER ${shortQty} shares`;
+            logEntry.orderId = order.id;
+            markAutoTrade(symbol, 'COVER');
+            try {
+              ({ account, positions } = await refreshAccountSnapshot());
+              openPositions = Array.isArray(positions) ? positions : [];
+              posMap = new Map(openPositions.map(p => [p.symbol, p]));
+              buyingPower = +account.buying_power;
+            } catch (_) { posMap.delete(symbol); }
+            broadcast({ type: 'autotrader_trade', symbol, action: 'COVER', qty: shortQty, reasoning });
+            const plPct = pos.unrealized_plpc != null ? (+(pos.unrealized_plpc) * 100).toFixed(2) + '%' : '?';
+            await sendTelegram(`🔵 <b>AutoTrader COVER</b> — <b>${symbol}</b>\n📈 ${shortQty} shares | P&L: ${plPct}\n🧠 ${reasoning}`);
+          } catch (e) { logEntry.error = e.message; }
+        }
+      }
+
+      atLog(logEntry);
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  } finally {
+    AT.running = false;
+    if (AT.enabled && AT.timer) AT.nextRunAt = Date.now() + AT.intervalMs;
+    saveAtState();
+    broadcast({ type: 'autotrader_status', state: atPublicState() });
+  }
+}
+
+function atSchedule() {
+  if (AT.timer) { clearInterval(AT.timer); AT.timer = null; }
+  if (AT.enabled) {
+    AT.timer = setInterval(atCycle, AT.intervalMs);
+    AT.nextRunAt = Date.now() + AT.intervalMs;
+  } else {
+    AT.nextRunAt = null;
+  }
+  saveAtState();
+  broadcast({ type: 'autotrader_status', state: atPublicState() });
+}
+
+// ─── AutoTrader Endpoints ─────────────────────────────────────────────────────
+app.get('/api/autotrader/status', (req, res) => {
+  res.json({ ...atPublicState(), log: AT.log.slice(0, 20) });
+});
 
 async function atCycle() {
   if (!AT.enabled || AT.running) return;
@@ -1193,6 +2173,8 @@ app.get('/api/autotrader/history', (req, res) => {
 app.post('/api/autotrader/config', (req, res) => {
   const {
     enabled, intervalMinutes, confidenceThreshold, maxPositions, maxPositionPct,
+    maxPositionsPerSector, stopLossPct, takeProfitPct, drawdownLimit, allowShort,
+    targetVolatility, resetHalt,
     stopLossPct, takeProfitPct, drawdownLimit, allowShort, targetVolatility, resetHalt,
   } = req.body;
 
@@ -1204,6 +2186,7 @@ app.post('/api/autotrader/config', (req, res) => {
   if (confidenceThreshold != null) AT.confidenceThreshold = Math.max(0.5, Math.min(1.0, +confidenceThreshold));
   if (maxPositions != null) AT.maxPositions = Math.max(1, Math.min(20, +maxPositions));
   if (maxPositionPct != null) AT.maxPositionPct = Math.max(1, Math.min(50, +maxPositionPct));
+  if (maxPositionsPerSector != null) AT.maxPositionsPerSector = Math.max(1, Math.min(AT.maxPositions, +maxPositionsPerSector));
   if (stopLossPct != null) AT.stopLossPct = Math.max(1, Math.min(50, +stopLossPct));
   if (takeProfitPct != null) AT.takeProfitPct = Math.max(1, Math.min(200, +takeProfitPct));
   if (drawdownLimit != null) AT.drawdownLimit = Math.max(0.02, Math.min(0.50, +drawdownLimit));
@@ -1211,6 +2194,12 @@ app.post('/api/autotrader/config', (req, res) => {
   if (targetVolatility != null) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +targetVolatility));
   if (resetHalt) { AT.halted = false; AT.haltReason = ''; AT.sessionStartEquity = null; }
 
+  // Watchlist/AI-managed settings
+  const { aiManagedWatchlist, watchlistSize } = req.body;
+  if (typeof aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = aiManagedWatchlist;
+  if (watchlistSize != null && Number.isFinite(+watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(50, +watchlistSize));
+
+  saveAtState();
   atSchedule();
   res.json(atPublicState());
 });
@@ -1219,6 +2208,21 @@ app.post('/api/autotrader/run-now', (req, res) => {
   if (!AT.enabled) return res.status(400).json({ error: 'AutoTrader disabled' });
   res.json({ ok: true, message: 'Research cycle started' });
   setImmediate(atCycle);
+});
+
+app.post('/api/autotrader/refresh-macro', async (req, res) => {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) return res.status(500).json({ error: 'No Anthropic key' });
+  try {
+    const { brief, fxStr, dateStr } = await fetchMacroContext(anthropicKey);
+    AT.lastMacroBrief = brief;
+    AT.lastMacroTs = Date.now();
+    saveAtState();
+    broadcast({ type: 'autotrader_macro', brief, ts: AT.lastMacroTs });
+    res.json({ ok: true, brief, ts: AT.lastMacroTs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // GET /api/autotrader/watchlist
@@ -1237,6 +2241,23 @@ app.put('/api/autotrader/watchlist', (req, res) => {
   AT.watchlist = [...new Set(normalized)];
   saveAtState();
   res.json({ watchlist: AT.watchlist });
+});
+
+// GET /api/autotrader/intraday/:symbol
+app.get('/api/autotrader/intraday/:symbol', async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  try {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const start = `${today}T13:30:00Z`;
+    const url = `/v2/stocks/${symbol}/bars?timeframe=1Min&start=${encodeURIComponent(start)}&limit=400&feed=iex`;
+    const r = await alpacaDataFetch(url);
+    const json = await parseJsonResponse(r);
+    const rawBars = (json && json.bars) || [];
+    const bars = rawBars.map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }));
+    res.json({ symbol, bars });
+  } catch (_) {
+    res.json({ symbol, bars: [] });
+  }
 });
 
 // ─── WebSocket Server (local clients) ─────────────────────────────────────────

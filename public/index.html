@@ -294,10 +294,12 @@ tr:hover td { background: var(--surface2); }
 
 /* Realtime chart */
 .chart-rt { position: relative; height: 240px; margin-top: 16px; }
+.intraday-chart-wrap { position:relative; height:180px; margin-top:8px; }
 .price-badge { display: inline-flex; align-items: center; gap: 8px; font-size: 1.4rem; font-weight: 700; }
 .price-change-pos { color: var(--green); font-size: 0.88rem; font-weight: 600; }
 .price-change-neg { color: var(--red); font-size: 0.88rem; font-weight: 600; }
 /* Macro brief */
+.macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
 .macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--gold); border-radius: var(--radius); padding: 16px; font-size: 0.82rem; line-height: 1.75; color: var(--text-muted); }
 /* AutoTrader toggle */
 .toggle-switch { position: relative; display: inline-block; width: 48px; height: 26px; cursor: pointer; }
@@ -556,6 +558,16 @@ tr:hover td { background: var(--surface2); }
             </div>
             <div class="form-row">
               <div class="field">
+                <label>Max posizioni totali</label>
+                <input type="number" id="at-max-pos" value="20" min="1" max="50">
+              </div>
+              <div class="field">
+                <label>Max posizioni per settore</label>
+                <input type="number" id="at-max-pos-sector" value="2" min="1" max="10" title="Limite diversificazione: max N posizioni nello stesso settore">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="field">
                 <label>Max posizioni</label>
                 <input type="number" id="at-max-pos" value="5" min="1" max="20">
               </div>
@@ -565,6 +577,11 @@ tr:hover td { background: var(--surface2); }
               </div>
             </div>
             <div class="form-row">
+              <div class="field" style="grid-column:1/-1">
+                <label style="color:var(--text-muted)">Stop Loss / Take Profit</label>
+                <div style="font-size:0.78rem;color:var(--text-muted);padding:8px;background:rgba(255,255,255,0.03);border-radius:6px;border:1px solid rgba(255,255,255,0.07)">
+                  ⚡ Brackets adattivi alla volatilità (σ) — calcolati automaticamente per ogni stock. SL review AI ogni 2 giorni.
+                </div>
               <div class="field">
                 <label>Stop Loss % (bracket)</label>
                 <input type="number" id="at-stop-loss" value="8" min="1" max="50" step="0.5">
@@ -596,6 +613,28 @@ tr:hover td { background: var(--surface2); }
       </div>
       <div class="card" style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div class="card-title" style="margin-bottom:0">🤖 Selezione Simboli</div>
+          <button class="btn btn-secondary btn-sm" onclick="saveWatchlistConfig()">Salva</button>
+        </div>
+        <div class="field" style="margin-bottom:8px;display:flex;align-items:center;gap:10px">
+          <input type="checkbox" id="at-ai-managed" style="width:auto;accent-color:var(--gold)" checked onchange="toggleWatchlistMode()">
+          <label for="at-ai-managed" style="margin:0;cursor:pointer"><b>Claude sceglie autonomamente i simboli</b> — seleziona ogni ciclo i migliori titoli dall'universo di 70+ azioni in base al contesto macro</label>
+        </div>
+        <div id="at-ai-watchlist-info" style="margin-bottom:12px;padding:10px;background:var(--surface2);border-radius:8px;font-size:0.8rem;color:var(--text-muted)">
+          <div>Universo disponibile: AAPL · MSFT · NVDA · TSLA · SPY · QQQ · JPM · XOM · AMZN · GOOGL · LMT · NVDA · PLTR · COIN · CRWD · GLD · TLT · e altri 55+</div>
+          <div style="margin-top:6px">Ultima selezione AI: <span id="at-ai-selected" style="color:var(--gold)">—</span></div>
+        </div>
+        <div class="field" style="margin-bottom:8px" id="at-watchlist-size-row">
+          <label>Quanti simboli analizzare per ciclo (3–50)</label>
+          <input type="number" id="at-watchlist-size" value="30" min="3" max="50" step="1">
+        </div>
+        <div class="field" style="margin-bottom:8px" id="at-watchlist-manual-row" style="display:none">
+          <label>Watchlist manuale — simboli separati da virgola (max 50)</label>
+          <input type="text" id="at-watchlist" value="AAPL,MSFT,NVDA,TSLA,SPY,QQQ,AMZN,GOOGL,JPM,XOM" placeholder="AAPL, SPY, QQQ, ...">
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.7">
+          Ogni ciclo: macro brief → AI seleziona i simboli → 60gg bars → RSI · MACD · SMA · Volume → Claude decide BUY/SELL/SHORT/COVER/HOLD → bracket order automatico.<br>
+          <b>Safety:</b> solo NYSE · no holiday · drawdown limit → halt · bracket SL&amp;TP · sizing adattivo · Telegram.
           <div class="card-title" style="margin-bottom:0">Watchlist Simboli</div>
           <button class="btn btn-secondary btn-sm" onclick="saveWatchlist()">Salva</button>
         </div>
@@ -611,6 +650,10 @@ tr:hover td { background: var(--surface2); }
       <div class="card" style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <div class="card-title" style="margin-bottom:0">📰 Macro Brief — AI Research</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="at-macro-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
+            <button class="btn btn-secondary btn-sm" id="at-macro-refresh-btn" onclick="refreshMacroBrief()">↺ Aggiorna</button>
+          </div>
           <span id="at-macro-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
         </div>
         <div id="at-macro-brief" class="macro-brief-card">Nessuna ricerca macro ancora — attiva il motore per avviare il primo ciclo.</div>
@@ -637,6 +680,20 @@ tr:hover td { background: var(--surface2); }
             <thead><tr><th>Ora</th><th>Symbol</th><th>Azione</th><th>Conf.</th><th>Ordine</th><th>Reasoning</th></tr></thead>
             <tbody id="at-history-tbody"><tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:24px">Nessun trade automatico registrato oggi</td></tr></tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Intraday Charts -->
+      <div class="card" style="margin-top:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div class="card-title" style="margin-bottom:0">📈 Intraday — Posizioni Aperte (dalla 15:00)</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="at-intraday-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
+            <button class="btn btn-secondary btn-sm" onclick="refreshIntradayCharts()">↺ Aggiorna</button>
+          </div>
+        </div>
+        <div id="at-intraday-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
+          <div style="color:var(--text-muted);font-size:0.82rem;padding:24px;text-align:center">Nessuna posizione aperta</div>
         </div>
       </div>
     </section>
@@ -854,31 +911,77 @@ tr:hover td { background: var(--surface2); }
 // DATA & STATE
 // ============================================================
 
+// Fundamental data — updated Q1 2026 (PE/PB/FCF trailing, div yield, CR = current ratio)
 const STOCKS = [
-  { ticker:'ENB',   name:'Enbridge Inc.',         country:'CA', sector:'Energy',   pe:24.9, pb:1.9,  cr:0.62, fcf:1.7,  div:5.9, cap:'$108B',   rating:'BUY',  tradeable:true  },
-  { ticker:'JDSC',  name:'Judges Scientific',      country:'UK', sector:'Industry', pe:22.4, pb:4.1,  cr:2.8,  fcf:5.2,  div:1.1, cap:'£280M',   rating:'BUY',  tradeable:false },
-  { ticker:'MFG',   name:'Mizuho Financial Group', country:'JP', sector:'Finance',  pe:9.8,  pb:0.72, cr:null, fcf:null, div:3.2, cap:'$62B',    rating:'ACC',  tradeable:false },
-  { ticker:'KT',    name:'KT Corporation',          country:'KR', sector:'Tech',     pe:8.2,  pb:0.65, cr:1.20, fcf:5.8,  div:4.0, cap:'$7.2B',   rating:'BUY',  tradeable:false },
-  { ticker:'MC',    name:'Moelis & Company',        country:'US', sector:'Finance',  pe:22.1, pb:3.8,  cr:1.25, fcf:10.5, div:3.2, cap:'$5.0B',   rating:'BUY',  tradeable:true  },
-  { ticker:'JM',    name:'Johnson Matthey',         country:'HK', sector:'Industry', pe:10.4, pb:0.58, cr:1.65, fcf:6.4,  div:4.1, cap:'$12B',    rating:'ACC',  tradeable:false },
-  { ticker:'BPOST', name:'bpost NV',                country:'BE', sector:'Industry', pe:7.2,  pb:0.91, cr:0.88, fcf:11.2, div:3.8, cap:'€880M',   rating:'HOLD', tradeable:false },
-  { ticker:'SDVX',  name:'Sandvik AB',              country:'SE', sector:'Industry', pe:18.6, pb:3.8,  cr:1.92, fcf:5.9,  div:3.4, cap:'SEK253B', rating:'BUY',  tradeable:false },
-  { ticker:'LGEN',  name:'Legal & General Group',   country:'UK', sector:'Finance',  pe:8.4,  pb:1.12, cr:null, fcf:null, div:8.9, cap:'£13.8B',  rating:'ACC',  tradeable:false },
-  { ticker:'VNET',  name:'VNET Group',              country:'CN', sector:'Tech',     pe:null, pb:0.88, cr:1.24, fcf:-2.1, div:0.0, cap:'$1.1B',   rating:'HOLD', tradeable:true  },
-  { ticker:'GIL',   name:'Gildan Activewear',       country:'CA', sector:'Industry', pe:19.6, pb:4.1,  cr:2.01, fcf:3.3,  div:1.4, cap:'$7.2B',   rating:'BUY',  tradeable:true  },
-  { ticker:'KPELY', name:'Keppel Corporation',      country:'SG', sector:'Material', pe:11.2, pb:0.94, cr:1.38, fcf:5.4,  div:4.8, cap:'SGD12B',  rating:'BUY',  tradeable:false },
-  { ticker:'WISE',  name:'Wise PLC',                country:'UK', sector:'FX',       pe:38.0, pb:8.2,  cr:2.1,  fcf:4.8,  div:0.0, cap:'£8.5B',   rating:'BUY',  tradeable:false },
-  { ticker:'IBKR',  name:'Interactive Brokers',     country:'US', sector:'FX',       pe:18.4, pb:3.5,  cr:1.8,  fcf:8.2,  div:1.4, cap:'$32B',    rating:'BUY',  tradeable:true  },
-  { ticker:'FLTR',  name:'Flutter Entertainment',   country:'UK', sector:'FX',       pe:28.0, pb:3.2,  cr:1.2,  fcf:3.1,  div:0.0, cap:'£28B',    rating:'HOLD', tradeable:false },
+  // Mega-cap Tech
+  { ticker:'AAPL',  name:'Apple Inc.',              country:'US', sector:'Tech',         pe:33.4, pb:52.1, cr:0.92, fcf:27.8, div:0.5,  cap:'$3.4T',  rating:'BUY',  tradeable:true },
+  { ticker:'MSFT',  name:'Microsoft Corp.',          country:'US', sector:'Tech',         pe:36.2, pb:13.8, cr:1.64, fcf:24.3, div:0.7,  cap:'$3.2T',  rating:'BUY',  tradeable:true },
+  { ticker:'NVDA',  name:'NVIDIA Corp.',             country:'US', sector:'Tech',         pe:42.1, pb:32.4, cr:4.44, fcf:38.2, div:0.0,  cap:'$3.5T',  rating:'BUY',  tradeable:true },
+  { ticker:'GOOGL', name:'Alphabet Inc.',            country:'US', sector:'Tech',         pe:22.8, pb:7.1,  cr:1.95, fcf:19.6, div:0.5,  cap:'$2.2T',  rating:'BUY',  tradeable:true },
+  { ticker:'META',  name:'Meta Platforms',           country:'US', sector:'Tech',         pe:27.9, pb:9.4,  cr:2.65, fcf:25.1, div:0.4,  cap:'$1.7T',  rating:'BUY',  tradeable:true },
+  { ticker:'AMZN',  name:'Amazon.com Inc.',          country:'US', sector:'Tech',         pe:44.8, pb:9.8,  cr:1.06, fcf:14.2, div:0.0,  cap:'$2.4T',  rating:'BUY',  tradeable:true },
+  // Semiconductors
+  { ticker:'AMD',   name:'Advanced Micro Devices',  country:'US', sector:'Semis',        pe:31.2, pb:4.1,  cr:2.38, fcf:9.4,  div:0.0,  cap:'$260B',  rating:'BUY',  tradeable:true },
+  { ticker:'TSM',   name:'Taiwan Semiconductor',    country:'US', sector:'Semis',        pe:24.1, pb:8.2,  cr:1.88, fcf:16.4, div:1.7,  cap:'$950B',  rating:'BUY',  tradeable:true },
+  { ticker:'AVGO',  name:'Broadcom Inc.',            country:'US', sector:'Semis',        pe:32.8, pb:11.2, cr:1.08, fcf:21.4, div:1.5,  cap:'$820B',  rating:'BUY',  tradeable:true },
+  { ticker:'QCOM',  name:'Qualcomm Inc.',            country:'US', sector:'Semis',        pe:18.4, pb:7.8,  cr:2.24, fcf:15.2, div:2.0,  cap:'$198B',  rating:'ACC',  tradeable:true },
+  // Finance
+  { ticker:'JPM',   name:'JPMorgan Chase',           country:'US', sector:'Finance',      pe:13.4, pb:2.3,  cr:null, fcf:null, div:2.2,  cap:'$700B',  rating:'BUY',  tradeable:true },
+  { ticker:'GS',    name:'Goldman Sachs',            country:'US', sector:'Finance',      pe:15.1, pb:1.9,  cr:null, fcf:null, div:2.0,  cap:'$185B',  rating:'ACC',  tradeable:true },
+  { ticker:'V',     name:'Visa Inc.',                country:'US', sector:'Finance',      pe:31.8, pb:15.4, cr:1.38, fcf:24.1, div:0.8,  cap:'$620B',  rating:'BUY',  tradeable:true },
+  { ticker:'MA',    name:'Mastercard Inc.',          country:'US', sector:'Finance',      pe:38.4, pb:68.2, cr:1.14, fcf:22.4, div:0.6,  cap:'$520B',  rating:'BUY',  tradeable:true },
+  // Healthcare
+  { ticker:'UNH',   name:'UnitedHealth Group',       country:'US', sector:'Healthcare',   pe:16.2, pb:5.1,  cr:0.74, fcf:10.8, div:1.8,  cap:'$410B',  rating:'ACC',  tradeable:true },
+  { ticker:'LLY',   name:'Eli Lilly & Co.',          country:'US', sector:'Healthcare',   pe:52.4, pb:55.8, cr:1.18, fcf:19.4, div:0.7,  cap:'$780B',  rating:'BUY',  tradeable:true },
+  { ticker:'ABBV',  name:'AbbVie Inc.',              country:'US', sector:'Healthcare',   pe:48.2, pb:19.8, cr:0.88, fcf:12.6, div:3.4,  cap:'$350B',  rating:'ACC',  tradeable:true },
+  // Energy
+  { ticker:'XOM',   name:'ExxonMobil Corp.',         country:'US', sector:'Energy',       pe:13.8, pb:2.0,  cr:1.28, fcf:9.2,  div:3.5,  cap:'$510B',  rating:'ACC',  tradeable:true },
+  { ticker:'CVX',   name:'Chevron Corp.',            country:'US', sector:'Energy',       pe:12.6, pb:1.7,  cr:1.22, fcf:6.8,  div:4.6,  cap:'$270B',  rating:'ACC',  tradeable:true },
+  // High-growth / AI
+  { ticker:'TSLA',  name:'Tesla Inc.',               country:'US', sector:'EV/Auto',      pe:92.4, pb:13.2, cr:1.78, fcf:3.8,  div:0.0,  cap:'$980B',  rating:'HOLD', tradeable:true },
+  { ticker:'PLTR',  name:'Palantir Technologies',    country:'US', sector:'AI/SaaS',      pe:168.0,pb:21.4, cr:5.88, fcf:13.2, div:0.0,  cap:'$110B',  rating:'BUY',  tradeable:true },
+  { ticker:'CRWD',  name:'CrowdStrike Holdings',     country:'US', sector:'Cybersecurity', pe:78.4,pb:30.2, cr:1.68, fcf:26.4, div:0.0,  cap:'$94B',   rating:'BUY',  tradeable:true },
+  { ticker:'SNOW',  name:'Snowflake Inc.',           country:'US', sector:'AI/SaaS',      pe:null, pb:9.1,  cr:3.84, fcf:7.2,  div:0.0,  cap:'$52B',   rating:'ACC',  tradeable:true },
+  { ticker:'NET',   name:'Cloudflare Inc.',          country:'US', sector:'Cybersecurity', pe:null, pb:24.8, cr:3.18, fcf:9.8,  div:0.0,  cap:'$46B',   rating:'BUY',  tradeable:true },
+  // Consumer / Retail
+  { ticker:'AMGN',  name:'Amgen Inc.',               country:'US', sector:'Healthcare',   pe:16.4, pb:null, cr:1.18, fcf:16.8, div:3.1,  cap:'$152B',  rating:'ACC',  tradeable:true },
+  { ticker:'COST',  name:'Costco Wholesale',         country:'US', sector:'Retail',       pe:56.8, pb:16.2, cr:0.94, fcf:6.1,  div:0.6,  cap:'$430B',  rating:'BUY',  tradeable:true },
+  { ticker:'WMT',   name:'Walmart Inc.',             country:'US', sector:'Retail',       pe:40.2, pb:8.8,  cr:0.78, fcf:4.4,  div:1.0,  cap:'$760B',  rating:'ACC',  tradeable:true },
+  // Industrial / Defense
+  { ticker:'RTX',   name:'RTX Corp.',                country:'US', sector:'Defense',      pe:34.8, pb:3.1,  cr:0.98, fcf:5.8,  div:2.0,  cap:'$168B',  rating:'BUY',  tradeable:true },
+  { ticker:'LMT',   name:'Lockheed Martin',          country:'US', sector:'Defense',      pe:19.4, pb:19.8, cr:1.12, fcf:9.4,  div:2.7,  cap:'$124B',  rating:'BUY',  tradeable:true },
+  { ticker:'CAT',   name:'Caterpillar Inc.',         country:'US', sector:'Industrial',   pe:17.4, pb:8.8,  cr:1.38, fcf:10.4, div:1.5,  cap:'$192B',  rating:'ACC',  tradeable:true },
 ];
 
 const WATCHDOG_PAIRS = [
-  {primary:'ENB',  backup:'TRP'   }, {primary:'JDSC',  backup:'HLMA'  },
-  {primary:'MFG',  backup:'SMFG'  }, {primary:'KT',    backup:'SKT'   },
-  {primary:'MC',   backup:'PJT'   }, {primary:'JM',    backup:'OCPNY' },
-  {primary:'BPOST',backup:'PostNL'}, {primary:'SDVX',  backup:'ATKR'  },
-  {primary:'LGEN', backup:'JUST'  }, {primary:'VNET',  backup:'GDS'   },
-  {primary:'GIL',  backup:'HBI'   }, {primary:'KPELY', backup:'SCI'   },
+  // Mega-cap tech
+  { primary:'AAPL',  backup:'MSFT',  label:'Big Tech'      },
+  { primary:'NVDA',  backup:'AMD',   label:'Semiconduttori' },
+  { primary:'GOOGL', backup:'META',  label:'Digital Ads'   },
+  { primary:'AMZN',  backup:'COST',  label:'E-Commerce'    },
+  // Finanziari
+  { primary:'JPM',   backup:'BAC',   label:'Banking'       },
+  { primary:'GS',    backup:'MS',    label:'Investment Bank'},
+  { primary:'V',     backup:'MA',    label:'Payments'      },
+  { primary:'BLK',   backup:'SCHW',  label:'Asset Mgmt'    },
+  // Energia
+  { primary:'XOM',   backup:'CVX',   label:'Oil Majors'    },
+  { primary:'COP',   backup:'XLE',   label:'E&P vs ETF'    },
+  // Difesa & Industriali
+  { primary:'LMT',   backup:'RTX',   label:'Defense'       },
+  { primary:'CAT',   backup:'HON',   label:'Industriali'   },
+  // Pharma
+  { primary:'LLY',   backup:'JNJ',   label:'Pharma'        },
+  { primary:'ABBV',  backup:'MRK',   label:'Biopharma'     },
+  // Consumer
+  { primary:'WMT',   backup:'TGT',   label:'Retail'        },
+  { primary:'MCD',   backup:'SBUX',  label:'Food & Bev'    },
+  // ETF macro
+  { primary:'SPY',   backup:'QQQ',   label:'Broad Market'  },
+  { primary:'GLD',   backup:'TLT',   label:'Safe Haven'    },
+  // Growth
+  { primary:'PLTR',  backup:'CRWD',  label:'AI/Cyber'      },
+  { primary:'COIN',  backup:'MSTR',  label:'Crypto Proxy'  },
 ];
 
 const MACRO_GEO = [
@@ -1184,7 +1287,7 @@ function connectWS() {
     try { data = JSON.parse(e.data); } catch(_) { return; }
     if (data.type === 'quote') { livePrices[data.symbol] = data.price; updatePriceDisplays(data.symbol, data.price); }
     if (data.type === 'account') updateAccountKPIs(data.account);
-    if (data.type === 'positions') updatePositionsTable(data.positions);
+    if (data.type === 'positions') { updatePositionsTable(data.positions); refreshIntradayCharts(); }
     if (data.type === 'trade_update') handleTradeUpdate(data.order);
     if (data.type === 'autotrader_log') prependAtLogEntry(data.entry);
     if (data.type === 'autotrader_trade') showToast(`🤖 AutoTrader: ${data.action} ${data.symbol}${data.notional ? ' $'+data.notional : data.qty ? ' '+data.qty+' shares' : ''}`, 'success');
@@ -1401,12 +1504,24 @@ async function submitOrder() {
   }
 }
 function openOrderPanel(prefill = {}) {
-  if (prefill.symbol) document.getElementById('order-symbol').value = prefill.symbol;
+  // Navigate to trading section → new order tab
+  showSection('section-trading');
+  // Activate "Nuovo Ordine" tab
+  const tabs = document.querySelectorAll('#section-trading .tab');
+  const tabContents = document.querySelectorAll('#section-trading .tab-content');
+  tabs.forEach(t => t.classList.remove('active'));
+  tabContents.forEach(t => t.classList.remove('active'));
+  const newOrderTab = [...tabs].find(t => t.textContent.trim() === 'Nuovo Ordine');
+  if (newOrderTab) newOrderTab.classList.add('active');
+  const newOrderContent = document.getElementById('trading-tab-new-order');
+  if (newOrderContent) newOrderContent.classList.add('active');
+  // Pre-fill form
+  if (prefill.symbol) { const el = document.getElementById('order-symbol'); if (el) el.value = prefill.symbol.toUpperCase(); }
   if (prefill.side) setSide(prefill.side);
-  if (prefill.qty) document.getElementById('order-qty').value = prefill.qty;
-  document.getElementById('order-panel').classList.add('open');
+  if (prefill.qty) { const el = document.getElementById('order-qty'); if (el) el.value = prefill.qty; }
+  setTimeout(() => { const el = document.getElementById('order-symbol'); if (el) el.focus(); }, 150);
 }
-function closeOrderPanel() { document.getElementById('order-panel').classList.remove('open'); }
+function closeOrderPanel() { /* noop — kept for compatibility */ }
 
 async function closePosition(symbol, qty) {
   document.getElementById('modal-title').textContent = 'Chiudi Posizione';
@@ -1824,6 +1939,7 @@ function renderWatchdog() {
       <div class="pair-row">
         <div>
           <span class="pair-ticker">${pair.primary}</span>
+          ${pair.label ? `<span style="font-size:0.7rem;color:var(--text-muted);margin-left:6px">${pair.label}</span>` : ''}
           ${isAlert ? '<span style="color:var(--orange);margin-left:6px;font-size:0.75rem">⚠ ALERT</span>' : ''}
         </div>
         <div class="pair-score">Score: <b>${primaryScore}</b></div>
@@ -1834,7 +1950,7 @@ function renderWatchdog() {
       </div>
       ${isAlert ? `
         <div style="margin-top:10px;font-size:0.78rem;color:var(--orange)">Backup supera primario di ${backupScore-primaryScore} punti</div>
-        ${isTradeable ? `<button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="watchdogSwap('${pair.primary}','${pair.backup}')">Vendi ${pair.primary} / Compra ${pair.backup}</button>` : ''}
+        <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="watchdogSwap('${pair.primary}','${pair.backup}')">Vendi ${pair.primary} / Compra ${pair.backup}</button>
       ` : ''}
     </div>`;
   }).join('');
@@ -2167,6 +2283,59 @@ async function executeAllOrders(amount, alloc) {
 // ============================================================
 // AUTOTRADER
 // ============================================================
+async function refreshMacroBrief() {
+  const btn = document.getElementById('at-macro-refresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    await secureFetch('/api/autotrader/refresh-macro', { method: 'POST' });
+    showToast('Macro brief aggiornato', 'success');
+  } catch (e) { showToast('Errore aggiornamento macro: ' + e.message, 'error'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '↺ Aggiorna'; } }
+}
+
+function updateMacroBrief(brief, ts) {
+  const el = document.getElementById('at-macro-brief');
+  const tsEl = document.getElementById('at-macro-ts');
+  if (tsEl && ts) {
+    const age = Date.now() - new Date(ts).getTime();
+    const hours = Math.floor(age / 3600000);
+    const mins  = Math.floor((age % 3600000) / 60000);
+    const ageStr = hours > 0 ? `${hours}h ${mins}m fa` : `${mins}m fa`;
+    const stale = age > 6 * 3600000;
+    tsEl.innerHTML = `<span style="color:${stale ? 'var(--red)' : 'var(--text-muted)'}">${new Date(ts).toLocaleTimeString('it-IT')} (${ageStr})</span>`;
+  }
+  if (!el || !brief) return;
+
+  let data;
+  try { data = typeof brief === 'string' ? JSON.parse(brief) : brief; } catch (_) {
+    el.textContent = brief; return;
+  }
+
+  const regimeColor = data.regime === 'RISK-ON' ? 'var(--green)' : data.regime === 'RISK-OFF' ? 'var(--red)' : 'var(--gold)';
+  const regimeIcon  = data.regime === 'RISK-ON' ? '▲' : data.regime === 'RISK-OFF' ? '▼' : '◆';
+
+  const row = (icon, label, text) => text ? `
+    <div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="min-width:22px;text-align:center;font-size:1rem">${icon}</div>
+      <div>
+        <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:3px">${label}</div>
+        <div style="font-size:0.83rem;line-height:1.55;color:var(--text)">${text}</div>
+      </div>
+    </div>` : '';
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;padding-bottom:14px;border-bottom:2px solid ${regimeColor}">
+      <div style="font-size:1.6rem;font-weight:900;color:${regimeColor}">${regimeIcon} ${data.regime || 'NEUTRAL'}</div>
+      <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.4">${data.regime_reason || ''}</div>
+    </div>
+    ${row('🌐', 'Equity Globale', data.equity)}
+    ${row('🏦', 'Banche Centrali', data.central_banks)}
+    ${row('📈', 'Treasury & Spread', data.yields)}
+    ${row('🛢️', 'Commodity', data.commodities)}
+    ${row('⚠️', 'Rischi Geopolitici', data.geopolitical)}
+    ${row('🔄', 'Rotazione Settoriale', data.sectors)}
+    ${row('📅', 'Prossimi Eventi', data.events)}
+  `;
 function updateMacroBrief(brief, ts) {
   const el = document.getElementById('at-macro-brief');
   if (el && brief) el.textContent = brief;
@@ -2210,6 +2379,14 @@ function updateAutoTraderUI(data) {
   if (data.intervalMs) setVal('at-interval', Math.round(data.intervalMs / 60000));
   setVal('at-confidence', data.confidenceThreshold);
   setVal('at-max-pos', data.maxPositions);
+  setVal('at-max-pos-sector', data.maxPositionsPerSector);
+  setVal('at-max-pct', data.maxPositionPct);
+
+  setVal('at-drawdown-limit', data.drawdownLimit != null ? Math.round(data.drawdownLimit * 100) : null);
+  setVal('at-target-vol', data.targetVolatility != null ? Math.round(data.targetVolatility * 100) : null);
+  setChk('at-allow-short', data.allowShort);
+  setChk('at-ai-managed', data.aiManagedWatchlist !== false);
+  setVal('at-watchlist-size', data.watchlistSize || 30);
   setVal('at-max-pct', data.maxPositionPct);
   setVal('at-stop-loss', data.stopLossPct);
   setVal('at-take-profit', data.takeProfitPct);
@@ -2220,6 +2397,24 @@ function updateAutoTraderUI(data) {
     const el = document.getElementById('at-watchlist');
     if (el) el.value = data.watchlist.join(', ');
   }
+  if (Array.isArray(data.aiSelectedWatchlist) && data.aiSelectedWatchlist.length) {
+    const el = document.getElementById('at-ai-selected');
+    if (el) el.textContent = data.aiSelectedWatchlist.join(' · ');
+  }
+  toggleWatchlistMode();
+}
+
+function toggleWatchlistMode() {
+  const aiMode = document.getElementById('at-ai-managed')?.checked;
+  const manualRow = document.getElementById('at-watchlist-manual-row');
+  const infoBox = document.getElementById('at-ai-watchlist-info');
+  const sizeRow = document.getElementById('at-watchlist-size-row');
+  if (manualRow) manualRow.style.display = aiMode ? 'none' : '';
+  if (infoBox) infoBox.style.display = aiMode ? '' : 'none';
+  if (sizeRow) sizeRow.style.display = aiMode ? '' : 'none';
+}
+
+const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold', WATCHLIST:'at-action-hold' };
 }
 
 const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold' };
@@ -2301,6 +2496,9 @@ async function saveAutoTraderConfig() {
     intervalMinutes: +g('at-interval').value,
     confidenceThreshold: +g('at-confidence').value,
     maxPositions: +g('at-max-pos').value,
+    maxPositionsPerSector: +g('at-max-pos-sector').value,
+    maxPositionPct: +g('at-max-pct').value,
+
     maxPositionPct: +g('at-max-pct').value,
     stopLossPct: +g('at-stop-loss').value,
     takeProfitPct: +g('at-take-profit').value,
@@ -2317,6 +2515,31 @@ async function saveAutoTraderConfig() {
   } catch (e) { showToast('Errore: ' + e.message, 'error'); }
 }
 
+async function saveWatchlistConfig() {
+  const g = id => document.getElementById(id);
+  const aiManaged = g('at-ai-managed')?.checked ?? true;
+  const watchlistSize = +(g('at-watchlist-size')?.value || 10);
+  // Save ai mode + size via config endpoint
+  try {
+    await secureFetch('/api/autotrader/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aiManagedWatchlist: aiManaged, watchlistSize }),
+    }).then(r => r.json());
+  } catch (_) {}
+  if (!aiManaged) {
+    // also save manual watchlist
+    const raw = (g('at-watchlist')?.value || '').split(',');
+    const symbols = raw.map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s));
+    if (!symbols.length) return showToast('Nessun simbolo valido', 'error');
+    try {
+      const data = await secureFetch('/api/autotrader/watchlist', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbols }),
+      }).then(r => r.json());
+      document.getElementById('at-watchlist').value = data.watchlist.join(', ');
+      showToast(`Watchlist salvata: ${data.watchlist.length} simboli`, 'success');
+    } catch (e) { showToast('Errore: ' + e.message, 'error'); return; }
+  }
+  showToast('Impostazioni watchlist salvate', 'success');
 async function saveWatchlist() {
   const raw = (document.getElementById('at-watchlist')?.value || '').split(',');
   const symbols = raw.map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s));
@@ -2346,6 +2569,155 @@ async function runAutoTraderNow() {
     showToast('Ciclo di ricerca avviato...', 'info');
     setTimeout(loadAutoTraderStatus, 4000);
   } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+}
+
+// ============================================================
+// INTRADAY CHARTS GRID
+// ============================================================
+const intradayCharts = {};  // symbol -> Chart instance
+let intradayRefreshTimer = null;
+
+async function refreshIntradayCharts() {
+  const positions = currentPositions || [];
+  const grid = document.getElementById('at-intraday-grid');
+  if (!grid) return;
+
+  if (!positions.length) {
+    grid.innerHTML = '<div style="color:var(--text-muted);font-size:0.82rem;padding:24px;text-align:center">Nessuna posizione aperta</div>';
+    return;
+  }
+
+  // Add a canvas for each position not yet present
+  const symbols = positions.map(p => p.symbol);
+  symbols.forEach(sym => {
+    if (!document.getElementById(`intraday-canvas-${sym}`)) {
+      const div = document.createElement('div');
+      div.className = 'card';
+      div.style.padding = '14px';
+      div.id = `intraday-card-${sym}`;
+      div.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-weight:700;color:var(--gold)">${sym}</span>
+          <span id="intraday-price-${sym}" style="font-size:0.9rem;font-weight:700">—</span>
+          <span id="intraday-chg-${sym}" style="font-size:0.78rem;margin-left:6px">—</span>
+        </div>
+        <div class="intraday-chart-wrap"><canvas id="intraday-canvas-${sym}"></canvas></div>`;
+      grid.appendChild(div);
+    }
+  });
+
+  // Remove cards for closed positions
+  Object.keys(intradayCharts).forEach(sym => {
+    if (!symbols.includes(sym)) {
+      intradayCharts[sym].destroy();
+      delete intradayCharts[sym];
+      const el = document.getElementById(`intraday-card-${sym}`);
+      if (el) el.remove();
+    }
+  });
+
+  // Fetch bars for each symbol
+  const token = sessionStorage.getItem('nexus_token');
+  await Promise.all(symbols.map(async sym => {
+    try {
+      const res = await fetch(`/api/autotrader/intraday/${sym}`, { headers: { Authorization: 'Bearer ' + token } });
+      const data = await res.json();
+      if (!data.bars || !data.bars.length) return;
+      renderIntradayChart(sym, data.bars, positions.find(p => p.symbol === sym));
+    } catch(_) {}
+  }));
+
+  const ts = document.getElementById('at-intraday-ts');
+  if (ts) ts.textContent = 'Aggiornato ' + new Date().toLocaleTimeString('it-IT', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+function renderIntradayChart(sym, bars, pos) {
+  const canvas = document.getElementById(`intraday-canvas-${sym}`);
+  if (!canvas) return;
+
+  const labels = bars.map(b => {
+    const d = new Date(b.t);
+    return d.toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit', timeZone:'America/New_York'});
+  });
+  const prices = bars.map(b => b.c);
+  const last = prices[prices.length - 1];
+  const first = prices[0];
+  const chgPct = ((last - first) / first * 100);
+  const color = chgPct >= 0 ? '#2ecc71' : '#e74c3c';
+
+  // Update price badge
+  const priceEl = document.getElementById(`intraday-price-${sym}`);
+  const chgEl = document.getElementById(`intraday-chg-${sym}`);
+  if (priceEl) priceEl.textContent = '$' + last.toFixed(2);
+  if (chgEl) { chgEl.textContent = (chgPct >= 0 ? '+' : '') + chgPct.toFixed(2) + '%'; chgEl.style.color = color; }
+
+  // Entry price line if position exists
+  const entryPrice = pos ? +pos.avg_entry_price : null;
+
+  const datasets = [{
+    label: sym,
+    data: prices,
+    borderColor: color,
+    backgroundColor: color + '18',
+    borderWidth: 1.5,
+    pointRadius: 0,
+    fill: true,
+    tension: 0.1,
+  }];
+  if (entryPrice) {
+    datasets.push({
+      label: 'Entry',
+      data: prices.map(() => entryPrice),
+      borderColor: '#f39c12',
+      borderWidth: 1,
+      borderDash: [4, 4],
+      pointRadius: 0,
+      fill: false,
+    });
+  }
+
+  if (intradayCharts[sym]) {
+    intradayCharts[sym].data.labels = labels;
+    intradayCharts[sym].data.datasets[0].data = prices;
+    intradayCharts[sym].data.datasets[0].borderColor = color;
+    intradayCharts[sym].data.datasets[0].backgroundColor = color + '18';
+    if (entryPrice && intradayCharts[sym].data.datasets[1]) {
+      intradayCharts[sym].data.datasets[1].data = prices.map(() => entryPrice);
+    }
+    intradayCharts[sym].update('none');
+    return;
+  }
+
+  intradayCharts[sym] = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: 'index', intersect: false,
+          callbacks: { label: ctx => `$${ctx.parsed.y.toFixed(2)}` }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#888', font: { size: 9 }, maxTicksLimit: 8 }, grid: { color: '#ffffff08' } },
+        y: { ticks: { color: '#888', font: { size: 9 }, callback: v => '$' + v.toFixed(0) }, grid: { color: '#ffffff08' } }
+      }
+    }
+  });
+}
+
+function startIntradayAutoRefresh() {
+  if (intradayRefreshTimer) clearInterval(intradayRefreshTimer);
+  intradayRefreshTimer = setInterval(() => {
+    // Only refresh during market hours (roughly 09:00–16:30 ET = 13:00–20:30 UTC)
+    const now = new Date();
+    const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
+    if (utcH >= 13.0 && utcH <= 20.5) refreshIntradayCharts();
+  }, 30000);
 }
 
 // ============================================================
@@ -2486,6 +2858,7 @@ async function init() {
   } catch(_) {}
   setInterval(initHistoryChart, 60000);
   loadAutoTraderStatus();
+  refreshIntradayCharts(); startIntradayAutoRefresh();
 }
 
 // Auto-init if already unlocked (session exists)
