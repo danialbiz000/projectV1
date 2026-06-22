@@ -1129,7 +1129,7 @@ async function fetchMarketMovers() {
 }
 
 async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
-  const n = Math.max(5, Math.min(30, AT.watchlistSize || 10));
+  const n = Math.max(5, Math.min(50, AT.watchlistSize || 30));
 
   // Combine static universe with live market movers
   const dynamicMovers = await fetchMarketMovers();
