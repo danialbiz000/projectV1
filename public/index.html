@@ -300,6 +300,7 @@ tr:hover td { background: var(--surface2); }
 .price-change-neg { color: var(--red); font-size: 0.88rem; font-weight: 600; }
 /* Macro brief */
 .macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+.macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--gold); border-radius: var(--radius); padding: 16px; font-size: 0.82rem; line-height: 1.75; color: var(--text-muted); }
 /* AutoTrader toggle */
 .toggle-switch { position: relative; display: inline-block; width: 48px; height: 26px; cursor: pointer; }
 .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
@@ -567,6 +568,10 @@ tr:hover td { background: var(--surface2); }
             </div>
             <div class="form-row">
               <div class="field">
+                <label>Max posizioni</label>
+                <input type="number" id="at-max-pos" value="5" min="1" max="20">
+              </div>
+              <div class="field">
                 <label>Max % equity/trade</label>
                 <input type="number" id="at-max-pct" value="15" min="1" max="50">
               </div>
@@ -577,6 +582,13 @@ tr:hover td { background: var(--surface2); }
                 <div style="font-size:0.78rem;color:var(--text-muted);padding:8px;background:rgba(255,255,255,0.03);border-radius:6px;border:1px solid rgba(255,255,255,0.07)">
                   ⚡ Brackets adattivi alla volatilità (σ) — calcolati automaticamente per ogni stock. SL review AI ogni 2 giorni.
                 </div>
+              <div class="field">
+                <label>Stop Loss % (bracket)</label>
+                <input type="number" id="at-stop-loss" value="8" min="1" max="50" step="0.5">
+              </div>
+              <div class="field">
+                <label>Take Profit % (bracket)</label>
+                <input type="number" id="at-take-profit" value="30" min="1" max="200" step="1">
               </div>
             </div>
             <div class="form-row">
@@ -623,6 +635,16 @@ tr:hover td { background: var(--surface2); }
         <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.7">
           Ogni ciclo: macro brief → AI seleziona i simboli → 60gg bars → RSI · MACD · SMA · Volume → Claude decide BUY/SELL/SHORT/COVER/HOLD → bracket order automatico.<br>
           <b>Safety:</b> solo NYSE · no holiday · drawdown limit → halt · bracket SL&amp;TP · sizing adattivo · Telegram.
+          <div class="card-title" style="margin-bottom:0">Watchlist Simboli</div>
+          <button class="btn btn-secondary btn-sm" onclick="saveWatchlist()">Salva</button>
+        </div>
+        <div class="field" style="margin-bottom:8px">
+          <label>Simboli separati da virgola (max 50)</label>
+          <input type="text" id="at-watchlist" value="ENB,GIL,IBKR,MC,VNET,AAPL,SPY,QQQ,LMT,RTX" placeholder="AAPL, SPY, QQQ, ...">
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.7">
+          Ogni ciclo: 60 giorni di bars → RSI · MACD · SMA · Volume rel. → Claude decide BUY/SELL/SHORT/COVER/HOLD → se confidence ≥ soglia esegue bracket order (con SL&TP automatici).<br>
+          <b>Safety:</b> solo in orario NYSE · no holiday · drawdown limit → halt · bracket automatico · sizing adattivo alla volatilità · notifiche Telegram.
         </div>
       </div>
       <div class="card" style="margin-bottom:20px">
@@ -632,6 +654,7 @@ tr:hover td { background: var(--surface2); }
             <span id="at-macro-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
             <button class="btn btn-secondary btn-sm" id="at-macro-refresh-btn" onclick="refreshMacroBrief()">↺ Aggiorna</button>
           </div>
+          <span id="at-macro-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
         </div>
         <div id="at-macro-brief" class="macro-brief-card">Nessuna ricerca macro ancora — attiva il motore per avviare il primo ciclo.</div>
       </div>
@@ -2313,6 +2336,11 @@ function updateMacroBrief(brief, ts) {
     ${row('🔄', 'Rotazione Settoriale', data.sectors)}
     ${row('📅', 'Prossimi Eventi', data.events)}
   `;
+function updateMacroBrief(brief, ts) {
+  const el = document.getElementById('at-macro-brief');
+  if (el && brief) el.textContent = brief;
+  const tsEl = document.getElementById('at-macro-ts');
+  if (tsEl && ts) tsEl.textContent = new Date(ts).toLocaleTimeString('it-IT');
 }
 
 async function loadAutoTraderStatus() {
@@ -2359,6 +2387,12 @@ function updateAutoTraderUI(data) {
   setChk('at-allow-short', data.allowShort);
   setChk('at-ai-managed', data.aiManagedWatchlist !== false);
   setVal('at-watchlist-size', data.watchlistSize || 30);
+  setVal('at-max-pct', data.maxPositionPct);
+  setVal('at-stop-loss', data.stopLossPct);
+  setVal('at-take-profit', data.takeProfitPct);
+  setVal('at-drawdown-limit', data.drawdownLimit != null ? Math.round(data.drawdownLimit * 100) : null);
+  setVal('at-target-vol', data.targetVolatility != null ? Math.round(data.targetVolatility * 100) : null);
+  setChk('at-allow-short', data.allowShort);
   if (Array.isArray(data.watchlist)) {
     const el = document.getElementById('at-watchlist');
     if (el) el.value = data.watchlist.join(', ');
@@ -2381,6 +2415,9 @@ function toggleWatchlistMode() {
 }
 
 const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold', WATCHLIST:'at-action-hold' };
+}
+
+const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold' };
 
 function atLogRowHtml(e) {
   const cls = AT_ACTION_CSS[e.action] || '';
@@ -2462,6 +2499,9 @@ async function saveAutoTraderConfig() {
     maxPositionsPerSector: +g('at-max-pos-sector').value,
     maxPositionPct: +g('at-max-pct').value,
 
+    maxPositionPct: +g('at-max-pct').value,
+    stopLossPct: +g('at-stop-loss').value,
+    takeProfitPct: +g('at-take-profit').value,
     drawdownLimit: +g('at-drawdown-limit').value / 100,
     targetVolatility: +g('at-target-vol').value / 100,
     allowShort: g('at-allow-short').checked,
@@ -2500,6 +2540,17 @@ async function saveWatchlistConfig() {
     } catch (e) { showToast('Errore: ' + e.message, 'error'); return; }
   }
   showToast('Impostazioni watchlist salvate', 'success');
+async function saveWatchlist() {
+  const raw = (document.getElementById('at-watchlist')?.value || '').split(',');
+  const symbols = raw.map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s));
+  if (!symbols.length) return showToast('Nessun simbolo valido', 'error');
+  try {
+    const data = await secureFetch('/api/autotrader/watchlist', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbols }),
+    }).then(r => r.json());
+    document.getElementById('at-watchlist').value = data.watchlist.join(', ');
+    showToast(`Watchlist salvata: ${data.watchlist.length} simboli`, 'success');
+  } catch (e) { showToast('Errore: ' + e.message, 'error'); }
 }
 
 async function resetAutoTraderHalt() {

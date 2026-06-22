@@ -298,6 +298,35 @@ function validateOrderBody(raw) {
     }
   }
 
+  }
+
+  if (body.client_order_id) {
+    const clientId = String(body.client_order_id).trim();
+    if (!/^[A-Za-z0-9_-]{1,48}$/.test(clientId)) throw httpError(400, 'Invalid client_order_id.');
+    order.client_order_id = clientId;
+  }
+
+  // Bracket order support
+  if (body.order_class) {
+    const oc = String(body.order_class).toLowerCase();
+    if (!['simple', 'bracket', 'oco', 'oto'].includes(oc)) throw httpError(400, 'Invalid order_class.');
+    order.order_class = oc;
+  }
+  if (body.take_profit && typeof body.take_profit === 'object') {
+    const tp = body.take_profit;
+    const tpPrice = parsePositiveNumber(tp.limit_price, 'take_profit.limit_price');
+    if (tpPrice) order.take_profit = { limit_price: String(tpPrice.toFixed(2)) };
+  }
+  if (body.stop_loss && typeof body.stop_loss === 'object') {
+    const sl = body.stop_loss;
+    const slStop = parsePositiveNumber(sl.stop_price, 'stop_loss.stop_price');
+    const slLimit = parsePositiveNumber(sl.limit_price, 'stop_loss.limit_price');
+    if (slStop) {
+      order.stop_loss = { stop_price: String(slStop.toFixed(2)) };
+      if (slLimit) order.stop_loss.limit_price = String(slLimit.toFixed(2));
+    }
+  }
+
   return order;
 }
 
@@ -399,6 +428,9 @@ app.get('/api/alpaca/bars/:symbol', async (req, res) => {
     // Normalise to multi-symbol format expected by frontend: { bars: { SYM: [...] } }
     const bars = Array.isArray(bd.bars) ? bd.bars : [];
     res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
+    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Day', limit: '30' });
+    const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+    res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -412,6 +444,11 @@ app.get('/api/alpaca/bars-intraday/:symbol', async (req, res) => {
     const bd = await upstream.json();
     const bars = Array.isArray(bd.bars) ? bd.bars : [];
     res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
+    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '5Min', start: start.toISOString(), limit: '100' });
+    const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+    res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -425,6 +462,11 @@ app.get('/api/alpaca/bars-1min/:symbol', async (req, res) => {
     const bd = await upstream.json();
     const bars = Array.isArray(bd.bars) ? bd.bars : [];
     res.status(upstream.status).json({ bars: { [sym]: bars }, next_page_token: bd.next_page_token || null });
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 13, 30));
+    const qs = new URLSearchParams({ symbols: req.params.symbol, timeframe: '1Min', start: start.toISOString(), limit: '400' });
+    const upstream = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+    res.status(upstream.status).json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -521,6 +563,25 @@ Rules:
 - CLOSE (or COVER for shorts) if: clear trend break, RSI still moving against position, P&L < -2× adaptive SL
 - HOLD is the default for high-vol stocks with temporary moves against position
 - addNotional: max $5000, only for ADD action, null otherwise`;
+
+Schema: {"symbol":"","action":"BUY|SELL|SHORT|COVER|HOLD","confidence":0.0,"reasoning":"","suggestedNotional":0}
+
+Action definitions:
+- BUY: open a new long position (only valid when hasPosition is false and positionSide is none)
+- SELL: close an existing long position (only valid when positionSide is long)
+- SHORT: open a new short position (only valid when hasPosition is false and allowShort is true)
+- COVER: close an existing short position (only valid when positionSide is short)
+- HOLD: take no action
+
+Rules:
+- confidence: 0.0–1.0. Use ≥0.85 only when multiple signals strongly align.
+- reasoning: 2-3 sentences combining technical + macro rationale. Be specific.
+- suggestedNotional: USD amount (0 for HOLD/SELL/COVER).
+- RSI interpretation: <30 oversold (bullish long bias), >70 overbought (bearish / short bias)
+- MACD: positive = bullish momentum, negative = bearish momentum
+- Volatility: high vol = smaller position, low vol = larger position (already handled by server)
+- ALWAYS integrate the macro context. Geopolitical or CB events override technicals.
+- Prefer HOLD over low-conviction trades. A missed opportunity is better than a forced loss.`;
 
 app.post('/api/chat', async (req, res) => {
   try {
@@ -921,6 +982,87 @@ function markAutoTrade(symbol, action) {
 
 function saveAtState() {
   try {
+// ─── Telegram Notifications ───────────────────────────────────────────────────
+async function sendTelegram(text) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
+    });
+  } catch (_) {}
+}
+
+// ─── Adaptive Position Sizing ─────────────────────────────────────────────────
+function adaptiveNotional(equity, annualizedVol, targetVol, maxPositionPct) {
+  const maxNotional = equity * maxPositionPct / 100;
+  if (!annualizedVol || annualizedVol <= 0) return maxNotional;
+  // Scale position size inversely with volatility, capped at 1.5× base
+  const scaleFactor = Math.min(targetVol / annualizedVol, 1.5);
+  return Math.min(maxNotional * scaleFactor, equity * 0.30); // hard cap at 30% of equity
+}
+
+// ─── AutoTrader Engine ────────────────────────────────────────────────────────
+const AT_WATCHLIST_DEFAULT = ['ENB', 'GIL', 'IBKR', 'MC', 'VNET', 'AAPL', 'SPY', 'QQQ', 'LMT', 'RTX'];
+
+const AT = {
+  enabled: false,
+  intervalMs: 30 * 60 * 1000,
+  confidenceThreshold: 0.75,
+  maxPositions: 5,
+  maxPositionPct: 15,
+  stopLossPct: 8,
+  takeProfitPct: 30,
+  drawdownLimit: 0.15,
+  allowShort: false,
+  targetVolatility: 0.20,
+  watchlist: [...AT_WATCHLIST_DEFAULT],
+  log: [],
+  timer: null,
+  lastRunAt: null,
+  nextRunAt: null,
+  todayKey: '',
+  // Map<symbol, string[]> — tracks which actions were taken today per symbol
+  todayTrades: new Map(),
+  dailyTradeHistory: {},
+  sessionStartEquity: null,
+  halted: false,
+  haltReason: '',
+  running: false,
+  lastMacroBrief: '',
+  lastMacroTs: null,
+};
+
+function ensureAtDayState() {
+  const key = easternDateKey();
+  if (AT.todayKey !== key) {
+    AT.todayKey = key;
+    AT.todayTrades = new Map();
+  }
+  if (!AT.dailyTradeHistory[AT.todayKey]) AT.dailyTradeHistory[AT.todayKey] = [];
+}
+
+function countTodayTrades() {
+  let count = 0;
+  for (const actions of AT.todayTrades.values()) count += actions.length;
+  return count;
+}
+
+function hasTradedToday(symbol, action) {
+  return (AT.todayTrades.get(symbol) || []).includes(action);
+}
+
+function markAutoTrade(symbol, action) {
+  ensureAtDayState();
+  const actions = AT.todayTrades.get(symbol) || [];
+  actions.push(action);
+  AT.todayTrades.set(symbol, actions);
+  saveAtState();
+}
+
+function saveAtState() {
+  try {
     ensureAtDayState();
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const todayTradesObj = {};
@@ -1087,6 +1229,19 @@ Return a JSON object (no markdown, no explanation) with exactly these keys:
 }`;
 
   let brief = JSON.stringify({ regime: 'NEUTRAL', regime_reason: 'No data.', equity: fxStr, central_banks: '', yields: '', commodities: '', geopolitical: '', sectors: '', events: '' });
+Provide a detailed macro investment brief covering ALL of the following:
+1. Global equity sentiment (US, EU, Asia) — current risk-on/risk-off regime, key index momentum
+2. Central banks: Fed (rate path, dot plot, recent statements), ECB, BoJ, PBoC — explicit policy direction
+3. US Treasury yields: 2Y and 10Y current levels, yield curve shape (inverted/flat/steep), credit spreads
+4. Commodities: WTI crude, Brent, Gold, key moves and drivers
+5. Top 3 geopolitical risks currently affecting markets — be specific (country, event, impact)
+6. Sector rotation: which sectors are seeing inflows/outflows and why
+7. Critical macro events next 48-72h: FOMC, CPI, NFP, earnings, central bank meetings
+8. Overall regime: RISK-ON / RISK-OFF / NEUTRAL with brief justification
+
+Be specific and data-oriented. Prose format, no headers or bullets. Max 10 sentences.`;
+
+  let brief = `[${dateStr}] FX: ${fxStr}. Standard macro environment — no specific signals.`;
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -1098,6 +1253,7 @@ Return a JSON object (no markdown, no explanation) with exactly these keys:
     if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
     JSON.parse(raw); // validate — throws if invalid
     brief = raw;
+    brief = d.content?.[0]?.text || brief;
   } catch (_) {}
 
   return { brief, fxStr, dateStr };
@@ -1712,6 +1868,298 @@ app.get('/api/autotrader/status', (req, res) => {
   res.json({ ...atPublicState(), log: AT.log.slice(0, 20) });
 });
 
+async function atCycle() {
+  if (!AT.enabled || AT.running) return;
+  AT.running = true;
+  ensureAtDayState();
+  AT.lastRunAt = Date.now();
+  saveAtState();
+
+  try {
+    if (AT.halted) {
+      atLog({ symbol: 'SYSTEM', action: 'HALTED', confidence: 0, reasoning: AT.haltReason, executed: false });
+      return;
+    }
+    if (!isMarketHours()) {
+      const reason = isHoliday() ? 'NYSE holiday — market closed' : 'Market closed (ET hours)';
+      atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: reason, executed: false });
+      return;
+    }
+
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+    if (!anthropicKey) {
+      atLog({ symbol: 'SYSTEM', action: 'ERROR', confidence: 0, reasoning: 'Anthropic key missing', executed: false });
+      return;
+    }
+
+    let account, positions;
+    try {
+      ({ account, positions } = await refreshAccountSnapshot());
+    } catch (e) {
+      atLog({ symbol: 'SYSTEM', action: 'ERROR', confidence: 0, reasoning: 'Alpaca fetch failed: ' + e.message, executed: false });
+      return;
+    }
+
+    const equity = +account.equity;
+    if (!AT.sessionStartEquity) AT.sessionStartEquity = equity;
+    const drawdown = (AT.sessionStartEquity - equity) / AT.sessionStartEquity;
+    if (drawdown > AT.drawdownLimit) {
+      AT.halted = true;
+      AT.haltReason = `Equity drawdown ${(drawdown * 100).toFixed(1)}% exceeds limit ${(AT.drawdownLimit * 100).toFixed(0)}% — emergency stop`;
+      atLog({ symbol: 'SYSTEM', action: 'HALTED', confidence: 0, reasoning: AT.haltReason, executed: false });
+      broadcast({ type: 'autotrader_halted', reason: AT.haltReason });
+      await sendTelegram(`🚨 <b>AutoTrader HALTED</b>\n${AT.haltReason}`);
+      return;
+    }
+
+    ensureAtDayState();
+    if (countTodayTrades() >= AUTOTRADER_MAX_DAILY_TRADES) {
+      atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: `Daily trade limit reached (${AUTOTRADER_MAX_DAILY_TRADES}).`, executed: false });
+      return;
+    }
+
+    let openPositions = Array.isArray(positions) ? positions : [];
+    let posMap = new Map(openPositions.map(p => [p.symbol, p]));
+    let buyingPower = +account.buying_power;
+
+    // Phase 1: macro research
+    const { brief: macroBrief, fxStr } = await fetchMacroContext(anthropicKey);
+    AT.lastMacroBrief = macroBrief;
+    AT.lastMacroTs = Date.now();
+    saveAtState();
+    broadcast({ type: 'autotrader_macro', brief: macroBrief, ts: AT.lastMacroTs });
+    atLog({ symbol: 'MACRO', action: 'RESEARCH', confidence: 1, reasoning: macroBrief.slice(0, 200) + (macroBrief.length > 200 ? '…' : ''), executed: false });
+
+    // Phase 2: per-symbol decisions
+    const targets = [...new Set([...posMap.keys(), ...AT.watchlist])];
+
+    for (const symbol of targets) {
+      if (!AT.enabled) break;
+      if (countTodayTrades() >= AUTOTRADER_MAX_DAILY_TRADES) {
+        atLog({ symbol: 'SYSTEM', action: 'SKIP', confidence: 0, reasoning: `Daily trade limit reached (${AUTOTRADER_MAX_DAILY_TRADES}).`, executed: false });
+        break;
+      }
+
+      // Fetch price bars + volumes for technicals
+      let closes = [], volumes = [];
+      try {
+        const qs = new URLSearchParams({ symbols: symbol, timeframe: '1Day', limit: '60' });
+        const br = await alpacaDataFetch(`/v1beta3/stocks/bars?${qs}`);
+        const bd = await br.json();
+        const bars = bd.bars?.[symbol] || [];
+        closes = bars.map(b => b.c);
+        volumes = bars.map(b => b.v);
+      } catch (_) {}
+
+      const pos = posMap.get(symbol);
+      const isLong = pos?.side === 'long';
+      const isShort = pos?.side === 'short';
+      const hasPos = !!(pos);
+      const lastPrice = closes[closes.length - 1] || 0;
+      const lastVolume = volumes[volumes.length - 1] || 0;
+      const avgVolume = volumes.length > 1 ? volumes.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, volumes.length) : 0;
+      const relVolume = avgVolume > 0 ? lastVolume / avgVolume : null;
+
+      const rsi = computeRSI(closes);
+      const macd = computeMACD(closes);
+      const sma20 = computeSMA(closes, 20);
+      const sma50 = computeSMA(closes, 50);
+      const annVol = computeAnnualizedVol(closes);
+
+      const prompt = `MACRO CONTEXT:
+${macroBrief}
+FX: ${fxStr}
+
+SYMBOL: ${symbol}
+Last price: $${lastPrice.toFixed(2)}
+30d closes (latest 10): [${closes.slice(-10).map(c => c.toFixed(2)).join(', ')}]
+
+TECHNICALS:
+RSI(14): ${rsi != null ? rsi.toFixed(1) : '?'}
+MACD(12,26): ${macd != null ? macd.toFixed(3) : '?'}
+SMA20: ${sma20 != null ? '$' + sma20.toFixed(2) : '?'} | SMA50: ${sma50 != null ? '$' + sma50.toFixed(2) : '?'}
+Relative Volume: ${relVolume != null ? relVolume.toFixed(2) + 'x avg' : '?'}
+Annualized Volatility: ${annVol != null ? (annVol * 100).toFixed(1) + '%' : '?'}
+
+POSITION:
+hasPosition: ${hasPos}
+positionSide: ${isLong ? 'long' : isShort ? 'short' : 'none'}
+${hasPos ? `qty: ${pos.qty} | entry: $${pos.avg_entry_price} | unrealizedP&L: ${pos.unrealized_plpc != null ? (+(pos.unrealized_plpc) * 100).toFixed(2) + '%' : '?'}` : ''}
+
+PORTFOLIO:
+openPositions: ${openPositions.length}/${AT.maxPositions}
+buyingPower: $${buyingPower.toFixed(0)}
+allowShort: ${AT.allowShort}`;
+
+      let decision;
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 300, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+        });
+        const d = await res.json();
+        let raw = (d.content?.[0]?.text || '{}').trim();
+        if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+        decision = JSON.parse(raw);
+      } catch (e) {
+        atLog({ symbol, action: 'ERROR', confidence: 0, reasoning: 'AI parse error: ' + e.message, executed: false });
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+
+      const { action, confidence, reasoning, suggestedNotional } = decision;
+      const logEntry = { symbol, action, confidence, reasoning, suggestedNotional, executed: false };
+
+      // Check if this exact action was already taken today
+      if (hasTradedToday(symbol, action)) {
+        logEntry.reasoning = (reasoning || '') + ' [already done today]';
+        atLog(logEntry);
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+
+      if (confidence >= AT.confidenceThreshold) {
+        // ── BUY (open long) ────────────────────────────────────────────────────
+        if (action === 'BUY' && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
+          const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct);
+          const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
+          const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
+          if (tradeNotional >= 10) {
+            try {
+              const useBracket = estQty >= 1;
+              const orderBody = useBracket ? {
+                symbol, qty: estQty, side: 'buy', type: 'market', time_in_force: 'day',
+                order_class: 'bracket',
+                take_profit: { limit_price: +(lastPrice * (1 + AT.takeProfitPct / 100)).toFixed(2) },
+                stop_loss: { stop_price: +(lastPrice * (1 - AT.stopLossPct / 100)).toFixed(2) },
+                client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
+              } : {
+                symbol, notional: Math.floor(tradeNotional), side: 'buy', type: 'market',
+                time_in_force: 'day', client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
+              };
+              const order = await submitValidatedOrder(orderBody);
+              logEntry.executed = true;
+              logEntry.executedAction = `BUY ${useBracket ? estQty + ' shares' : '$' + Math.floor(tradeNotional)} | SL: -${AT.stopLossPct}% | TP: +${AT.takeProfitPct}%`;
+              logEntry.orderId = order.id;
+              markAutoTrade(symbol, 'BUY');
+              try {
+                ({ account, positions } = await refreshAccountSnapshot());
+                openPositions = Array.isArray(positions) ? positions : [];
+                posMap = new Map(openPositions.map(p => [p.symbol, p]));
+                buyingPower = +account.buying_power;
+              } catch (_) {
+                buyingPower = Math.max(0, buyingPower - Math.floor(tradeNotional));
+              }
+              broadcast({ type: 'autotrader_trade', symbol, action: 'BUY', notional: Math.floor(tradeNotional), reasoning });
+              await sendTelegram(`🟢 <b>AutoTrader BUY</b> — <b>${symbol}</b>\n💰 $${Math.floor(tradeNotional)} | SL: -${AT.stopLossPct}% | TP: +${AT.takeProfitPct}%\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'} | Vol: ${annVol != null ? (annVol*100).toFixed(0)+'%' : '?'}\n🧠 ${reasoning}`);
+            } catch (e) { logEntry.error = e.message; }
+          }
+        }
+        // ── SELL (close long) ──────────────────────────────────────────────────
+        else if (action === 'SELL' && isLong) {
+          try {
+            const order = await submitValidatedOrder({
+              symbol, qty: +pos.qty, side: 'sell', type: 'market', time_in_force: 'day',
+              client_order_id: `nexus_at_sell_${symbol}_${Date.now()}`,
+            });
+            logEntry.executed = true;
+            logEntry.executedAction = `SELL ${pos.qty} shares`;
+            logEntry.orderId = order.id;
+            markAutoTrade(symbol, 'SELL');
+            try {
+              ({ account, positions } = await refreshAccountSnapshot());
+              openPositions = Array.isArray(positions) ? positions : [];
+              posMap = new Map(openPositions.map(p => [p.symbol, p]));
+              buyingPower = +account.buying_power;
+            } catch (_) { posMap.delete(symbol); }
+            broadcast({ type: 'autotrader_trade', symbol, action: 'SELL', qty: +pos.qty, reasoning });
+            const plPct = pos.unrealized_plpc != null ? (+(pos.unrealized_plpc) * 100).toFixed(2) + '%' : '?';
+            await sendTelegram(`🔴 <b>AutoTrader SELL</b> — <b>${symbol}</b>\n📉 ${pos.qty} shares | P&L: ${plPct}\n🧠 ${reasoning}`);
+          } catch (e) { logEntry.error = e.message; }
+        }
+        // ── SHORT (open short) ─────────────────────────────────────────────────
+        else if (action === 'SHORT' && AT.allowShort && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
+          const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct);
+          const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
+          const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
+          if (estQty >= 1 && tradeNotional >= 10) {
+            try {
+              const order = await submitValidatedOrder({
+                symbol, qty: estQty, side: 'sell', type: 'market', time_in_force: 'day',
+                order_class: 'bracket',
+                take_profit: { limit_price: +(lastPrice * (1 - AT.takeProfitPct / 100)).toFixed(2) },
+                stop_loss: { stop_price: +(lastPrice * (1 + AT.stopLossPct / 100)).toFixed(2) },
+                client_order_id: `nexus_at_short_${symbol}_${Date.now()}`,
+              });
+              logEntry.executed = true;
+              logEntry.executedAction = `SHORT ${estQty} shares | SL: +${AT.stopLossPct}% | TP: -${AT.takeProfitPct}%`;
+              logEntry.orderId = order.id;
+              markAutoTrade(symbol, 'SHORT');
+              try {
+                ({ account, positions } = await refreshAccountSnapshot());
+                openPositions = Array.isArray(positions) ? positions : [];
+                posMap = new Map(openPositions.map(p => [p.symbol, p]));
+                buyingPower = +account.buying_power;
+              } catch (_) { buyingPower = Math.max(0, buyingPower - Math.floor(tradeNotional)); }
+              broadcast({ type: 'autotrader_trade', symbol, action: 'SHORT', qty: estQty, reasoning });
+              await sendTelegram(`🩳 <b>AutoTrader SHORT</b> — <b>${symbol}</b>\n📉 ${estQty} shares | SL: +${AT.stopLossPct}% | TP: -${AT.takeProfitPct}%\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'}\n🧠 ${reasoning}`);
+            } catch (e) { logEntry.error = e.message; }
+          }
+        }
+        // ── COVER (close short) ────────────────────────────────────────────────
+        else if (action === 'COVER' && isShort) {
+          try {
+            const shortQty = Math.abs(+pos.qty);
+            const order = await submitValidatedOrder({
+              symbol, qty: shortQty, side: 'buy', type: 'market', time_in_force: 'day',
+              client_order_id: `nexus_at_cover_${symbol}_${Date.now()}`,
+            });
+            logEntry.executed = true;
+            logEntry.executedAction = `COVER ${shortQty} shares`;
+            logEntry.orderId = order.id;
+            markAutoTrade(symbol, 'COVER');
+            try {
+              ({ account, positions } = await refreshAccountSnapshot());
+              openPositions = Array.isArray(positions) ? positions : [];
+              posMap = new Map(openPositions.map(p => [p.symbol, p]));
+              buyingPower = +account.buying_power;
+            } catch (_) { posMap.delete(symbol); }
+            broadcast({ type: 'autotrader_trade', symbol, action: 'COVER', qty: shortQty, reasoning });
+            const plPct = pos.unrealized_plpc != null ? (+(pos.unrealized_plpc) * 100).toFixed(2) + '%' : '?';
+            await sendTelegram(`🔵 <b>AutoTrader COVER</b> — <b>${symbol}</b>\n📈 ${shortQty} shares | P&L: ${plPct}\n🧠 ${reasoning}`);
+          } catch (e) { logEntry.error = e.message; }
+        }
+      }
+
+      atLog(logEntry);
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  } finally {
+    AT.running = false;
+    if (AT.enabled && AT.timer) AT.nextRunAt = Date.now() + AT.intervalMs;
+    saveAtState();
+    broadcast({ type: 'autotrader_status', state: atPublicState() });
+  }
+}
+
+function atSchedule() {
+  if (AT.timer) { clearInterval(AT.timer); AT.timer = null; }
+  if (AT.enabled) {
+    AT.timer = setInterval(atCycle, AT.intervalMs);
+    AT.nextRunAt = Date.now() + AT.intervalMs;
+  } else {
+    AT.nextRunAt = null;
+  }
+  saveAtState();
+  broadcast({ type: 'autotrader_status', state: atPublicState() });
+}
+
+// ─── AutoTrader Endpoints ─────────────────────────────────────────────────────
+app.get('/api/autotrader/status', (req, res) => {
+  res.json({ ...atPublicState(), log: AT.log.slice(0, 20) });
+});
+
 app.get('/api/autotrader/history', (req, res) => {
   ensureAtDayState();
   const date = req.query.date || AT.todayKey;
@@ -1727,6 +2175,7 @@ app.post('/api/autotrader/config', (req, res) => {
     enabled, intervalMinutes, confidenceThreshold, maxPositions, maxPositionPct,
     maxPositionsPerSector, stopLossPct, takeProfitPct, drawdownLimit, allowShort,
     targetVolatility, resetHalt,
+    stopLossPct, takeProfitPct, drawdownLimit, allowShort, targetVolatility, resetHalt,
   } = req.body;
 
   if (enabled === true && !PAPER_MODE && !LIVE_TRADING_ENABLED)
