@@ -874,6 +874,9 @@ const AT = {
   // Map<symbol, string[]> — tracks which actions were taken today per symbol
   todayTrades: new Map(),
   dailyTradeHistory: {},
+  // Persistent across days: tracks ADD count and last review date per symbol
+  addHistory: {},       // { [symbol]: addCount }
+  lastReviewDate: {},   // { [symbol]: 'YYYY-MM-DD' }
   sessionStartEquity: null,
   halted: false,
   haltReason: '',
@@ -938,6 +941,8 @@ function saveAtState() {
       todayKey: AT.todayKey,
       todayTrades: todayTradesObj,
       dailyTradeHistory: AT.dailyTradeHistory,
+      addHistory: AT.addHistory,
+      lastReviewDate: AT.lastReviewDate,
       sessionStartEquity: AT.sessionStartEquity,
       halted: AT.halted,
       haltReason: AT.haltReason,
@@ -981,6 +986,8 @@ function loadAtState() {
       else if (typeof val === 'number') AT.todayTrades.set(sym, ['BUY']); // migration
     }
     AT.dailyTradeHistory = state.dailyTradeHistory || {};
+    AT.addHistory = state.addHistory || {};
+    AT.lastReviewDate = state.lastReviewDate || {};
     AT.sessionStartEquity = state.sessionStartEquity || null;
     AT.halted = !!state.halted;
     AT.haltReason = state.haltReason || '';
@@ -1148,14 +1155,16 @@ async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
 
 // ── Volatility-aware position review (runs before new-trade scan) ────────────
 async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, fxStr, equity, buyingPower, posMap) {
-  const reviewed = [];
+  const todayDate = easternDateKey(); // 'YYYY-MM-DD'
+
   for (const pos of openPositions) {
     if (pos.side !== 'long') continue;
     const plPct = +(pos.unrealized_plpc || 0) * 100; // e.g. -12.5
-    if (plPct >= 0) continue; // only review losing positions
+    if (plPct >= 0) continue;
 
-    // Fetch bars for volatility + technicals
-    let annVol = null, closes = [], rsi = null, macd = null, sma20 = null, sma50 = null, lastPrice = +pos.current_price || +pos.avg_entry_price;
+    // Fetch bars
+    let annVol = null, closes = [], rsi = null, macd = null, sma20 = null, sma50 = null;
+    let lastPrice = +pos.current_price || +pos.avg_entry_price;
     try {
       const qs = new URLSearchParams({ timeframe: '1Day', limit: '60', feed: 'iex' });
       const bd = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
@@ -1171,40 +1180,47 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     } catch (_) {}
 
     const brackets = computeAdaptiveBrackets(annVol);
-    // Trigger review when loss exceeds half the adaptive SL (early warning) OR full SL
-    const reviewThreshold = -(brackets.slPct * 0.6);
-    if (plPct > reviewThreshold) continue; // loss not deep enough yet
+    const reviewThreshold = -(brackets.slPct * 0.6); // trigger at 60% of adaptive SL
+    if (plPct > reviewThreshold) continue;
 
-    // Emergency hard close at 2× adaptive SL — no AI needed, just close
+    // Emergency hard close at 2.2× adaptive SL — immediate, no AI
     const emergencyThreshold = -(brackets.slPct * 2.2);
     if (plPct <= emergencyThreshold) {
       try {
         await alpacaFetch(`/v2/positions/${pos.symbol}`, { method: 'DELETE' });
-        const msg = `🚨 <b>AutoTrader EMERGENCY CLOSE</b> — <b>${pos.symbol}</b>\n📉 P&L: ${plPct.toFixed(1)}% (>${(brackets.slPct*2).toFixed(0)}% drawdown)\nHard stop fired — no AI consultation.`;
-        atLog({ symbol: pos.symbol, action: 'CLOSE', confidence: 1, reasoning: `Emergency hard stop at ${plPct.toFixed(1)}% (>${(brackets.slPct*2).toFixed(0)}% limit)`, executed: true, executedAction: `EMERGENCY CLOSE ${pos.qty} shares` });
+        const msg = `🚨 <b>AutoTrader EMERGENCY CLOSE</b> — <b>${pos.symbol}</b>\n📉 P&L: ${plPct.toFixed(1)}% (hard stop: -${(brackets.slPct*2.2).toFixed(0)}%)\nChiusura immediata senza AI — perdita estrema.`;
+        atLog({ symbol: pos.symbol, action: 'CLOSE', confidence: 1, reasoning: `Emergency hard stop at ${plPct.toFixed(1)}%`, executed: true, executedAction: `EMERGENCY CLOSE ${pos.qty} shares` });
         markAutoTrade(pos.symbol, 'SELL');
-        broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'EMERGENCY_CLOSE', reasoning: msg });
+        delete AT.addHistory[pos.symbol];
+        delete AT.lastReviewDate[pos.symbol];
+        broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'EMERGENCY_CLOSE' });
         await sendTelegram(msg);
       } catch (e) {
         atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: `Emergency close failed: ${e.message}`, executed: false });
       }
-      reviewed.push(pos.symbol);
+      await new Promise(r => setTimeout(r, 800));
       continue;
     }
 
-    // Already reviewed this position today?
-    if (hasTradedToday(pos.symbol, 'REVIEW')) {
-      // Allow ADD only once per day — skip if already reviewed
-      continue;
+    // 2-day cooldown between reviews
+    const lastReview = AT.lastReviewDate[pos.symbol];
+    if (lastReview) {
+      const daysSince = (Date.parse(todayDate) - Date.parse(lastReview)) / 86400000;
+      if (daysSince < 2) continue;
     }
 
+    // Run AI review
     const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct);
+    const addsDone = AT.addHistory[pos.symbol] || 0;
+    const canAdd = addsDone < 1 && buyingPower > 500; // max 1 ADD per position lifetime
+
     const reviewPrompt = `MACRO: ${macroBrief}\nFX: ${fxStr}
 
 POSITION UNDER REVIEW: ${pos.symbol}
 Entry price: $${pos.avg_entry_price} | Current price: $${lastPrice.toFixed(2)}
 Unrealized P&L: ${plPct.toFixed(2)}% (${(+(pos.unrealized_pl||0)).toFixed(2)} USD)
 Qty held: ${pos.qty} shares
+Previous ADDs on this position: ${addsDone}/1 (max 1 total)
 
 TECHNICALS:
 RSI(14): ${rsi != null ? rsi.toFixed(1) : '?'}
@@ -1213,14 +1229,14 @@ SMA20: ${sma20 != null ? '$' + sma20.toFixed(2) : '?'} | SMA50: ${sma50 != null 
 Price vs SMA20: ${sma20 ? ((lastPrice/sma20-1)*100).toFixed(1)+'%' : '?'} | Price vs SMA50: ${sma50 ? ((lastPrice/sma50-1)*100).toFixed(1)+'%' : '?'}
 Annualized Volatility: ${annVol != null ? (annVol*100).toFixed(1)+'%' : '?'}
 
-BLACK-SCHOLES (60d, adaptive σ-brackets):
+BLACK-SCHOLES (60d):
 P(price above current in 60d): ${bs ? bs.probAbove+'%' : '?'}
 P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP+'%' : '?'}
-P(hit hard stop -${(brackets.slPct*2.2).toFixed(0)}%): ${bs ? bs.probSL+'%' : '?'}
 ATM call delta: ${bs ? bs.callDelta : '?'}
 
-REVIEW TRIGGER: position down ${Math.abs(plPct).toFixed(1)}% (adaptive SL zone: -${brackets.slPct}%)
-Portfolio: ${openPositions.length} positions open | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}`;
+REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brackets.slPct}% | hard stop: -${(brackets.slPct*2.2).toFixed(0)}%
+${canAdd ? '' : 'NOTE: ADD not available (max 1 ADD already used or insufficient buying power)'}
+Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}`;
 
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1233,41 +1249,53 @@ Portfolio: ${openPositions.length} positions open | buyingPower: $${buyingPower.
       const review = JSON.parse(raw);
       const { action: rAction, confidence: rConf, reasoning: rReason, addNotional } = review;
 
+      AT.lastReviewDate[pos.symbol] = todayDate;
       atLog({ symbol: pos.symbol, action: `REVIEW:${rAction}`, confidence: rConf, reasoning: `[P&L ${plPct.toFixed(1)}%] ${rReason}`, executed: false });
-      markAutoTrade(pos.symbol, 'REVIEW');
 
       if (rAction === 'CLOSE' && rConf >= 0.72) {
         const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ symbol: pos.symbol, qty: +pos.qty, side: 'sell', type: 'market', time_in_force: 'day', client_order_id: `nexus_review_close_${pos.symbol}_${Date.now()}` }) });
         atLog({ symbol: pos.symbol, action: 'CLOSE', confidence: rConf, reasoning: rReason, executed: true, executedAction: `CLOSE (AI review) ${pos.qty} shares | P&L ${plPct.toFixed(1)}%`, orderId: order?.id });
         markAutoTrade(pos.symbol, 'SELL');
+        delete AT.addHistory[pos.symbol];
+        delete AT.lastReviewDate[pos.symbol];
         broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'CLOSE', qty: +pos.qty, reasoning: rReason });
-        await sendTelegram(`🔴 <b>AutoTrader CLOSE</b> (review) — <b>${pos.symbol}</b>\n📉 ${pos.qty} shares | P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
+        await sendTelegram(`🔴 <b>AutoTrader CLOSE</b> (AI review) — <b>${pos.symbol}</b>\n📉 ${pos.qty} shares | P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
 
-      } else if (rAction === 'ADD' && rConf >= 0.82 && addNotional > 0 && buyingPower > addNotional) {
-        const addQty = Math.floor(Math.min(addNotional, 5000) / lastPrice);
+      } else if (rAction === 'ADD' && canAdd && rConf >= 0.82 && addNotional > 0) {
+        const addQty = Math.floor(Math.min(addNotional, 5000, buyingPower * 0.9) / lastPrice);
         if (addQty >= 1) {
+          // Buy more shares (averaging down)
           const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ symbol: pos.symbol, qty: addQty, side: 'buy', type: 'market', time_in_force: 'day', client_order_id: `nexus_review_add_${pos.symbol}_${Date.now()}` }) });
-          atLog({ symbol: pos.symbol, action: 'ADD', confidence: rConf, reasoning: rReason, executed: true, executedAction: `ADD ${addQty} shares @ $${lastPrice.toFixed(2)} (avg-down)`, orderId: order?.id });
+          // Separate take-profit limit sell for the added shares
+          const tpPrice = +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2);
+          try {
+            await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ symbol: pos.symbol, qty: addQty, side: 'sell', type: 'limit', limit_price: tpPrice, time_in_force: 'gtc', client_order_id: `nexus_add_tp_${pos.symbol}_${Date.now()}` }) });
+          } catch (_) { /* TP order is best-effort */ }
+          AT.addHistory[pos.symbol] = addsDone + 1;
+          atLog({ symbol: pos.symbol, action: 'ADD', confidence: rConf, reasoning: rReason, executed: true, executedAction: `ADD ${addQty} shares @ $${lastPrice.toFixed(2)} (avg-down) | TP limit @ $${tpPrice}`, orderId: order?.id });
           markAutoTrade(pos.symbol, 'ADD');
           broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'ADD', qty: addQty, reasoning: rReason });
-          await sendTelegram(`🔵 <b>AutoTrader ADD</b> (avg-down) — <b>${pos.symbol}</b>\n📈 +${addQty} shares @ $${lastPrice.toFixed(2)} | Pos P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
+          await sendTelegram(`🔵 <b>AutoTrader ADD</b> (avg-down) — <b>${pos.symbol}</b>\n📈 +${addQty} shares @ $${lastPrice.toFixed(2)} | TP limit: $${tpPrice} (+${brackets.tpPct}%)\nPos P&L: ${plPct.toFixed(1)}% | Questo è l'unico ADD consentito.\n🧠 ${rReason}`);
           buyingPower -= addQty * lastPrice;
         }
+
       } else {
-        // HOLD — log and move on
+        // HOLD
         atLog({ symbol: pos.symbol, action: 'HOLD', confidence: rConf, reasoning: `[Review: holding through dip] ${rReason}`, executed: false });
-        await sendTelegram(`⏸ <b>AutoTrader HOLD</b> (review) — <b>${pos.symbol}</b>\n📊 P&L: ${plPct.toFixed(1)}% | Vol: ${annVol ? (annVol*100).toFixed(0)+'%' : '?'}\n🧠 ${rReason}`);
+        await sendTelegram(`⏸ <b>AutoTrader HOLD</b> (review) — <b>${pos.symbol}</b>\n📊 P&L: ${plPct.toFixed(1)}% | Vol: ${annVol ? (annVol*100).toFixed(0)+'%' : '?'} | Prossima review tra 2gg\n🧠 ${rReason}`);
       }
+
+      saveAtState();
     } catch (e) {
       atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: `Position review failed: ${e.message}`, executed: false });
     }
 
-    reviewed.push(pos.symbol);
     await new Promise(r => setTimeout(r, 1000));
   }
-  return buyingPower; // return updated buying power (after any ADDs)
+  return buyingPower;
 }
 
 async function atCycle() {
@@ -1548,6 +1576,8 @@ ${replaceBlock}`;
             logEntry.executedAction = `SELL ${pos.qty} shares`;
             logEntry.orderId = order.id;
             markAutoTrade(symbol, 'SELL');
+            delete AT.addHistory[symbol];
+            delete AT.lastReviewDate[symbol];
             try {
               ({ account, positions } = await refreshAccountSnapshot());
               openPositions = Array.isArray(positions) ? positions : [];
