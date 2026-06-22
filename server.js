@@ -500,20 +500,27 @@ Rules:
 - ALWAYS integrate macro context. CB/geopolitical events override technicals.
 - Prefer HOLD over low-conviction trades. A missed opportunity is better than a forced loss.`;
 
-const POSITION_REVIEW_PROMPT = `You are a risk manager reviewing a losing position. Given technicals, volatility, and macro context, decide whether to:
-- HOLD: dip is volatility-driven (not fundamental), recovery likely — do NOT close
-- CLOSE: trend is broken, thesis invalid, or risk/reward has deteriorated — exit immediately
-- ADD: strong conviction the dip is temporary AND price is at a technically attractive level — buy more (averaging down)
+const POSITION_REVIEW_PROMPT = `You are a risk manager reviewing a losing position. Given technicals, volatility, and macro context, decide what to do.
+
+For LONG positions (price fell):
+- HOLD: vol-driven dip, recovery likely — keep position
+- CLOSE: trend broken, thesis invalid — sell to market
+- ADD: high-conviction dip at technical support — buy more shares (averaging down)
+
+For SHORT positions (price rose against us):
+- HOLD: temporary spike, short thesis intact — keep short
+- CLOSE: uptrend is breaking out, cover the short immediately
+- ADD: price at resistance, strong conviction for reversal — add more short
 
 Output ONLY valid JSON, no markdown:
 {"action":"HOLD"|"CLOSE"|"ADD","confidence":0.0-1.0,"reasoning":"<2 sentences max>","addNotional":number|null}
 
 Rules:
-- ADD requires confidence ≥ 0.82, price near support (SMA20 or SMA50), RSI oversold, and high annualized vol (≥ 40%)
-- CLOSE if: price broke through SMA50, RSI still declining, MACD deeply negative, or P&L < -2× adaptive SL
-- HOLD is the default for high-vol stocks with intact fundamentals and a temporary dip
-- addNotional: max $5000, only for ADD action, null otherwise
-- Never ADD if portfolio already has 2+ positions in same sector in drawdown`;
+- ADD requires confidence ≥ 0.82, and for longs: price near SMA20 or SMA50 support, RSI oversold, high annVol (≥ 40%)
+- ADD for shorts requires: price at clear resistance, RSI overbought (>70), negative MACD
+- CLOSE (or COVER for shorts) if: clear trend break, RSI still moving against position, P&L < -2× adaptive SL
+- HOLD is the default for high-vol stocks with temporary moves against position
+- addNotional: max $5000, only for ADD action, null otherwise`;
 
 app.post('/api/chat', async (req, res) => {
   try {
@@ -1158,7 +1165,9 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
   const todayDate = easternDateKey(); // 'YYYY-MM-DD'
 
   for (const pos of openPositions) {
-    if (pos.side !== 'long') continue;
+    const isLongPos = pos.side === 'long';
+    const isShortPos = pos.side === 'short';
+    if (!isLongPos && !isShortPos) continue;
     const plPct = +(pos.unrealized_plpc || 0) * 100; // e.g. -12.5
     if (plPct >= 0) continue;
 
@@ -1234,6 +1243,7 @@ P(price above current in 60d): ${bs ? bs.probAbove+'%' : '?'}
 P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP+'%' : '?'}
 ATM call delta: ${bs ? bs.callDelta : '?'}
 
+Position side: ${isLongPos ? 'LONG (price fell)' : 'SHORT (price rose against us)'}
 REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brackets.slPct}% | hard stop: -${(brackets.slPct*2.2).toFixed(0)}%
 ${canAdd ? '' : 'NOTE: ADD not available (max 1 ADD already used or insufficient buying power)'}
 Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}`;
@@ -1253,32 +1263,57 @@ Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFix
       atLog({ symbol: pos.symbol, action: `REVIEW:${rAction}`, confidence: rConf, reasoning: `[P&L ${plPct.toFixed(1)}%] ${rReason}`, executed: false });
 
       if (rAction === 'CLOSE' && rConf >= 0.72) {
+        const closeSide = isLongPos ? 'sell' : 'buy'; // buy to cover short
+        const closeQty = Math.abs(+pos.qty);
         const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol: pos.symbol, qty: +pos.qty, side: 'sell', type: 'market', time_in_force: 'day', client_order_id: `nexus_review_close_${pos.symbol}_${Date.now()}` }) });
-        atLog({ symbol: pos.symbol, action: 'CLOSE', confidence: rConf, reasoning: rReason, executed: true, executedAction: `CLOSE (AI review) ${pos.qty} shares | P&L ${plPct.toFixed(1)}%`, orderId: order?.id });
-        markAutoTrade(pos.symbol, 'SELL');
+          body: JSON.stringify({ symbol: pos.symbol, qty: closeQty, side: closeSide, type: 'market', time_in_force: 'day', client_order_id: `nexus_review_close_${pos.symbol}_${Date.now()}` }) });
+        atLog({ symbol: pos.symbol, action: isShortPos ? 'COVER' : 'CLOSE', confidence: rConf, reasoning: rReason, executed: true, executedAction: `${isShortPos ? 'COVER' : 'CLOSE'} (AI review) ${closeQty} shares | P&L ${plPct.toFixed(1)}%`, orderId: order?.id });
+        markAutoTrade(pos.symbol, isShortPos ? 'COVER' : 'SELL');
         delete AT.addHistory[pos.symbol];
         delete AT.lastReviewDate[pos.symbol];
-        broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'CLOSE', qty: +pos.qty, reasoning: rReason });
-        await sendTelegram(`🔴 <b>AutoTrader CLOSE</b> (AI review) — <b>${pos.symbol}</b>\n📉 ${pos.qty} shares | P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
+        broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: isShortPos ? 'COVER' : 'CLOSE', qty: closeQty, reasoning: rReason });
+        await sendTelegram(`${isShortPos ? '🔵' : '🔴'} <b>AutoTrader ${isShortPos ? 'COVER' : 'CLOSE'}</b> (AI review) — <b>${pos.symbol}</b>\n📉 ${closeQty} shares | P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
 
       } else if (rAction === 'ADD' && canAdd && rConf >= 0.82 && addNotional > 0) {
         const addQty = Math.floor(Math.min(addNotional, 5000, buyingPower * 0.9) / lastPrice);
         if (addQty >= 1) {
-          // Buy more shares (averaging down)
+          const addSide = isLongPos ? 'buy' : 'sell';
+          const totalQty = Math.abs(+pos.qty) + addQty;
+
+          // Cancel any open TP limit orders for this symbol before placing unified TP
+          try {
+            const openOrders = await alpacaFetch(`/v2/orders?status=open&symbols=${pos.symbol}&limit=50`);
+            if (Array.isArray(openOrders)) {
+              for (const o of openOrders) {
+                const isTP = (isLongPos && o.side === 'sell' && o.type === 'limit') ||
+                             (isShortPos && o.side === 'buy' && o.type === 'limit');
+                if (isTP) {
+                  await alpacaFetch(`/v2/orders/${o.id}`, { method: 'DELETE' });
+                }
+              }
+            }
+          } catch (_) { /* best-effort: cancel original TP */ }
+
+          // Place the ADD order
           const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbol: pos.symbol, qty: addQty, side: 'buy', type: 'market', time_in_force: 'day', client_order_id: `nexus_review_add_${pos.symbol}_${Date.now()}` }) });
-          // Separate take-profit limit sell for the added shares
-          const tpPrice = +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2);
+            body: JSON.stringify({ symbol: pos.symbol, qty: addQty, side: addSide, type: 'market', time_in_force: 'day', client_order_id: `nexus_review_add_${pos.symbol}_${Date.now()}` }) });
+
+          // Unified TP limit sell/buy for total position
+          const tpPrice = isLongPos
+            ? +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2)
+            : +(lastPrice * (1 - brackets.tpPct / 100)).toFixed(2);
+          const tpSide = isLongPos ? 'sell' : 'buy';
           try {
             await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ symbol: pos.symbol, qty: addQty, side: 'sell', type: 'limit', limit_price: tpPrice, time_in_force: 'gtc', client_order_id: `nexus_add_tp_${pos.symbol}_${Date.now()}` }) });
-          } catch (_) { /* TP order is best-effort */ }
+              body: JSON.stringify({ symbol: pos.symbol, qty: totalQty, side: tpSide, type: 'limit', limit_price: tpPrice, time_in_force: 'gtc', client_order_id: `nexus_unified_tp_${pos.symbol}_${Date.now()}` }) });
+          } catch (_) { /* best-effort */ }
+
           AT.addHistory[pos.symbol] = addsDone + 1;
-          atLog({ symbol: pos.symbol, action: 'ADD', confidence: rConf, reasoning: rReason, executed: true, executedAction: `ADD ${addQty} shares @ $${lastPrice.toFixed(2)} (avg-down) | TP limit @ $${tpPrice}`, orderId: order?.id });
+          const addLabel = isLongPos ? 'ADD (avg-down)' : 'ADD (avg-up short)';
+          atLog({ symbol: pos.symbol, action: 'ADD', confidence: rConf, reasoning: rReason, executed: true, executedAction: `${addLabel} ${addQty} shares @ $${lastPrice.toFixed(2)} | Unified TP @ $${tpPrice} for ${totalQty} shares total`, orderId: order?.id });
           markAutoTrade(pos.symbol, 'ADD');
           broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'ADD', qty: addQty, reasoning: rReason });
-          await sendTelegram(`🔵 <b>AutoTrader ADD</b> (avg-down) — <b>${pos.symbol}</b>\n📈 +${addQty} shares @ $${lastPrice.toFixed(2)} | TP limit: $${tpPrice} (+${brackets.tpPct}%)\nPos P&L: ${plPct.toFixed(1)}% | Questo è l'unico ADD consentito.\n🧠 ${rReason}`);
+          await sendTelegram(`🔵 <b>AutoTrader ${addLabel}</b> — <b>${pos.symbol}</b>\n📈 +${addQty} shares @ $${lastPrice.toFixed(2)} | TP unificato @ $${tpPrice} per ${totalQty} azioni totali\nPos P&L: ${plPct.toFixed(1)}% | Questo è l'unico ADD consentito.\n🧠 ${rReason}`);
           buyingPower -= addQty * lastPrice;
         }
 
