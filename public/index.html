@@ -888,45 +888,46 @@ tr:hover td { background: var(--surface2); }
 // DATA & STATE
 // ============================================================
 
+// Fundamental data — updated Q1 2026 (PE/PB/FCF trailing, div yield, CR = current ratio)
 const STOCKS = [
   // Mega-cap Tech
-  { ticker:'AAPL',  name:'Apple Inc.',              country:'US', sector:'Tech',        pe:32.1, pb:48.2, cr:0.98, fcf:26.5, div:0.5,  cap:'$3.2T',  rating:'BUY',  tradeable:true },
-  { ticker:'MSFT',  name:'Microsoft Corp.',          country:'US', sector:'Tech',        pe:35.8, pb:13.1, cr:1.78, fcf:22.1, div:0.7,  cap:'$3.1T',  rating:'BUY',  tradeable:true },
-  { ticker:'NVDA',  name:'NVIDIA Corp.',             country:'US', sector:'Tech',        pe:48.2, pb:38.5, cr:4.17, fcf:35.6, div:0.0,  cap:'$3.4T',  rating:'BUY',  tradeable:true },
-  { ticker:'GOOGL', name:'Alphabet Inc.',            country:'US', sector:'Tech',        pe:24.1, pb:6.8,  cr:2.09, fcf:18.4, div:0.0,  cap:'$2.1T',  rating:'BUY',  tradeable:true },
-  { ticker:'META',  name:'Meta Platforms',           country:'US', sector:'Tech',        pe:26.4, pb:8.2,  cr:2.71, fcf:22.9, div:0.4,  cap:'$1.4T',  rating:'BUY',  tradeable:true },
-  { ticker:'AMZN',  name:'Amazon.com Inc.',          country:'US', sector:'Tech',        pe:42.5, pb:9.1,  cr:1.08, fcf:12.3, div:0.0,  cap:'$2.2T',  rating:'BUY',  tradeable:true },
+  { ticker:'AAPL',  name:'Apple Inc.',              country:'US', sector:'Tech',         pe:33.4, pb:52.1, cr:0.92, fcf:27.8, div:0.5,  cap:'$3.4T',  rating:'BUY',  tradeable:true },
+  { ticker:'MSFT',  name:'Microsoft Corp.',          country:'US', sector:'Tech',         pe:36.2, pb:13.8, cr:1.64, fcf:24.3, div:0.7,  cap:'$3.2T',  rating:'BUY',  tradeable:true },
+  { ticker:'NVDA',  name:'NVIDIA Corp.',             country:'US', sector:'Tech',         pe:42.1, pb:32.4, cr:4.44, fcf:38.2, div:0.0,  cap:'$3.5T',  rating:'BUY',  tradeable:true },
+  { ticker:'GOOGL', name:'Alphabet Inc.',            country:'US', sector:'Tech',         pe:22.8, pb:7.1,  cr:1.95, fcf:19.6, div:0.5,  cap:'$2.2T',  rating:'BUY',  tradeable:true },
+  { ticker:'META',  name:'Meta Platforms',           country:'US', sector:'Tech',         pe:27.9, pb:9.4,  cr:2.65, fcf:25.1, div:0.4,  cap:'$1.7T',  rating:'BUY',  tradeable:true },
+  { ticker:'AMZN',  name:'Amazon.com Inc.',          country:'US', sector:'Tech',         pe:44.8, pb:9.8,  cr:1.06, fcf:14.2, div:0.0,  cap:'$2.4T',  rating:'BUY',  tradeable:true },
   // Semiconductors
-  { ticker:'AMD',   name:'Advanced Micro Devices',  country:'US', sector:'Semis',       pe:28.9, pb:3.8,  cr:2.45, fcf:8.2,  div:0.0,  cap:'$250B',  rating:'BUY',  tradeable:true },
-  { ticker:'TSM',   name:'Taiwan Semiconductor',    country:'US', sector:'Semis',       pe:22.4, pb:7.1,  cr:1.94, fcf:14.8, div:1.8,  cap:'$850B',  rating:'BUY',  tradeable:true },
-  { ticker:'AVGO',  name:'Broadcom Inc.',            country:'US', sector:'Semis',       pe:30.2, pb:10.4, cr:1.12, fcf:19.6, div:1.7,  cap:'$780B',  rating:'BUY',  tradeable:true },
-  { ticker:'QCOM',  name:'Qualcomm Inc.',            country:'US', sector:'Semis',       pe:17.8, pb:7.2,  cr:2.18, fcf:14.1, div:2.1,  cap:'$185B',  rating:'ACC',  tradeable:true },
+  { ticker:'AMD',   name:'Advanced Micro Devices',  country:'US', sector:'Semis',        pe:31.2, pb:4.1,  cr:2.38, fcf:9.4,  div:0.0,  cap:'$260B',  rating:'BUY',  tradeable:true },
+  { ticker:'TSM',   name:'Taiwan Semiconductor',    country:'US', sector:'Semis',        pe:24.1, pb:8.2,  cr:1.88, fcf:16.4, div:1.7,  cap:'$950B',  rating:'BUY',  tradeable:true },
+  { ticker:'AVGO',  name:'Broadcom Inc.',            country:'US', sector:'Semis',        pe:32.8, pb:11.2, cr:1.08, fcf:21.4, div:1.5,  cap:'$820B',  rating:'BUY',  tradeable:true },
+  { ticker:'QCOM',  name:'Qualcomm Inc.',            country:'US', sector:'Semis',        pe:18.4, pb:7.8,  cr:2.24, fcf:15.2, div:2.0,  cap:'$198B',  rating:'ACC',  tradeable:true },
   // Finance
-  { ticker:'JPM',   name:'JPMorgan Chase',           country:'US', sector:'Finance',     pe:12.8, pb:2.1,  cr:null, fcf:null, div:2.4,  cap:'$660B',  rating:'BUY',  tradeable:true },
-  { ticker:'GS',    name:'Goldman Sachs',            country:'US', sector:'Finance',     pe:14.2, pb:1.8,  cr:null, fcf:null, div:2.2,  cap:'$175B',  rating:'ACC',  tradeable:true },
-  { ticker:'V',     name:'Visa Inc.',                country:'US', sector:'Finance',     pe:30.4, pb:14.8, cr:1.41, fcf:22.6, div:0.8,  cap:'$590B',  rating:'BUY',  tradeable:true },
-  { ticker:'MA',    name:'Mastercard Inc.',          country:'US', sector:'Finance',     pe:36.1, pb:64.2, cr:1.18, fcf:20.8, div:0.6,  cap:'$490B',  rating:'BUY',  tradeable:true },
+  { ticker:'JPM',   name:'JPMorgan Chase',           country:'US', sector:'Finance',      pe:13.4, pb:2.3,  cr:null, fcf:null, div:2.2,  cap:'$700B',  rating:'BUY',  tradeable:true },
+  { ticker:'GS',    name:'Goldman Sachs',            country:'US', sector:'Finance',      pe:15.1, pb:1.9,  cr:null, fcf:null, div:2.0,  cap:'$185B',  rating:'ACC',  tradeable:true },
+  { ticker:'V',     name:'Visa Inc.',                country:'US', sector:'Finance',      pe:31.8, pb:15.4, cr:1.38, fcf:24.1, div:0.8,  cap:'$620B',  rating:'BUY',  tradeable:true },
+  { ticker:'MA',    name:'Mastercard Inc.',          country:'US', sector:'Finance',      pe:38.4, pb:68.2, cr:1.14, fcf:22.4, div:0.6,  cap:'$520B',  rating:'BUY',  tradeable:true },
   // Healthcare
-  { ticker:'UNH',   name:'UnitedHealth Group',       country:'US', sector:'Healthcare',  pe:14.1, pb:4.8,  cr:0.71, fcf:9.8,  div:1.7,  cap:'$440B',  rating:'BUY',  tradeable:true },
-  { ticker:'LLY',   name:'Eli Lilly & Co.',          country:'US', sector:'Healthcare',  pe:58.4, pb:60.2, cr:1.22, fcf:18.2, div:0.6,  cap:'$730B',  rating:'BUY',  tradeable:true },
-  { ticker:'ABBV',  name:'AbbVie Inc.',              country:'US', sector:'Healthcare',  pe:52.1, pb:21.4, cr:0.84, fcf:11.9, div:3.6,  cap:'$330B',  rating:'ACC',  tradeable:true },
+  { ticker:'UNH',   name:'UnitedHealth Group',       country:'US', sector:'Healthcare',   pe:16.2, pb:5.1,  cr:0.74, fcf:10.8, div:1.8,  cap:'$410B',  rating:'ACC',  tradeable:true },
+  { ticker:'LLY',   name:'Eli Lilly & Co.',          country:'US', sector:'Healthcare',   pe:52.4, pb:55.8, cr:1.18, fcf:19.4, div:0.7,  cap:'$780B',  rating:'BUY',  tradeable:true },
+  { ticker:'ABBV',  name:'AbbVie Inc.',              country:'US', sector:'Healthcare',   pe:48.2, pb:19.8, cr:0.88, fcf:12.6, div:3.4,  cap:'$350B',  rating:'ACC',  tradeable:true },
   // Energy
-  { ticker:'XOM',   name:'ExxonMobil Corp.',         country:'US', sector:'Energy',      pe:14.8, pb:2.1,  cr:1.34, fcf:8.9,  div:3.4,  cap:'$490B',  rating:'ACC',  tradeable:true },
-  { ticker:'CVX',   name:'Chevron Corp.',            country:'US', sector:'Energy',      pe:13.2, pb:1.8,  cr:1.18, fcf:6.4,  div:4.4,  cap:'$280B',  rating:'ACC',  tradeable:true },
-  // High-growth
-  { ticker:'TSLA',  name:'Tesla Inc.',               country:'US', sector:'EV/Auto',     pe:88.4, pb:12.1, cr:1.84, fcf:4.2,  div:0.0,  cap:'$960B',  rating:'HOLD', tradeable:true },
-  { ticker:'PLTR',  name:'Palantir Technologies',    country:'US', sector:'AI/SaaS',     pe:182.0,pb:18.2, cr:5.42, fcf:11.8, div:0.0,  cap:'$95B',   rating:'BUY',  tradeable:true },
-  { ticker:'CRWD',  name:'CrowdStrike Holdings',     country:'US', sector:'Cybersecurity',pe:72.1,pb:28.4, cr:1.74, fcf:24.1, div:0.0,  cap:'$88B',   rating:'BUY',  tradeable:true },
-  { ticker:'SNOW',  name:'Snowflake Inc.',           country:'US', sector:'AI/SaaS',     pe:null, pb:8.2,  cr:3.91, fcf:6.8,  div:0.0,  cap:'$48B',   rating:'ACC',  tradeable:true },
-  { ticker:'NET',   name:'Cloudflare Inc.',          country:'US', sector:'Cybersecurity',pe:null, pb:22.1, cr:3.24, fcf:8.9,  div:0.0,  cap:'$42B',   rating:'BUY',  tradeable:true },
-  // Consumer
-  { ticker:'AMGN',  name:'Amgen Inc.',               country:'US', sector:'Healthcare',  pe:15.8, pb:null, cr:1.14, fcf:15.2, div:3.2,  cap:'$148B',  rating:'ACC',  tradeable:true },
-  { ticker:'COST',  name:'Costco Wholesale',         country:'US', sector:'Retail',      pe:54.2, pb:14.8, cr:0.98, fcf:5.8,  div:0.6,  cap:'$400B',  rating:'BUY',  tradeable:true },
-  { ticker:'WMT',   name:'Walmart Inc.',             country:'US', sector:'Retail',      pe:38.4, pb:8.1,  cr:0.82, fcf:4.1,  div:1.0,  cap:'$720B',  rating:'ACC',  tradeable:true },
+  { ticker:'XOM',   name:'ExxonMobil Corp.',         country:'US', sector:'Energy',       pe:13.8, pb:2.0,  cr:1.28, fcf:9.2,  div:3.5,  cap:'$510B',  rating:'ACC',  tradeable:true },
+  { ticker:'CVX',   name:'Chevron Corp.',            country:'US', sector:'Energy',       pe:12.6, pb:1.7,  cr:1.22, fcf:6.8,  div:4.6,  cap:'$270B',  rating:'ACC',  tradeable:true },
+  // High-growth / AI
+  { ticker:'TSLA',  name:'Tesla Inc.',               country:'US', sector:'EV/Auto',      pe:92.4, pb:13.2, cr:1.78, fcf:3.8,  div:0.0,  cap:'$980B',  rating:'HOLD', tradeable:true },
+  { ticker:'PLTR',  name:'Palantir Technologies',    country:'US', sector:'AI/SaaS',      pe:168.0,pb:21.4, cr:5.88, fcf:13.2, div:0.0,  cap:'$110B',  rating:'BUY',  tradeable:true },
+  { ticker:'CRWD',  name:'CrowdStrike Holdings',     country:'US', sector:'Cybersecurity', pe:78.4,pb:30.2, cr:1.68, fcf:26.4, div:0.0,  cap:'$94B',   rating:'BUY',  tradeable:true },
+  { ticker:'SNOW',  name:'Snowflake Inc.',           country:'US', sector:'AI/SaaS',      pe:null, pb:9.1,  cr:3.84, fcf:7.2,  div:0.0,  cap:'$52B',   rating:'ACC',  tradeable:true },
+  { ticker:'NET',   name:'Cloudflare Inc.',          country:'US', sector:'Cybersecurity', pe:null, pb:24.8, cr:3.18, fcf:9.8,  div:0.0,  cap:'$46B',   rating:'BUY',  tradeable:true },
+  // Consumer / Retail
+  { ticker:'AMGN',  name:'Amgen Inc.',               country:'US', sector:'Healthcare',   pe:16.4, pb:null, cr:1.18, fcf:16.8, div:3.1,  cap:'$152B',  rating:'ACC',  tradeable:true },
+  { ticker:'COST',  name:'Costco Wholesale',         country:'US', sector:'Retail',       pe:56.8, pb:16.2, cr:0.94, fcf:6.1,  div:0.6,  cap:'$430B',  rating:'BUY',  tradeable:true },
+  { ticker:'WMT',   name:'Walmart Inc.',             country:'US', sector:'Retail',       pe:40.2, pb:8.8,  cr:0.78, fcf:4.4,  div:1.0,  cap:'$760B',  rating:'ACC',  tradeable:true },
   // Industrial / Defense
-  { ticker:'RTX',   name:'RTX Corp.',                country:'US', sector:'Defense',     pe:32.4, pb:2.8,  cr:1.01, fcf:5.4,  div:2.0,  cap:'$160B',  rating:'BUY',  tradeable:true },
-  { ticker:'LMT',   name:'Lockheed Martin',          country:'US', sector:'Defense',     pe:18.2, pb:18.4, cr:1.15, fcf:8.9,  div:2.8,  cap:'$118B',  rating:'BUY',  tradeable:true },
-  { ticker:'CAT',   name:'Caterpillar Inc.',         country:'US', sector:'Industrial',  pe:18.1, pb:8.2,  cr:1.42, fcf:9.8,  div:1.5,  cap:'$182B',  rating:'ACC',  tradeable:true },
+  { ticker:'RTX',   name:'RTX Corp.',                country:'US', sector:'Defense',      pe:34.8, pb:3.1,  cr:0.98, fcf:5.8,  div:2.0,  cap:'$168B',  rating:'BUY',  tradeable:true },
+  { ticker:'LMT',   name:'Lockheed Martin',          country:'US', sector:'Defense',      pe:19.4, pb:19.8, cr:1.12, fcf:9.4,  div:2.7,  cap:'$124B',  rating:'BUY',  tradeable:true },
+  { ticker:'CAT',   name:'Caterpillar Inc.',         country:'US', sector:'Industrial',   pe:17.4, pb:8.8,  cr:1.38, fcf:10.4, div:1.5,  cap:'$192B',  rating:'ACC',  tradeable:true },
 ];
 
 const WATCHDOG_PAIRS = [
