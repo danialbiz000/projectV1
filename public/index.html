@@ -556,9 +556,15 @@ tr:hover td { background: var(--surface2); }
             </div>
             <div class="form-row">
               <div class="field">
-                <label>Max posizioni</label>
+                <label>Max posizioni totali</label>
                 <input type="number" id="at-max-pos" value="5" min="1" max="20">
               </div>
+              <div class="field">
+                <label>Max posizioni per settore</label>
+                <input type="number" id="at-max-pos-sector" value="2" min="1" max="10" title="Limite diversificazione: max N posizioni nello stesso settore">
+              </div>
+            </div>
+            <div class="form-row">
               <div class="field">
                 <label>Max % equity/trade</label>
                 <input type="number" id="at-max-pct" value="15" min="1" max="50">
@@ -2296,6 +2302,7 @@ function updateAutoTraderUI(data) {
   if (data.intervalMs) setVal('at-interval', Math.round(data.intervalMs / 60000));
   setVal('at-confidence', data.confidenceThreshold);
   setVal('at-max-pos', data.maxPositions);
+  setVal('at-max-pos-sector', data.maxPositionsPerSector);
   setVal('at-max-pct', data.maxPositionPct);
   setVal('at-stop-loss', data.stopLossPct);
   setVal('at-take-profit', data.takeProfitPct);
@@ -2404,6 +2411,7 @@ async function saveAutoTraderConfig() {
     intervalMinutes: +g('at-interval').value,
     confidenceThreshold: +g('at-confidence').value,
     maxPositions: +g('at-max-pos').value,
+    maxPositionsPerSector: +g('at-max-pos-sector').value,
     maxPositionPct: +g('at-max-pct').value,
     stopLossPct: +g('at-stop-loss').value,
     takeProfitPct: +g('at-take-profit').value,

@@ -734,6 +734,51 @@ const STOCK_UNIVERSE = [
   'PLTR','COIN','CRWD','NET','DDOG','SNOW','ZS','MSTR','RBLX','HOOD',
 ];
 
+// Sector mapping for diversification enforcement
+const SYMBOL_SECTOR = {
+  // Tech
+  AAPL:'Tech', MSFT:'Tech', NVDA:'Tech', GOOGL:'Tech', AMZN:'Tech',
+  META:'Tech', TSLA:'Tech', AVGO:'Tech', ORCL:'Tech', AMD:'Tech',
+  XLK:'Tech',
+  // Financials
+  JPM:'Financials', BAC:'Financials', GS:'Financials', MS:'Financials',
+  BLK:'Financials', AXP:'Financials', V:'Financials', MA:'Financials',
+  PYPL:'Financials', SCHW:'Financials', XLF:'Financials',
+  // Healthcare
+  UNH:'Healthcare', JNJ:'Healthcare', LLY:'Healthcare', PFE:'Healthcare',
+  ABBV:'Healthcare', MRK:'Healthcare', CVS:'Healthcare', AMGN:'Healthcare',
+  GILD:'Healthcare', ISRG:'Healthcare', XLV:'Healthcare',
+  // Energy
+  XOM:'Energy', CVX:'Energy', COP:'Energy', XLE:'Energy',
+  // Industrials & Defense
+  LMT:'Industrials', RTX:'Industrials', CAT:'Industrials', HON:'Industrials',
+  GE:'Industrials', BA:'Industrials', UPS:'Industrials', XLI:'Industrials',
+  // Consumer
+  WMT:'Consumer', COST:'Consumer', HD:'Consumer', TGT:'Consumer',
+  NKE:'Consumer', SBUX:'Consumer', MCD:'Consumer', PG:'Consumer',
+  KO:'Consumer', PEP:'Consumer',
+  // Broad Market ETFs
+  SPY:'ETF', QQQ:'ETF', IWM:'ETF',
+  // Bonds & Commodities
+  GLD:'Commodities', TLT:'Bonds',
+  // Growth / Speculative
+  PLTR:'Growth', COIN:'Growth', CRWD:'Growth', NET:'Growth',
+  DDOG:'Growth', SNOW:'Growth', ZS:'Growth', MSTR:'Growth',
+  RBLX:'Growth', HOOD:'Growth',
+};
+
+function getSector(symbol) { return SYMBOL_SECTOR[symbol] || 'Other'; }
+
+// Returns a map of sector -> count of open positions in that sector
+function sectorExposure(openPositions) {
+  const map = {};
+  for (const p of openPositions) {
+    const s = getSector(p.symbol);
+    map[s] = (map[s] || 0) + 1;
+  }
+  return map;
+}
+
 const AT_WATCHLIST_DEFAULT = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'AMZN', 'GOOGL', 'JPM', 'XOM'];
 
 const AT = {
@@ -742,6 +787,7 @@ const AT = {
   confidenceThreshold: 0.75,
   maxPositions: 5,
   maxPositionPct: 15,
+  maxPositionsPerSector: 2,   // max open positions in same sector
   stopLossPct: 8,
   takeProfitPct: 30,
   drawdownLimit: 0.15,
@@ -809,6 +855,7 @@ function saveAtState() {
         confidenceThreshold: AT.confidenceThreshold,
         maxPositions: AT.maxPositions,
         maxPositionPct: AT.maxPositionPct,
+        maxPositionsPerSector: AT.maxPositionsPerSector,
         stopLossPct: AT.stopLossPct,
         takeProfitPct: AT.takeProfitPct,
         drawdownLimit: AT.drawdownLimit,
@@ -904,6 +951,7 @@ function atPublicState() {
     confidenceThreshold: AT.confidenceThreshold,
     maxPositions: AT.maxPositions,
     maxPositionPct: AT.maxPositionPct,
+        maxPositionsPerSector: AT.maxPositionsPerSector,
     stopLossPct: AT.stopLossPct,
     takeProfitPct: AT.takeProfitPct,
     drawdownLimit: AT.drawdownLimit,
@@ -1112,12 +1160,25 @@ async function atCycle() {
       const sma50 = computeSMA(closes, 50);
       const annVol = computeAnnualizedVol(closes);
       const bs = computeBlackScholes(lastPrice, annVol);
+      const sector = getSector(symbol);
+      const secExp = sectorExposure(openPositions);
+      const sectorCount = secExp[sector] || 0;
+      const sectorBlocked = !hasPos && sectorCount >= AT.maxPositionsPerSector;
+
+      // Hard diversification check — skip BUY/SHORT if sector is full
+      if (sectorBlocked) {
+        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Sector limit: ${sector} already has ${sectorCount}/${AT.maxPositionsPerSector} positions`, executed: false });
+        continue;
+      }
+
+      const sectorSummary = Object.entries(secExp).map(([s, n]) => `${s}:${n}`).join(', ') || 'none';
+      const maxBudget = Math.min(equity * AT.maxPositionPct / 100, buyingPower * 0.95);
 
       const prompt = `MACRO CONTEXT:
 ${macroBrief}
 FX: ${fxStr}
 
-SYMBOL: ${symbol}
+SYMBOL: ${symbol} | SECTOR: ${sector}
 Last price: $${lastPrice.toFixed(2)}
 30d closes (latest 10): [${closes.slice(-10).map(c => c.toFixed(2)).join(', ')}]
 
@@ -1139,10 +1200,15 @@ hasPosition: ${hasPos}
 positionSide: ${isLong ? 'long' : isShort ? 'short' : 'none'}
 ${hasPos ? `qty: ${pos.qty} | entry: $${pos.avg_entry_price} | unrealizedP&L: ${pos.unrealized_plpc != null ? (+(pos.unrealized_plpc) * 100).toFixed(2) + '%' : '?'}` : ''}
 
-PORTFOLIO:
+PORTFOLIO DIVERSIFICATION:
 openPositions: ${openPositions.length}/${AT.maxPositions}
-buyingPower: $${buyingPower.toFixed(0)}
-allowShort: ${AT.allowShort}`;
+sectorExposure: ${sectorSummary}
+${sector} positions: ${sectorCount}/${AT.maxPositionsPerSector} (max per sector)
+maxBudgetForThisTrade: $${maxBudget.toFixed(0)} (${AT.maxPositionPct}% of equity)
+totalEquity: $${equity.toFixed(0)} | buyingPower: $${buyingPower.toFixed(0)}
+allowShort: ${AT.allowShort}
+
+DIVERSIFICATION RULES: Suggest suggestedNotional <= $${maxBudget.toFixed(0)}. Prefer sectors not yet represented in portfolio.`;
 
       let decision;
       try {
@@ -1326,7 +1392,8 @@ app.get('/api/autotrader/history', (req, res) => {
 app.post('/api/autotrader/config', (req, res) => {
   const {
     enabled, intervalMinutes, confidenceThreshold, maxPositions, maxPositionPct,
-    stopLossPct, takeProfitPct, drawdownLimit, allowShort, targetVolatility, resetHalt,
+    maxPositionsPerSector, stopLossPct, takeProfitPct, drawdownLimit, allowShort,
+    targetVolatility, resetHalt,
   } = req.body;
 
   if (enabled === true && !PAPER_MODE && !LIVE_TRADING_ENABLED)
@@ -1337,6 +1404,7 @@ app.post('/api/autotrader/config', (req, res) => {
   if (confidenceThreshold != null) AT.confidenceThreshold = Math.max(0.5, Math.min(1.0, +confidenceThreshold));
   if (maxPositions != null) AT.maxPositions = Math.max(1, Math.min(20, +maxPositions));
   if (maxPositionPct != null) AT.maxPositionPct = Math.max(1, Math.min(50, +maxPositionPct));
+  if (maxPositionsPerSector != null) AT.maxPositionsPerSector = Math.max(1, Math.min(AT.maxPositions, +maxPositionsPerSector));
   if (stopLossPct != null) AT.stopLossPct = Math.max(1, Math.min(50, +stopLossPct));
   if (takeProfitPct != null) AT.takeProfitPct = Math.max(1, Math.min(200, +takeProfitPct));
   if (drawdownLimit != null) AT.drawdownLimit = Math.max(0.02, Math.min(0.50, +drawdownLimit));
