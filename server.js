@@ -664,9 +664,18 @@ function normalCDF(x) {
   return x >= 0 ? cdf : 1 - cdf;
 }
 
-// Black-Scholes probability metrics for stock selection
-// Returns risk-neutral probabilities using historical vol as σ proxy
-function computeBlackScholes(S, sigma, T = 60 / 252, r = 0.043) {
+// Adaptive bracket orders scaled to 60-day expected move
+// TP = 1.5× expected move, SL = 0.55× expected move
+function computeAdaptiveBrackets(annVol, defaultTP = AT.takeProfitPct, defaultSL = AT.stopLossPct) {
+  if (!annVol || annVol <= 0) return { tpPct: defaultTP, slPct: defaultSL, adaptive: false };
+  const expectedMove60d = annVol * Math.sqrt(60 / 252) * 100; // in %
+  const tpPct = Math.min(80, Math.max(8,  Math.round(expectedMove60d * 1.5)));
+  const slPct = Math.min(25, Math.max(3,  Math.round(expectedMove60d * 0.55)));
+  return { tpPct, slPct, adaptive: true };
+}
+
+// Black-Scholes probability metrics — uses adaptive brackets if provided
+function computeBlackScholes(S, sigma, tpPct, slPct, T = 60 / 252, r = 0.043) {
   if (!S || !sigma || sigma <= 0 || S <= 0) return null;
   const sqrtT = Math.sqrt(T);
   // ATM (K=S): probability stock ends above current price
@@ -674,12 +683,12 @@ function computeBlackScholes(S, sigma, T = 60 / 252, r = 0.043) {
   const probAbove = normalCDF(d2_atm);          // P(S_T > S_0)
 
   // Probability of reaching take-profit target
-  const K_tp = S * (1 + AT.takeProfitPct / 100);
+  const K_tp = S * (1 + tpPct / 100);
   const d2_tp = (Math.log(S / K_tp) + (r - 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
   const probTP = normalCDF(d2_tp);              // P(S_T > TP)
 
   // Probability of hitting stop-loss
-  const K_sl = S * (1 - AT.stopLossPct / 100);
+  const K_sl = S * (1 - slPct / 100);
   const d2_sl = (Math.log(S / K_sl) + (r - 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
   const probSL = 1 - normalCDF(d2_sl);         // P(S_T < SL)
 
@@ -1238,7 +1247,8 @@ async function atCycle() {
       const sma20 = computeSMA(closes, 20);
       const sma50 = computeSMA(closes, 50);
       const annVol = computeAnnualizedVol(closes);
-      const bs = computeBlackScholes(lastPrice, annVol);
+      const brackets = computeAdaptiveBrackets(annVol);
+      const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct);
       const sector = getSector(symbol);
       const secExp = sectorExposure(openPositions);
       const sectorCount = secExp[sector] || 0;
@@ -1275,8 +1285,9 @@ Annualized Volatility: ${annVol != null ? (annVol * 100).toFixed(1) + '%' : '?'}
 
 BLACK-SCHOLES (60-day horizon, r=4.3%, σ=historical vol):
 P(price > current in 60d): ${bs ? bs.probAbove + '%' : '?'}
-P(reach TP +${AT.takeProfitPct}%): ${bs ? bs.probTP + '%' : '?'}
-P(hit SL -${AT.stopLossPct}%): ${bs ? bs.probSL + '%' : '?'}
+P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP + '%' : '?'}
+P(hit SL -${brackets.slPct}%): ${bs ? bs.probSL + '%' : '?'}
+Adaptive brackets: ${brackets.adaptive ? `TP +${brackets.tpPct}% / SL -${brackets.slPct}% (σ-scaled)` : 'default'}
 ATM call delta: ${bs ? bs.callDelta : '?'}
 
 POSITION:
@@ -1354,8 +1365,8 @@ ${replaceBlock}`;
               const orderBody = useBracket ? {
                 symbol, qty: estQty, side: 'buy', type: 'market', time_in_force: 'day',
                 order_class: 'bracket',
-                take_profit: { limit_price: +(lastPrice * (1 + AT.takeProfitPct / 100)).toFixed(2) },
-                stop_loss: { stop_price: +(lastPrice * (1 - AT.stopLossPct / 100)).toFixed(2) },
+                take_profit: { limit_price: +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2) },
+                stop_loss: { stop_price: +(lastPrice * (1 - brackets.slPct / 100)).toFixed(2) },
                 client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
               } : {
                 symbol, notional: Math.floor(tradeNotional), side: 'buy', type: 'market',
@@ -1363,7 +1374,7 @@ ${replaceBlock}`;
               };
               const order = await submitValidatedOrder(orderBody);
               logEntry.executed = true;
-              logEntry.executedAction = `BUY ${useBracket ? estQty + ' shares' : '$' + Math.floor(tradeNotional)} | SL: -${AT.stopLossPct}% | TP: +${AT.takeProfitPct}%`;
+              logEntry.executedAction = `BUY ${useBracket ? estQty + ' shares' : '$' + Math.floor(tradeNotional)} | SL: -${brackets.slPct}% | TP: +${brackets.tpPct}%`;
               logEntry.orderId = order.id;
               markAutoTrade(symbol, 'BUY');
               try {
@@ -1375,7 +1386,7 @@ ${replaceBlock}`;
                 buyingPower = Math.max(0, buyingPower - Math.floor(tradeNotional));
               }
               broadcast({ type: 'autotrader_trade', symbol, action: 'BUY', notional: Math.floor(tradeNotional), reasoning });
-              await sendTelegram(`🟢 <b>AutoTrader BUY</b> — <b>${symbol}</b>\n💰 $${Math.floor(tradeNotional)} | SL: -${AT.stopLossPct}% | TP: +${AT.takeProfitPct}%\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'} | Vol: ${annVol != null ? (annVol*100).toFixed(0)+'%' : '?'}\n🧠 ${reasoning}`);
+              await sendTelegram(`🟢 <b>AutoTrader BUY</b> — <b>${symbol}</b>\n💰 $${Math.floor(tradeNotional)} | SL: -${brackets.slPct}% | TP: +${brackets.tpPct}%${brackets.adaptive ? ' (σ-adaptive)' : ''}\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'} | Vol: ${annVol != null ? (annVol*100).toFixed(0)+'%' : '?'}\n🧠 ${reasoning}`);
             } catch (e) { logEntry.error = e.message; }
           }
         }
@@ -1411,12 +1422,12 @@ ${replaceBlock}`;
               const order = await submitValidatedOrder({
                 symbol, qty: estQty, side: 'sell', type: 'market', time_in_force: 'day',
                 order_class: 'bracket',
-                take_profit: { limit_price: +(lastPrice * (1 - AT.takeProfitPct / 100)).toFixed(2) },
-                stop_loss: { stop_price: +(lastPrice * (1 + AT.stopLossPct / 100)).toFixed(2) },
+                take_profit: { limit_price: +(lastPrice * (1 - brackets.tpPct / 100)).toFixed(2) },
+                stop_loss: { stop_price: +(lastPrice * (1 + brackets.slPct / 100)).toFixed(2) },
                 client_order_id: `nexus_at_short_${symbol}_${Date.now()}`,
               });
               logEntry.executed = true;
-              logEntry.executedAction = `SHORT ${estQty} shares | SL: +${AT.stopLossPct}% | TP: -${AT.takeProfitPct}%`;
+              logEntry.executedAction = `SHORT ${estQty} shares | SL: +${brackets.slPct}% | TP: -${brackets.tpPct}%`;
               logEntry.orderId = order.id;
               markAutoTrade(symbol, 'SHORT');
               try {
@@ -1426,7 +1437,7 @@ ${replaceBlock}`;
                 buyingPower = +account.buying_power;
               } catch (_) { buyingPower = Math.max(0, buyingPower - Math.floor(tradeNotional)); }
               broadcast({ type: 'autotrader_trade', symbol, action: 'SHORT', qty: estQty, reasoning });
-              await sendTelegram(`🩳 <b>AutoTrader SHORT</b> — <b>${symbol}</b>\n📉 ${estQty} shares | SL: +${AT.stopLossPct}% | TP: -${AT.takeProfitPct}%\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'}\n🧠 ${reasoning}`);
+              await sendTelegram(`🩳 <b>AutoTrader SHORT</b> — <b>${symbol}</b>\n📉 ${estQty} shares | SL: +${brackets.slPct}% | TP: -${brackets.tpPct}%${brackets.adaptive ? ' (σ-adaptive)' : ''}\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'}\n🧠 ${reasoning}`);
             } catch (e) { logEntry.error = e.message; }
           }
         }
