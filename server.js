@@ -500,6 +500,21 @@ Rules:
 - ALWAYS integrate macro context. CB/geopolitical events override technicals.
 - Prefer HOLD over low-conviction trades. A missed opportunity is better than a forced loss.`;
 
+const POSITION_REVIEW_PROMPT = `You are a risk manager reviewing a losing position. Given technicals, volatility, and macro context, decide whether to:
+- HOLD: dip is volatility-driven (not fundamental), recovery likely — do NOT close
+- CLOSE: trend is broken, thesis invalid, or risk/reward has deteriorated — exit immediately
+- ADD: strong conviction the dip is temporary AND price is at a technically attractive level — buy more (averaging down)
+
+Output ONLY valid JSON, no markdown:
+{"action":"HOLD"|"CLOSE"|"ADD","confidence":0.0-1.0,"reasoning":"<2 sentences max>","addNotional":number|null}
+
+Rules:
+- ADD requires confidence ≥ 0.82, price near support (SMA20 or SMA50), RSI oversold, and high annualized vol (≥ 40%)
+- CLOSE if: price broke through SMA50, RSI still declining, MACD deeply negative, or P&L < -2× adaptive SL
+- HOLD is the default for high-vol stocks with intact fundamentals and a temporary dip
+- addNotional: max $5000, only for ADD action, null otherwise
+- Never ADD if portfolio already has 2+ positions in same sector in drawdown`;
+
 app.post('/api/chat', async (req, res) => {
   try {
     const { prompt, context, maxTokens } = req.body;
@@ -1131,6 +1146,130 @@ async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
   return { targets: [...new Set([...openSymbols, ...AT_WATCHLIST_DEFAULT.slice(0, n)])], dynamicMovers };
 }
 
+// ── Volatility-aware position review (runs before new-trade scan) ────────────
+async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, fxStr, equity, buyingPower, posMap) {
+  const reviewed = [];
+  for (const pos of openPositions) {
+    if (pos.side !== 'long') continue;
+    const plPct = +(pos.unrealized_plpc || 0) * 100; // e.g. -12.5
+    if (plPct >= 0) continue; // only review losing positions
+
+    // Fetch bars for volatility + technicals
+    let annVol = null, closes = [], rsi = null, macd = null, sma20 = null, sma50 = null, lastPrice = +pos.current_price || +pos.avg_entry_price;
+    try {
+      const qs = new URLSearchParams({ timeframe: '1Day', limit: '60', feed: 'iex' });
+      const bd = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
+      if (Array.isArray(bd.bars) && bd.bars.length) {
+        closes = bd.bars.map(b => b.c);
+        lastPrice = closes[closes.length - 1] || lastPrice;
+        annVol = computeAnnualizedVol(closes);
+        rsi = computeRSI(closes);
+        macd = computeMACD(closes);
+        sma20 = computeSMA(closes, 20);
+        sma50 = computeSMA(closes, 50);
+      }
+    } catch (_) {}
+
+    const brackets = computeAdaptiveBrackets(annVol);
+    // Trigger review when loss exceeds half the adaptive SL (early warning) OR full SL
+    const reviewThreshold = -(brackets.slPct * 0.6);
+    if (plPct > reviewThreshold) continue; // loss not deep enough yet
+
+    // Emergency hard close at 2× adaptive SL — no AI needed, just close
+    const emergencyThreshold = -(brackets.slPct * 2.2);
+    if (plPct <= emergencyThreshold) {
+      try {
+        await alpacaFetch(`/v2/positions/${pos.symbol}`, { method: 'DELETE' });
+        const msg = `🚨 <b>AutoTrader EMERGENCY CLOSE</b> — <b>${pos.symbol}</b>\n📉 P&L: ${plPct.toFixed(1)}% (>${(brackets.slPct*2).toFixed(0)}% drawdown)\nHard stop fired — no AI consultation.`;
+        atLog({ symbol: pos.symbol, action: 'CLOSE', confidence: 1, reasoning: `Emergency hard stop at ${plPct.toFixed(1)}% (>${(brackets.slPct*2).toFixed(0)}% limit)`, executed: true, executedAction: `EMERGENCY CLOSE ${pos.qty} shares` });
+        markAutoTrade(pos.symbol, 'SELL');
+        broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'EMERGENCY_CLOSE', reasoning: msg });
+        await sendTelegram(msg);
+      } catch (e) {
+        atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: `Emergency close failed: ${e.message}`, executed: false });
+      }
+      reviewed.push(pos.symbol);
+      continue;
+    }
+
+    // Already reviewed this position today?
+    if (hasTradedToday(pos.symbol, 'REVIEW')) {
+      // Allow ADD only once per day — skip if already reviewed
+      continue;
+    }
+
+    const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct);
+    const reviewPrompt = `MACRO: ${macroBrief}\nFX: ${fxStr}
+
+POSITION UNDER REVIEW: ${pos.symbol}
+Entry price: $${pos.avg_entry_price} | Current price: $${lastPrice.toFixed(2)}
+Unrealized P&L: ${plPct.toFixed(2)}% (${(+(pos.unrealized_pl||0)).toFixed(2)} USD)
+Qty held: ${pos.qty} shares
+
+TECHNICALS:
+RSI(14): ${rsi != null ? rsi.toFixed(1) : '?'}
+MACD: ${macd != null ? macd.toFixed(3) : '?'}
+SMA20: ${sma20 != null ? '$' + sma20.toFixed(2) : '?'} | SMA50: ${sma50 != null ? '$' + sma50.toFixed(2) : '?'}
+Price vs SMA20: ${sma20 ? ((lastPrice/sma20-1)*100).toFixed(1)+'%' : '?'} | Price vs SMA50: ${sma50 ? ((lastPrice/sma50-1)*100).toFixed(1)+'%' : '?'}
+Annualized Volatility: ${annVol != null ? (annVol*100).toFixed(1)+'%' : '?'}
+
+BLACK-SCHOLES (60d, adaptive σ-brackets):
+P(price above current in 60d): ${bs ? bs.probAbove+'%' : '?'}
+P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP+'%' : '?'}
+P(hit hard stop -${(brackets.slPct*2.2).toFixed(0)}%): ${bs ? bs.probSL+'%' : '?'}
+ATM call delta: ${bs ? bs.callDelta : '?'}
+
+REVIEW TRIGGER: position down ${Math.abs(plPct).toFixed(1)}% (adaptive SL zone: -${brackets.slPct}%)
+Portfolio: ${openPositions.length} positions open | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}`;
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, system: POSITION_REVIEW_PROMPT, messages: [{ role: 'user', content: reviewPrompt }] }),
+      });
+      const d = await res.json();
+      let raw = (d.content?.[0]?.text || '{}').trim().replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+      const review = JSON.parse(raw);
+      const { action: rAction, confidence: rConf, reasoning: rReason, addNotional } = review;
+
+      atLog({ symbol: pos.symbol, action: `REVIEW:${rAction}`, confidence: rConf, reasoning: `[P&L ${plPct.toFixed(1)}%] ${rReason}`, executed: false });
+      markAutoTrade(pos.symbol, 'REVIEW');
+
+      if (rAction === 'CLOSE' && rConf >= 0.72) {
+        const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: pos.symbol, qty: +pos.qty, side: 'sell', type: 'market', time_in_force: 'day', client_order_id: `nexus_review_close_${pos.symbol}_${Date.now()}` }) });
+        atLog({ symbol: pos.symbol, action: 'CLOSE', confidence: rConf, reasoning: rReason, executed: true, executedAction: `CLOSE (AI review) ${pos.qty} shares | P&L ${plPct.toFixed(1)}%`, orderId: order?.id });
+        markAutoTrade(pos.symbol, 'SELL');
+        broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'CLOSE', qty: +pos.qty, reasoning: rReason });
+        await sendTelegram(`🔴 <b>AutoTrader CLOSE</b> (review) — <b>${pos.symbol}</b>\n📉 ${pos.qty} shares | P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
+
+      } else if (rAction === 'ADD' && rConf >= 0.82 && addNotional > 0 && buyingPower > addNotional) {
+        const addQty = Math.floor(Math.min(addNotional, 5000) / lastPrice);
+        if (addQty >= 1) {
+          const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol: pos.symbol, qty: addQty, side: 'buy', type: 'market', time_in_force: 'day', client_order_id: `nexus_review_add_${pos.symbol}_${Date.now()}` }) });
+          atLog({ symbol: pos.symbol, action: 'ADD', confidence: rConf, reasoning: rReason, executed: true, executedAction: `ADD ${addQty} shares @ $${lastPrice.toFixed(2)} (avg-down)`, orderId: order?.id });
+          markAutoTrade(pos.symbol, 'ADD');
+          broadcast({ type: 'autotrader_trade', symbol: pos.symbol, action: 'ADD', qty: addQty, reasoning: rReason });
+          await sendTelegram(`🔵 <b>AutoTrader ADD</b> (avg-down) — <b>${pos.symbol}</b>\n📈 +${addQty} shares @ $${lastPrice.toFixed(2)} | Pos P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
+          buyingPower -= addQty * lastPrice;
+        }
+      } else {
+        // HOLD — log and move on
+        atLog({ symbol: pos.symbol, action: 'HOLD', confidence: rConf, reasoning: `[Review: holding through dip] ${rReason}`, executed: false });
+        await sendTelegram(`⏸ <b>AutoTrader HOLD</b> (review) — <b>${pos.symbol}</b>\n📊 P&L: ${plPct.toFixed(1)}% | Vol: ${annVol ? (annVol*100).toFixed(0)+'%' : '?'}\n🧠 ${rReason}`);
+      }
+    } catch (e) {
+      atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: `Position review failed: ${e.message}`, executed: false });
+    }
+
+    reviewed.push(pos.symbol);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return buyingPower; // return updated buying power (after any ADDs)
+}
+
 async function atCycle() {
   if (!AT.enabled || AT.running) return;
   AT.running = true;
@@ -1205,6 +1344,14 @@ async function atCycle() {
       atLog({ symbol: 'SYSTEM', action: 'WATCHLIST', confidence: 1, reasoning: `AI selected ${targets.length} symbols from ${STOCK_UNIVERSE.length + dynamicMovers.length} universe: ${targets.join(', ')}${moversNote}`, executed: false });
     } else {
       targets = [...new Set([...posMap.keys(), ...AT.watchlist])];
+    }
+
+    // Phase 2.5: volatility-aware position review for losing positions
+    if (openPositions.some(p => p.side === 'long' && +(p.unrealized_plpc||0) < 0)) {
+      atLog({ symbol: 'SYSTEM', action: 'REVIEW', confidence: 1, reasoning: `Reviewing ${openPositions.filter(p=>+(p.unrealized_plpc||0)<0).length} losing position(s) before new trades…`, executed: false });
+      buyingPower = await reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, fxStr, equity, buyingPower, posMap);
+      // Refresh positions after any closes/adds
+      try { ({ account, positions } = await refreshAccountSnapshot()); openPositions = Array.isArray(positions) ? positions : []; posMap = new Map(openPositions.map(p => [p.symbol, p])); buyingPower = +account.buying_power; } catch(_) {}
     }
 
     for (const symbol of targets) {
@@ -1364,9 +1511,9 @@ ${replaceBlock}`;
               const useBracket = estQty >= 1;
               const orderBody = useBracket ? {
                 symbol, qty: estQty, side: 'buy', type: 'market', time_in_force: 'day',
-                order_class: 'bracket',
+                order_class: 'oto',
                 take_profit: { limit_price: +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2) },
-                stop_loss: { stop_price: +(lastPrice * (1 - brackets.slPct / 100)).toFixed(2) },
+                // No bracket stop_loss — AI position review handles drawdown intelligently
                 client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
               } : {
                 symbol, notional: Math.floor(tradeNotional), side: 'buy', type: 'market',
@@ -1374,7 +1521,7 @@ ${replaceBlock}`;
               };
               const order = await submitValidatedOrder(orderBody);
               logEntry.executed = true;
-              logEntry.executedAction = `BUY ${useBracket ? estQty + ' shares' : '$' + Math.floor(tradeNotional)} | SL: -${brackets.slPct}% | TP: +${brackets.tpPct}%`;
+              logEntry.executedAction = `BUY ${useBracket ? estQty + ' shares' : '$' + Math.floor(tradeNotional)} | TP: +${brackets.tpPct}% | AI-managed SL (review at -${brackets.slPct}%)`;
               logEntry.orderId = order.id;
               markAutoTrade(symbol, 'BUY');
               try {
@@ -1386,7 +1533,7 @@ ${replaceBlock}`;
                 buyingPower = Math.max(0, buyingPower - Math.floor(tradeNotional));
               }
               broadcast({ type: 'autotrader_trade', symbol, action: 'BUY', notional: Math.floor(tradeNotional), reasoning });
-              await sendTelegram(`🟢 <b>AutoTrader BUY</b> — <b>${symbol}</b>\n💰 $${Math.floor(tradeNotional)} | SL: -${brackets.slPct}% | TP: +${brackets.tpPct}%${brackets.adaptive ? ' (σ-adaptive)' : ''}\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'} | Vol: ${annVol != null ? (annVol*100).toFixed(0)+'%' : '?'}\n🧠 ${reasoning}`);
+              await sendTelegram(`🟢 <b>AutoTrader BUY</b> — <b>${symbol}</b>\n💰 $${Math.floor(tradeNotional)} | TP: +${brackets.tpPct}%${brackets.adaptive ? ' (σ-adaptive)' : ''} | AI-SL review at -${brackets.slPct}%\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'} | Vol: ${annVol != null ? (annVol*100).toFixed(0)+'%' : '?'}\n🧠 ${reasoning}`);
             } catch (e) { logEntry.error = e.message; }
           }
         }
@@ -1421,9 +1568,9 @@ ${replaceBlock}`;
             try {
               const order = await submitValidatedOrder({
                 symbol, qty: estQty, side: 'sell', type: 'market', time_in_force: 'day',
-                order_class: 'bracket',
+                order_class: 'oto',
                 take_profit: { limit_price: +(lastPrice * (1 - brackets.tpPct / 100)).toFixed(2) },
-                stop_loss: { stop_price: +(lastPrice * (1 + brackets.slPct / 100)).toFixed(2) },
+                // No bracket stop_loss — AI position review handles drawdown intelligently
                 client_order_id: `nexus_at_short_${symbol}_${Date.now()}`,
               });
               logEntry.executed = true;
