@@ -718,14 +718,14 @@ function adaptiveNotional(equity, annualizedVol, targetVol, maxPositionPct) {
 
 // ─── AutoTrader Engine ────────────────────────────────────────────────────────
 
-// Universe of liquid US-listed stocks Claude can pick from when aiManagedWatchlist is enabled.
-// All are NYSE/NASDAQ primary-listed with strong IEX data availability.
+// Universe of US-listed stocks Claude can pick from when aiManagedWatchlist is enabled.
+// Covers mega-cap anchors + mid/small-cap growth. Supplemented each cycle by live market movers.
 const STOCK_UNIVERSE = [
   // Mega-cap tech
   'AAPL','MSFT','NVDA','GOOGL','AMZN','META','TSLA','AVGO','ORCL','AMD',
-  // Financials
+  // Financials (large)
   'JPM','BAC','GS','MS','BLK','AXP','V','MA','PYPL','SCHW',
-  // Healthcare & pharma
+  // Healthcare & pharma (large)
   'UNH','JNJ','LLY','PFE','ABBV','MRK','CVS','AMGN','GILD','ISRG',
   // Energy & industrials
   'XOM','CVX','COP','LMT','RTX','CAT','HON','GE','BA','UPS',
@@ -733,34 +733,65 @@ const STOCK_UNIVERSE = [
   'WMT','COST','HD','TGT','NKE','SBUX','MCD','PG','KO','PEP',
   // ETFs for broad exposure
   'SPY','QQQ','IWM','XLK','XLF','XLE','XLV','XLI','GLD','TLT',
-  // Growth / high-momentum
+  // Growth / high-momentum (large)
   'PLTR','COIN','CRWD','NET','DDOG','SNOW','ZS','MSTR','RBLX','HOOD',
+  // ── Mid-cap growth ──────────────────────────────────────────────────────────
+  // AI & Quantum computing
+  'IONQ','RGTI','QUBT','SOUN','AI','PATH','BBAI','ARQQ',
+  // Fintech & neobanks
+  'SQ','AFRM','SOFI','UPST','NU','OPEN','RELY','DAVE',
+  // SaaS & software
+  'SHOP','HUBS','BILL','GTLB','MNDY','BRZE','DOMO','APP',
+  // Biotech & health innovation
+  'MRNA','BNTX','RXRX','BEAM','EDIT','NTLA','HIMS','TDOC','ACMR',
+  // Clean energy & EV
+  'FSLR','ENPH','PLUG','RIVN','LCID','QS','BE','RUN','CHPT',
+  // Space, defense innovation & drones
+  'RKLB','LUNR','PL','ASTS','RDW','JOBY','ACHR','LILM',
+  // Retail disruptors & consumer tech
+  'ETSY','W','CHWY','WISH','CPNG','GRAB',
+  // Semiconductors (mid)
+  'SMCI','WOLF','AMBA','FORM','CRUS','LSCC',
+  // Media & streaming
+  'NFLX','DIS','PARA','WBD','SPOT','ROKU',
 ];
 
-// Sector mapping for diversification enforcement
+// Sector mapping for diversification — 'Other' is assigned to dynamic movers not in this map
 const SYMBOL_SECTOR = {
-  // Tech
+  // Tech (large)
   AAPL:'Tech', MSFT:'Tech', NVDA:'Tech', GOOGL:'Tech', AMZN:'Tech',
-  META:'Tech', TSLA:'Tech', AVGO:'Tech', ORCL:'Tech', AMD:'Tech',
-  XLK:'Tech',
+  META:'Tech', TSLA:'Tech', AVGO:'Tech', ORCL:'Tech', AMD:'Tech', XLK:'Tech',
   // Financials
   JPM:'Financials', BAC:'Financials', GS:'Financials', MS:'Financials',
   BLK:'Financials', AXP:'Financials', V:'Financials', MA:'Financials',
   PYPL:'Financials', SCHW:'Financials', XLF:'Financials',
+  SQ:'Fintech', AFRM:'Fintech', SOFI:'Fintech', UPST:'Fintech',
+  NU:'Fintech', OPEN:'Fintech', RELY:'Fintech', DAVE:'Fintech',
   // Healthcare
   UNH:'Healthcare', JNJ:'Healthcare', LLY:'Healthcare', PFE:'Healthcare',
   ABBV:'Healthcare', MRK:'Healthcare', CVS:'Healthcare', AMGN:'Healthcare',
   GILD:'Healthcare', ISRG:'Healthcare', XLV:'Healthcare',
+  MRNA:'Biotech', BNTX:'Biotech', RXRX:'Biotech', BEAM:'Biotech',
+  EDIT:'Biotech', NTLA:'Biotech', HIMS:'Biotech', TDOC:'Biotech', ACMR:'Biotech',
   // Energy
   XOM:'Energy', CVX:'Energy', COP:'Energy', XLE:'Energy',
+  FSLR:'CleanEnergy', ENPH:'CleanEnergy', PLUG:'CleanEnergy',
+  BE:'CleanEnergy', RUN:'CleanEnergy', CHPT:'CleanEnergy',
+  // EV
+  RIVN:'EV', LCID:'EV', QS:'EV',
   // Industrials & Defense
   LMT:'Industrials', RTX:'Industrials', CAT:'Industrials', HON:'Industrials',
   GE:'Industrials', BA:'Industrials', UPS:'Industrials', XLI:'Industrials',
+  // Space & Aerospace
+  RKLB:'Space', LUNR:'Space', PL:'Space', ASTS:'Space',
+  RDW:'Space', JOBY:'Space', ACHR:'Space', LILM:'Space',
   // Consumer
   WMT:'Consumer', COST:'Consumer', HD:'Consumer', TGT:'Consumer',
   NKE:'Consumer', SBUX:'Consumer', MCD:'Consumer', PG:'Consumer',
   KO:'Consumer', PEP:'Consumer',
-  // Broad Market ETFs
+  ETSY:'Consumer', W:'Consumer', CHWY:'Consumer', WISH:'Consumer',
+  CPNG:'Consumer', GRAB:'Consumer',
+  // ETF
   SPY:'ETF', QQQ:'ETF', IWM:'ETF',
   // Bonds & Commodities
   GLD:'Commodities', TLT:'Bonds',
@@ -768,6 +799,17 @@ const SYMBOL_SECTOR = {
   PLTR:'Growth', COIN:'Growth', CRWD:'Growth', NET:'Growth',
   DDOG:'Growth', SNOW:'Growth', ZS:'Growth', MSTR:'Growth',
   RBLX:'Growth', HOOD:'Growth',
+  // AI & Quantum
+  IONQ:'AIQuantum', RGTI:'AIQuantum', QUBT:'AIQuantum', SOUN:'AIQuantum',
+  AI:'AIQuantum', PATH:'AIQuantum', BBAI:'AIQuantum', ARQQ:'AIQuantum',
+  // SaaS
+  SHOP:'SaaS', HUBS:'SaaS', BILL:'SaaS', GTLB:'SaaS',
+  MNDY:'SaaS', BRZE:'SaaS', DOMO:'SaaS', APP:'SaaS',
+  // Semiconductors (mid)
+  SMCI:'Semiconductors', WOLF:'Semiconductors', AMBA:'Semiconductors',
+  FORM:'Semiconductors', CRUS:'Semiconductors', LSCC:'Semiconductors',
+  // Media & streaming
+  NFLX:'Media', DIS:'Media', PARA:'Media', WBD:'Media', SPOT:'Media', ROKU:'Media',
 };
 
 function getSector(symbol) { return SYMBOL_SECTOR[symbol] || 'Other'; }
@@ -1023,10 +1065,43 @@ Return a JSON object (no markdown, no explanation) with exactly these keys:
   return { brief, fxStr, dateStr };
 }
 
+// Fetch top movers and most-active from Alpaca screener — dynamic market discovery
+async function fetchMarketMovers() {
+  const VALID = /^[A-Z][A-Z0-9]{0,8}$/; // no dots — avoids preferred shares, ETNs
+  const filter = syms => syms
+    .map(s => String(s).toUpperCase().trim())
+    .filter(s => VALID.test(s) && !s.endsWith('W') && !s.endsWith('R')); // strip warrants/rights
+
+  let movers = [];
+  try {
+    const r1 = await alpacaDataFetch('/v1beta1/screener/stocks/most-active?top=30&by=volume');
+    const d1 = await r1.json();
+    const active = (d1.most_actives || []).map(x => x.symbol);
+    movers.push(...active);
+  } catch (_) {}
+  try {
+    const r2 = await alpacaDataFetch('/v1beta1/screener/stocks/movers?top=20');
+    const d2 = await r2.json();
+    const gainers = (d2.gainers || []).map(x => x.symbol);
+    const losers  = (d2.losers  || []).map(x => x.symbol);
+    movers.push(...gainers, ...losers);
+  } catch (_) {}
+
+  return [...new Set(filter(movers))];
+}
+
 async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
-  const universe = [...new Set([...STOCK_UNIVERSE, ...openSymbols])];
-  const n = Math.max(5, Math.min(20, AT.watchlistSize || 10));
-  const prompt = `MACRO CONTEXT:\n${macroBrief}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades (BUY, SELL, SHORT, or COVER) in the next trading session given current macro conditions. Prioritize high-conviction setups: momentum plays, mean-reversion candidates, sector leaders in inflow/outflow rotation, and any with near-term catalysts.\n\nIMPORTANT: only pick symbols from the universe list below — all are primary US-listed NYSE/NASDAQ stocks with live IEX data on Alpaca paper trading. Do NOT invent or add any ticker not in this list.\n\nUNIVERSE: ${universe.join(', ')}\n\nAlways include these open positions (they must be monitored): ${openSymbols.join(', ') || 'none'}.\n\nRespond with ONLY a JSON array of ticker strings, no explanation. Example: ["NVDA","TSLA","SPY"]`;
+  const n = Math.max(5, Math.min(30, AT.watchlistSize || 10));
+
+  // Combine static universe with live market movers
+  const dynamicMovers = await fetchMarketMovers();
+  const universe = [...new Set([...STOCK_UNIVERSE, ...dynamicMovers, ...openSymbols])];
+
+  const moversLabel = dynamicMovers.length
+    ? `\n\nLIVE MARKET MOVERS (most active + top gainers/losers today): ${dynamicMovers.slice(0, 30).join(', ')}`
+    : '';
+
+  const prompt = `MACRO CONTEXT:\n${macroBrief}${moversLabel}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades in the next session. Prioritize: live movers with momentum, mean-reversion candidates, sector rotation leaders, mid/small-cap growth with catalysts. Do NOT invent tickers not in the list.\n\nFULL UNIVERSE (${universe.length} symbols): ${universe.join(', ')}\n\nMust include open positions: ${openSymbols.join(', ') || 'none'}.\n\nRespond ONLY with a JSON array. Example: ["NVDA","IONQ","RKLB"]`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1039,13 +1114,12 @@ async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
     if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
     const picks = JSON.parse(raw);
     if (Array.isArray(picks) && picks.length) {
-      const validated = picks.map(s => String(s).toUpperCase().replace(/[^A-Z0-9.]/g, '')).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s)).slice(0, 20);
-      // Always include open positions
+      const validated = picks.map(s => String(s).toUpperCase().replace(/[^A-Z0-9.]/g, '')).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s)).slice(0, 30);
       const merged = [...new Set([...openSymbols, ...validated])];
-      return merged;
+      return { targets: merged, dynamicMovers };
     }
   } catch (_) {}
-  return [...new Set([...openSymbols, ...AT_WATCHLIST_DEFAULT.slice(0, n)])];
+  return { targets: [...new Set([...openSymbols, ...AT_WATCHLIST_DEFAULT.slice(0, n)])], dynamicMovers };
 }
 
 async function atCycle() {
@@ -1114,10 +1188,12 @@ async function atCycle() {
     let targets;
     if (AT.aiManagedWatchlist) {
       const openSymbols = [...posMap.keys()];
-      targets = await aiSelectWatchlist(anthropicKey, macroBrief, openSymbols);
+      const { targets: aiTargets, dynamicMovers } = await aiSelectWatchlist(anthropicKey, macroBrief, openSymbols);
+      targets = aiTargets;
       AT.aiSelectedWatchlist = targets;
       broadcast({ type: 'autotrader_watchlist', watchlist: targets });
-      atLog({ symbol: 'SYSTEM', action: 'WATCHLIST', confidence: 1, reasoning: `AI selected ${targets.length} symbols: ${targets.join(', ')}`, executed: false });
+      const moversNote = dynamicMovers.length ? ` | Market movers discovered: ${dynamicMovers.slice(0,10).join(', ')}${dynamicMovers.length > 10 ? '…' : ''}` : '';
+      atLog({ symbol: 'SYSTEM', action: 'WATCHLIST', confidence: 1, reasoning: `AI selected ${targets.length} symbols from ${STOCK_UNIVERSE.length + dynamicMovers.length} universe: ${targets.join(', ')}${moversNote}`, executed: false });
     } else {
       targets = [...new Set([...posMap.keys(), ...AT.watchlist])];
     }
