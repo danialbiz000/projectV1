@@ -2540,6 +2540,8 @@ async function saveWatchlistConfig() {
     } catch (e) { showToast('Errore: ' + e.message, 'error'); return; }
   }
   showToast('Impostazioni watchlist salvate', 'success');
+}
+
 async function saveWatchlist() {
   const raw = (document.getElementById('at-watchlist')?.value || '').split(',');
   const symbols = raw.map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s));
