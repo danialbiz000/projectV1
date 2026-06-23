@@ -1253,10 +1253,11 @@ const SECTION_TITLES = {
 };
 function showSection(id, el) {
   closeDetailPanel();
+  closeOrderPanel();
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('section-' + id).classList.add('active');
-  el.classList.add('active');
+  if (el) el.classList.add('active');
   document.getElementById('section-title').textContent = SECTION_TITLES[id] || id;
   if (id === 'trading') { loadOpenOrders(); loadOrderHistory(); loadAlpacaHistory(); }
   if (id === 'settings') updateSettingsPanel();
@@ -1513,7 +1514,7 @@ async function submitOrder() {
 }
 function openOrderPanel(prefill = {}) {
   // Navigate to trading section → new order tab
-  showSection('section-trading');
+  showSection('trading');
   // Activate "Nuovo Ordine" tab
   const tabs = document.querySelectorAll('#section-trading .tab');
   const tabContents = document.querySelectorAll('#section-trading .tab-content');
@@ -1529,7 +1530,10 @@ function openOrderPanel(prefill = {}) {
   if (prefill.qty) { const el = document.getElementById('order-qty'); if (el) el.value = prefill.qty; }
   setTimeout(() => { const el = document.getElementById('order-symbol'); if (el) el.focus(); }, 150);
 }
-function closeOrderPanel() { /* noop — kept for compatibility */ }
+function closeOrderPanel() {
+  const p = document.getElementById('order-panel');
+  if (p) p.classList.remove('open');
+}
 
 async function closePosition(symbol, qty) {
   document.getElementById('modal-title').textContent = 'Chiudi Posizione';

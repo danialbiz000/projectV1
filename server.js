@@ -1539,12 +1539,15 @@ async function atCycle() {
         ? sectorPositions.sort((a, b) => (+a.unrealized_plpc || 0) - (+b.unrealized_plpc || 0))[0]
         : null;
 
-      // BS filter: skip new entries with mathematically unfavourable setup (saves AI tokens)
-      if (!hasPos && bs && bs.probTP < bs.probSL * 1.5) {
-        atLog({ symbol, action: 'SKIP', confidence: 0,
-          reasoning: `BS filter: P(TP)=${bs.probTP}% < 1.5×P(SL)=${bs.probSL}% — setup sfavorevole, skip AI`,
-          executed: false });
-        continue;
+      // BS filter: skip only when expected value is clearly negative (EV < -8%)
+      if (!hasPos && bs) {
+        const ev = (bs.probTP / 100) * (brackets.tpPct / 100) - (bs.probSL / 100) * (brackets.slPct / 100);
+        if (ev < -0.08) {
+          atLog({ symbol, action: 'SKIP', confidence: 0,
+            reasoning: `BS filter: EV=${(ev*100).toFixed(1)}% (P(TP)=${bs.probTP}%×${brackets.tpPct}% — P(SL)=${bs.probSL}%×${brackets.slPct}%) — skip AI`,
+            executed: false });
+          continue;
+        }
       }
 
       const sectorSummary = Object.entries(secExp).map(([s, n]) => `${s}:${n}`).join(', ') || 'none';
