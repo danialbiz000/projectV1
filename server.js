@@ -198,6 +198,18 @@ async function alpacaDataFetch(path, options = {}) {
   });
 }
 
+// Returns URLSearchParams for daily bars going back `calendarDays` from today.
+// Do NOT add feed=iex — daily bars must omit feed parameter.
+function dailyBarsParams(calendarDays = 365, limit = 300) {
+  const start = new Date();
+  start.setDate(start.getDate() - calendarDays);
+  return new URLSearchParams({
+    timeframe: '1Day',
+    limit:     String(limit),
+    start:     start.toISOString().split('T')[0],
+  });
+}
+
 async function parseJsonResponse(response) {
   const text = await response.text();
   if (!text) return null;
@@ -1226,7 +1238,7 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     let annVol = null, closes = [], rsi = null, macd = null, sma20 = null, sma50 = null;
     let lastPrice = +pos.current_price || +pos.avg_entry_price;
     try {
-      const qs = new URLSearchParams({ timeframe: '1Day', limit: '60' });
+      const qs = dailyBarsParams(365, 300);
       const bd = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
       if (Array.isArray(bd.bars) && bd.bars.length) {
         closes = bd.bars.map(b => b.c);
@@ -1478,7 +1490,7 @@ async function atCycle() {
       // Fetch price bars + volumes for technicals
       let closes = [], volumes = [];
       try {
-        const qs = new URLSearchParams({ timeframe: '1Day', limit: '60' });
+        const qs = dailyBarsParams(365, 300);
         const br = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?${qs}`);
         const bd = await br.json();
         if (Array.isArray(bd.bars) && bd.bars.length) {
@@ -1496,7 +1508,7 @@ async function atCycle() {
 
       // Skip symbols with insufficient history for MACD (needs 26+) — avoid wasting AI calls
       if (closes.length < 27 && !posMap.has(symbol)) {
-        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Insufficient history: ${closes.length} bars (need ≥27 for MACD/RSI). Skipping AI call.`, executed: false });
+        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Insufficient history: only ${closes.length} bars returned by Alpaca (need ≥27). Symbol may be too new or illiquid.`, executed: false });
         continue;
       }
 
