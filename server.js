@@ -677,6 +677,20 @@ function computeAnnualizedVol(closes) {
   return Math.sqrt(variance * 252);
 }
 
+// EWMA volatility (λ=0.94, RiskMetrics standard) — more responsive to recent regime changes
+function computeEWMAVol(closes, lambda = 0.94) {
+  if (closes.length < 10) return null;
+  const returns = [];
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i - 1] > 0) returns.push(Math.log(closes[i] / closes[i - 1]));
+  }
+  if (returns.length < 5) return null;
+  let variance = returns[0] ** 2;
+  for (let i = 1; i < returns.length; i++)
+    variance = lambda * variance + (1 - lambda) * returns[i] ** 2;
+  return Math.sqrt(variance * 252);
+}
+
 // Standard normal CDF via Abramowitz & Stegun approximation (max error 7.5e-8)
 function normalCDF(x) {
   const t = 1 / (1 + 0.2316419 * Math.abs(x));
@@ -742,9 +756,33 @@ async function sendTelegram(text) {
 function adaptiveNotional(equity, annualizedVol, targetVol, maxPositionPct) {
   const maxNotional = equity * maxPositionPct / 100;
   if (!annualizedVol || annualizedVol <= 0) return maxNotional;
-  // Scale position size inversely with volatility, capped at 1.5× base
   const scaleFactor = Math.min(targetVol / annualizedVol, 1.5);
-  return Math.min(maxNotional * scaleFactor, equity * 0.30); // hard cap at 30% of equity
+  return Math.min(maxNotional * scaleFactor, equity * 0.30);
+}
+
+// EV-based sizing multiplier: scales position by expected value P(TP)×tpPct − P(SL)×slPct
+// Returns a multiplier in [0.3, 1.5] applied on top of adaptiveNotional
+function bsSizing(bs, tpPct, slPct) {
+  if (!bs) return 1.0;
+  const ev = (bs.probTP / 100) * tpPct - (bs.probSL / 100) * slPct;
+  return Math.max(0.3, Math.min(1.5, 1 + ev / 10));
+}
+
+// ─── Dynamic Risk-Free Rate (FRED 3-month T-bill) ────────────────────────────
+let riskFreeRate = 0.043; // fallback
+
+async function refreshRiskFreeRate() {
+  try {
+    const res = await fetch('https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO');
+    const text = await res.text();
+    const lines = text.trim().split('\n');
+    const last = lines[lines.length - 1].split(',');
+    const rate = parseFloat(last[1]);
+    if (Number.isFinite(rate) && rate > 0) {
+      riskFreeRate = rate / 100;
+      console.log(`[BS] Risk-free rate updated: ${(riskFreeRate * 100).toFixed(3)}% (FRED DGS3MO)`);
+    }
+  } catch (_) {}
 }
 
 // ─── AutoTrader Engine ────────────────────────────────────────────────────────
@@ -977,15 +1015,6 @@ async function sendTelegram(text) {
   } catch (_) {}
 }
 
-// ─── Adaptive Position Sizing ─────────────────────────────────────────────────
-function adaptiveNotional(equity, annualizedVol, targetVol, maxPositionPct) {
-  const maxNotional = equity * maxPositionPct / 100;
-  if (!annualizedVol || annualizedVol <= 0) return maxNotional;
-  // Scale position size inversely with volatility, capped at 1.5× base
-  const scaleFactor = Math.min(targetVol / annualizedVol, 1.5);
-  return Math.min(maxNotional * scaleFactor, equity * 0.30); // hard cap at 30% of equity
-}
-
 
 function loadAtState() {
   try {
@@ -1202,7 +1231,7 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
       if (Array.isArray(bd.bars) && bd.bars.length) {
         closes = bd.bars.map(b => b.c);
         lastPrice = closes[closes.length - 1] || lastPrice;
-        annVol = computeAnnualizedVol(closes);
+        annVol = computeEWMAVol(closes);
         rsi = computeRSI(closes);
         macd = computeMACD(closes);
         sma20 = computeSMA(closes, 20);
@@ -1241,7 +1270,7 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     }
 
     // Run AI review
-    const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct);
+    const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct, 60 / 252, riskFreeRate);
     const addsDone = AT.addHistory[pos.symbol] || 0;
     const canAdd = addsDone < 1 && buyingPower > 500; // max 1 ADD per position lifetime
 
@@ -1484,9 +1513,9 @@ async function atCycle() {
       const macd = computeMACD(closes);
       const sma20 = computeSMA(closes, 20);
       const sma50 = computeSMA(closes, 50);
-      const annVol = computeAnnualizedVol(closes);
+      const annVol = computeEWMAVol(closes);
       const brackets = computeAdaptiveBrackets(annVol);
-      const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct);
+      const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct, 60 / 252, riskFreeRate);
       const sector = getSector(symbol);
       const secExp = sectorExposure(openPositions);
       const sectorCount = secExp[sector] || 0;
@@ -1497,6 +1526,14 @@ async function atCycle() {
       const weakestInSector = sectorPositions.length
         ? sectorPositions.sort((a, b) => (+a.unrealized_plpc || 0) - (+b.unrealized_plpc || 0))[0]
         : null;
+
+      // BS filter: skip new entries with mathematically unfavourable setup (saves AI tokens)
+      if (!hasPos && bs && bs.probTP < bs.probSL * 1.5) {
+        atLog({ symbol, action: 'SKIP', confidence: 0,
+          reasoning: `BS filter: P(TP)=${bs.probTP}% < 1.5×P(SL)=${bs.probSL}% — setup sfavorevole, skip AI`,
+          executed: false });
+        continue;
+      }
 
       const sectorSummary = Object.entries(secExp).map(([s, n]) => `${s}:${n}`).join(', ') || 'none';
       const maxBudget = Math.min(equity * AT.maxPositionPct / 100, buyingPower * 0.95);
@@ -1521,7 +1558,7 @@ SMA20: ${sma20 != null ? '$' + sma20.toFixed(2) : '?'} | SMA50: ${sma50 != null 
 Relative Volume: ${relVolume != null ? relVolume.toFixed(2) + 'x avg' : '?'}
 Annualized Volatility: ${annVol != null ? (annVol * 100).toFixed(1) + '%' : '?'}
 
-BLACK-SCHOLES (60-day horizon, r=4.3%, σ=historical vol):
+BLACK-SCHOLES (60-day horizon, r=${(riskFreeRate*100).toFixed(2)}% FRED DGS3MO, σ=EWMA vol):
 P(price > current in 60d): ${bs ? bs.probAbove + '%' : '?'}
 P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP + '%' : '?'}
 P(hit SL -${brackets.slPct}%): ${bs ? bs.probSL + '%' : '?'}
@@ -1594,7 +1631,8 @@ ${replaceBlock}`;
       if (confidence >= AT.confidenceThreshold) {
         // ── BUY (open long) ────────────────────────────────────────────────────
         if (action === 'BUY' && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
-          const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct);
+          const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct)
+            * bsSizing(bs, brackets.tpPct, brackets.slPct);
           const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
           const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
           if (tradeNotional >= 10) {
@@ -1654,7 +1692,8 @@ ${replaceBlock}`;
         }
         // ── SHORT (open short) ─────────────────────────────────────────────────
         else if (action === 'SHORT' && AT.allowShort && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
-          const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct);
+          const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct)
+            * bsSizing(bs, brackets.tpPct, brackets.slPct);
           const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
           const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
           if (estQty >= 1 && tradeNotional >= 10) {
@@ -1945,6 +1984,8 @@ function connectAlpacaTradingWs() {
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
+refreshRiskFreeRate();
+setInterval(refreshRiskFreeRate, 24 * 60 * 60 * 1000); // refresh once per day
 loadAtState();
 if (AT.enabled && !PAPER_MODE && !LIVE_TRADING_ENABLED) {
   AT.enabled = false;
