@@ -2336,11 +2336,6 @@ function updateMacroBrief(brief, ts) {
     ${row('🔄', 'Rotazione Settoriale', data.sectors)}
     ${row('📅', 'Prossimi Eventi', data.events)}
   `;
-function updateMacroBrief(brief, ts) {
-  const el = document.getElementById('at-macro-brief');
-  if (el && brief) el.textContent = brief;
-  const tsEl = document.getElementById('at-macro-ts');
-  if (tsEl && ts) tsEl.textContent = new Date(ts).toLocaleTimeString('it-IT');
 }
 
 async function loadAutoTraderStatus() {
@@ -2415,9 +2410,6 @@ function toggleWatchlistMode() {
 }
 
 const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold', WATCHLIST:'at-action-hold' };
-}
-
-const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold' };
 
 function atLogRowHtml(e) {
   const cls = AT_ACTION_CSS[e.action] || '';
