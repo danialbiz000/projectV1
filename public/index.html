@@ -2619,7 +2619,7 @@ async function refreshIntradayCharts() {
   });
 
   // Fetch bars for each symbol
-  const token = sessionStorage.getItem('nexus_token');
+  const token = sessionStorage.getItem('nexus_auth_token');
   await Promise.all(symbols.map(async sym => {
     try {
       const res = await fetch(`/api/autotrader/intraday/${sym}`, { headers: { Authorization: 'Bearer ' + token } });
