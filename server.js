@@ -1983,6 +1983,64 @@ function connectAlpacaTradingWs() {
   } catch (_) { alpacaConnected = false; setTimeout(connectAlpacaTradingWs, 5000); }
 }
 
+// ─── nexus_quant Bridge Endpoints ────────────────────────────────────────────
+// Receive structured signals, risk snapshots, regime, and monitoring from Python
+
+const quantState = {
+  lastSignal:      null,
+  lastRisk:        null,
+  lastRegime:      null,
+  lastMonitoring:  null,
+  signals:         [],   // ring buffer, last 100
+};
+
+function quantAuth(req, res, next) {
+  const key = req.headers['x-nexus-api-key'];
+  if (ADMIN_TOKEN && key !== ADMIN_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+app.post('/api/quant/signal', quantAuth, (req, res) => {
+  const sig = req.body;
+  sig.receivedAt = new Date().toISOString();
+  quantState.lastSignal = sig;
+  quantState.signals.unshift(sig);
+  if (quantState.signals.length > 100) quantState.signals.pop();
+  console.log(`[quant/signal] ${sig.strategy}/${sig.asset} dir=${sig.direction} conf=${sig.confidence}`);
+  res.json({ ok: true });
+});
+
+app.post('/api/quant/risk', quantAuth, (req, res) => {
+  quantState.lastRisk = { ...req.body, receivedAt: new Date().toISOString() };
+  if (req.body.kill_switch_active) {
+    console.warn('[quant/risk] Kill switch ACTIVE from Python risk engine');
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/quant/regime', quantAuth, (req, res) => {
+  quantState.lastRegime = { ...req.body, receivedAt: new Date().toISOString() };
+  console.log(`[quant/regime] ${req.body.regime} | vol: ${req.body.vol_regime} | conf=${req.body.confidence}`);
+  res.json({ ok: true });
+});
+
+app.post('/api/quant/monitoring', quantAuth, (req, res) => {
+  quantState.lastMonitoring = { ...req.body, receivedAt: new Date().toISOString() };
+  res.json({ ok: true });
+});
+
+app.get('/api/quant/state', requireAuth, (req, res) => {
+  res.json({
+    lastSignal:     quantState.lastSignal,
+    lastRisk:       quantState.lastRisk,
+    lastRegime:     quantState.lastRegime,
+    lastMonitoring: quantState.lastMonitoring,
+    recentSignals:  quantState.signals.slice(0, 20),
+  });
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 refreshRiskFreeRate();
 setInterval(refreshRiskFreeRate, 24 * 60 * 60 * 1000); // refresh once per day
