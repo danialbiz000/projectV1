@@ -1218,6 +1218,27 @@ function atPublicState() {
   };
 }
 
+async function fetchAlpacaNews(limit = 20) {
+  try {
+    const dataUrl = process.env.ALPACA_DATA_URL || 'https://data.alpaca.markets';
+    const qs = new URLSearchParams({ limit: String(limit), sort: 'desc' });
+    const res = await fetch(`${dataUrl}/v1beta1/news?${qs}`, {
+      headers: {
+        'APCA-API-KEY-ID':     process.env.ALPACA_API_KEY     || '',
+        'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY  || '',
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const articles = data.news || [];
+    return articles
+      .map(a => `• [${new Date(a.created_at).toUTCString()}] ${a.headline}`)
+      .join('\n');
+  } catch (_) {
+    return null;
+  }
+}
+
 async function fetchMacroContext(anthropicKey) {
   let fxStr = 'unavailable';
   try {
@@ -1227,19 +1248,24 @@ async function fetchMacroContext(anthropicKey) {
     fxStr = `EUR/USD ${r.EUR||'?'} · GBP/USD ${r.GBP||'?'} · USD/JPY ${r.JPY||'?'} · USD/CHF ${r.CHF||'?'} · USD/CNY ${r.CNY||'?'} · AUD/USD ${r.AUD||'?'} · USD/CAD ${r.CAD||'?'}`;
   } catch (_) {}
 
+  const newsHeadlines = await fetchAlpacaNews(20);
+  const newsSection = newsHeadlines
+    ? `\nLIVE MARKET NEWS (last 20 headlines, newest first):\n${newsHeadlines}`
+    : '';
+
   const dateStr = new Date().toUTCString();
   const macroPrompt = `Today: ${dateStr}
-Live FX rates: ${fxStr}
+Live FX rates: ${fxStr}${newsSection}
 
-Return a JSON object (no markdown, no explanation) with exactly these keys:
+Based on the above real-time data, return a JSON object (no markdown, no explanation) with exactly these keys:
 {
   "regime": "RISK-ON" | "RISK-OFF" | "NEUTRAL",
-  "regime_reason": "one sentence why",
+  "regime_reason": "one sentence why, citing specific news if available",
   "equity": "US/EU/Asia equity sentiment in 1-2 sentences",
   "central_banks": "Fed/ECB/BoJ/PBoC policy direction in 1-2 sentences",
   "yields": "US 2Y and 10Y levels, curve shape, credit spreads in 1 sentence",
   "commodities": "WTI, Gold, key commodity moves in 1 sentence",
-  "geopolitical": "top 2-3 risks, specific countries/events in 1-2 sentences",
+  "geopolitical": "top 2-3 risks, specific countries/events in 1-2 sentences, citing headlines where relevant",
   "sectors": "which sectors seeing inflows/outflows and why in 1 sentence",
   "events": "critical macro events next 48-72h (FOMC, CPI, NFP, earnings) in 1 sentence"
 }`;
@@ -1249,7 +1275,7 @@ Return a JSON object (no markdown, no explanation) with exactly these keys:
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 800, messages: [{ role: 'user', content: macroPrompt }] }),
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1000, messages: [{ role: 'user', content: macroPrompt }] }),
     });
     const d = await res.json();
     let raw = (d.content?.[0]?.text || '').trim();
@@ -2108,6 +2134,12 @@ app.get('/api/autotrader/intraday/:symbol', async (req, res) => {
 });
 
 // GET /api/autotrader/recap?date=YYYY-MM-DD
+app.get('/api/autotrader/news', async (req, res) => {
+  const limit = Math.min(50, parseInt(req.query.limit) || 20);
+  const headlines = await fetchAlpacaNews(limit);
+  res.json({ headlines: headlines || '', ts: Date.now() });
+});
+
 app.get('/api/autotrader/recap', (req, res) => {
   const date = req.query.date || AT.lastRecapDate || easternDateKey();
   const entry = AT.dailyRecaps[date];
