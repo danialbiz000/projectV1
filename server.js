@@ -507,7 +507,9 @@ TREND & MOMENTUM (required for entry):
 - BUY requires: 5d return > -3% (avoid catching falling knives). If 5d return ≤ -3%, confidence cap = 0.70.
 - If price > 52W high × 0.95 (near breakout zone): acceptable to BUY with other signals.
 - If price < SMA20 AND SMA20 < SMA50 AND 20d return < -8%: only HOLD or SHORT, never BUY.
-- SHORT requires: price below SMA20, AND at least 2 of: (negative MACD, RSI < 55, 5d return < 0, 20d return < -3%).
+- SHORT requires: price below SMA20, negative MACD, RSI < 52, 5d return < 0, AND 20d return < -3%. All conditions mandatory — short selling carries unlimited loss risk.
+- SHORT: never short a stock with annualized vol > 120% (short squeeze risk on high-vol names). Never short leveraged ETFs.
+- SHORT: confidence floor is 0.78 minimum (higher than BUY) — asymmetric risk requires higher conviction.
 
 MOMENTUM QUALITY:
 - Relative Volume < 0.7×: weak entry signal — cap confidence at 0.72 for new positions.
