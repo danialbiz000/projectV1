@@ -676,20 +676,6 @@ tr:hover td { background: var(--surface2); }
         </div>
       </div>
 
-      <!-- Live Market News -->
-      <div class="card" id="at-news-card" style="margin-bottom:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div class="card-title" style="margin-bottom:0">📰 Notizie di Mercato (live)</div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span id="at-news-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
-            <button class="btn btn-secondary btn-sm" onclick="loadMarketNews()">↺ Aggiorna</button>
-          </div>
-        </div>
-        <div id="at-news-body" style="font-size:0.82rem;line-height:1.8;color:var(--text-muted);max-height:260px;overflow-y:auto">
-          Caricamento notizie…
-        </div>
-      </div>
-
       <!-- EOD Recap -->
       <div class="card" id="at-recap-card" style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -1290,7 +1276,7 @@ function showSection(id, el) {
   if (id === 'trading') { loadOpenOrders(); loadOrderHistory(); loadAlpacaHistory(); }
   if (id === 'settings') updateSettingsPanel();
   if (id === 'macro') loadFX();
-  if (id === 'autotrader') { loadAutoTraderStatus(); loadMarketNews(); }
+  if (id === 'autotrader') loadAutoTraderStatus();
   if (id === 'equity') subscribeEquityPrices();
 }
 
@@ -2376,7 +2362,36 @@ function updateMacroBrief(brief, ts) {
     ${row('⚠️', 'Rischi Geopolitici', data.geopolitical)}
     ${row('🔄', 'Rotazione Settoriale', data.sectors)}
     ${row('📅', 'Prossimi Eventi', data.events)}
+    <div style="display:flex;gap:10px;padding:10px 0">
+      <div style="min-width:22px;text-align:center;font-size:1rem">📰</div>
+      <div style="flex:1">
+        <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:6px">Ultime Notizie (live)</div>
+        <div id="at-macro-news" style="font-size:0.8rem;line-height:1.7;color:var(--text-muted);max-height:220px;overflow-y:auto">⟳ Caricamento…</div>
+      </div>
+    </div>
   `;
+
+  // Fetch headlines and inject into the news sub-section
+  secureFetch('/api/autotrader/news?limit=20')
+    .then(r => r.json())
+    .then(d => {
+      const newsEl = document.getElementById('at-macro-news');
+      if (!newsEl) return;
+      if (!d.headlines) { newsEl.textContent = 'Nessuna notizia disponibile.'; return; }
+      const lines = d.headlines.split('\n').filter(Boolean);
+      newsEl.innerHTML = lines.map(line => {
+        const m = line.match(/^• \[(.+?)\] (.+)$/);
+        if (!m) return `<div style="padding:2px 0;border-bottom:1px solid var(--border);color:var(--text)">${line}</div>`;
+        return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+          <span style="color:var(--text-muted);font-size:0.72rem">${m[1]}</span><br>
+          <span style="color:var(--text)">${m[2]}</span>
+        </div>`;
+      }).join('');
+    })
+    .catch(() => {
+      const newsEl = document.getElementById('at-macro-news');
+      if (newsEl) newsEl.textContent = 'Notizie non disponibili.';
+    });
 }
 
 async function loadAutoTraderStatus() {
@@ -2399,33 +2414,6 @@ function populateRecapDateSelect(dates, latestDate) {
   if (latestDate && !sel.value) {
     sel.value = latestDate;
     loadDailyRecap(latestDate);
-  }
-}
-
-async function loadMarketNews() {
-  const body = document.getElementById('at-news-body');
-  const tsEl = document.getElementById('at-news-ts');
-  if (!body) return;
-  body.innerHTML = '<span style="color:var(--text-muted)">⟳ Caricamento notizie...</span>';
-  try {
-    const r = await fetch('/api/autotrader/news?limit=20', { headers: { 'x-nexus-token': sessionStorage.getItem('nexusToken') || '' } });
-    const d = await r.json();
-    if (tsEl) tsEl.textContent = d.ts ? new Date(d.ts).toLocaleTimeString('it-IT') : '';
-    if (!d.headlines) {
-      body.innerHTML = '<span style="color:var(--text-muted)">Nessuna notizia disponibile.</span>';
-      return;
-    }
-    const lines = d.headlines.split('\n').filter(Boolean);
-    body.innerHTML = lines.map(line => {
-      const m = line.match(/^• \[(.+?)\] (.+)$/);
-      if (!m) return `<div style="padding:2px 0;border-bottom:1px solid var(--border)">${line}</div>`;
-      return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
-        <span style="color:var(--text-muted);font-size:0.75rem">${m[1]}</span><br>
-        <span style="color:var(--text)">${m[2]}</span>
-      </div>`;
-    }).join('');
-  } catch (e) {
-    body.innerHTML = `<span style="color:var(--danger)">Errore caricamento notizie: ${e.message}</span>`;
   }
 }
 
