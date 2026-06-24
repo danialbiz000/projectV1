@@ -854,39 +854,65 @@ async function refreshRiskFreeRate() {
 // Universe of US-listed stocks Claude can pick from when aiManagedWatchlist is enabled.
 // Covers mega-cap anchors + mid/small-cap growth. Supplemented each cycle by live market movers.
 const STOCK_UNIVERSE = [
-  // Mega-cap tech
+  // ── Mega-cap tech ────────────────────────────────────────────────────────────
   'AAPL','MSFT','NVDA','GOOGL','AMZN','META','TSLA','AVGO','ORCL','AMD',
-  // Financials (large)
+  'CRM','INTU','NOW','ADBE','PANW','FTNT','KLAC','LRCX','AMAT','MU',
+  'QCOM','TXN','ADI','MCHP','ON','NXPI','INTC','IBM',
+  // ── Financials ───────────────────────────────────────────────────────────────
   'JPM','BAC','GS','MS','BLK','AXP','V','MA','PYPL','SCHW',
-  // Healthcare & pharma (large)
+  'C','WFC','USB','COF','ICE','CME','SPGI','MCO','CB','PGR','MET','PRU',
+  // ── Healthcare & pharma ──────────────────────────────────────────────────────
   'UNH','JNJ','LLY','PFE','ABBV','MRK','CVS','AMGN','GILD','ISRG',
-  // Energy & industrials
-  'XOM','CVX','COP','LMT','RTX','CAT','HON','GE','BA','UPS',
-  // Consumer & retail
+  'TMO','DHR','SYK','MDT','VRTX','REGN','BIIB','BMY','ALNY','DXCM','EW',
+  // ── Energy ───────────────────────────────────────────────────────────────────
+  'XOM','CVX','COP','SLB','HAL','MPC','VLO','OXY','PSX','DVN',
+  // ── Industrials & Defense ────────────────────────────────────────────────────
+  'LMT','RTX','CAT','HON','GE','BA','UPS','MMM','EMR','NOC','GD','LDOS','SAIC',
+  // ── Consumer ─────────────────────────────────────────────────────────────────
   'WMT','COST','HD','TGT','NKE','SBUX','MCD','PG','KO','PEP',
-  // ETFs for broad exposure
-  'SPY','QQQ','IWM','XLK','XLF','XLE','XLV','XLI','GLD','TLT',
-  // Growth / high-momentum (large)
+  'LOW','TJX','ROST','CL','PM','STZ','HSY','EL','YUM','CMG',
+  // ── Materials ────────────────────────────────────────────────────────────────
+  'LIN','FCX','NEM','AA','CLF','NUE','ALB',
+  // ── Utilities ────────────────────────────────────────────────────────────────
+  'NEE','DUK','SO','D','AEP','EXC',
+  // ── REITs ────────────────────────────────────────────────────────────────────
+  'SPG','PLD','AMT','EQIX','O','VICI','CCI',
+  // ── Broad & sector ETFs ──────────────────────────────────────────────────────
+  'SPY','QQQ','IWM','DIA',
+  'XLK','XLF','XLE','XLV','XLI','XLB','XLC','XLU','XLP','XLRE',
+  'GLD','SLV','TLT','HYG','LQD',
+  // ── Commodities & macro ETFs ─────────────────────────────────────────────────
+  'GDX','GDXJ','USO','UNG',
+  // ── Leveraged ETFs (short vehicles & momentum) ───────────────────────────────
+  'TQQQ','SQQQ','UPRO','SPXU','SOXL','SOXS','UVXY','LABU','LABD',
+  // ── Growth / high-momentum ───────────────────────────────────────────────────
   'PLTR','COIN','CRWD','NET','DDOG','SNOW','ZS','MSTR','RBLX','HOOD',
-  // ── Mid-cap growth ──────────────────────────────────────────────────────────
-  // AI & Quantum computing (liquid, Alpaca IEX-covered)
-  'IONQ','RGTI','QUBT','SOUN','AI','PATH',
-  // Fintech & neobanks
-  'SQ','AFRM','SOFI','UPST','NU',
-  // SaaS & software
-  'SHOP','HUBS','BILL','GTLB','MNDY','BRZE','APP',
-  // Biotech & health innovation
+  'UBER','LYFT','ABNB','DASH','DKNG','RDDT','SNAP','PINS',
+  // ── Crypto-adjacent ──────────────────────────────────────────────────────────
+  'MARA','RIOT','CLSK','BTBT','HUT','CIFR',
+  // ── AI & Quantum computing ───────────────────────────────────────────────────
+  'IONQ','RGTI','QUBT','SOUN','AI','PATH','BBAI','ARQQ',
+  // ── Fintech & neobanks ───────────────────────────────────────────────────────
+  'SQ','AFRM','SOFI','UPST','NU','SMAR','RELY',
+  // ── SaaS & cloud ─────────────────────────────────────────────────────────────
+  'SHOP','HUBS','BILL','GTLB','MNDY','BRZE','APP','WDAY','OKTA','MDB',
+  'VEEV','SPLK','COUR','U','ASAN','DOCN','ESTC','CFLT',
+  // ── Semiconductors mid-cap ───────────────────────────────────────────────────
+  'SMCI','AMBA','CRUS','LSCC','WOLF','MPWR','FORM','SWKS',
+  // ── Biotech & health innovation ──────────────────────────────────────────────
   'MRNA','BNTX','RXRX','BEAM','EDIT','NTLA','HIMS','TDOC',
-  // Clean energy & EV
+  'NVAX','SRPT','CRSP','ILMN','PACB','FATE','ALNY',
+  // ── Clean energy & EV ────────────────────────────────────────────────────────
   'FSLR','ENPH','PLUG','RIVN','LCID','QS','BE','RUN','CHPT',
-  // Space & defense innovation
-  'RKLB','ASTS','PL',
-  // Retail & consumer tech
-  'ETSY','W','CHWY','CPNG','GRAB',
-  // Semiconductors (mid)
-  'SMCI','AMBA','CRUS','LSCC',
-  // Media & streaming
-  'NFLX','DIS','PARA','WBD','SPOT','ROKU',
+  // ── Space & defense innovation ───────────────────────────────────────────────
+  'RKLB','ASTS','PL','LUNR','JOBY','ACHR',
+  // ── Media & streaming ────────────────────────────────────────────────────────
+  'NFLX','DIS','PARA','WBD','SPOT','ROKU','TTD',
+  // ── International ADRs (US-listed, Alpaca-tradeable) ─────────────────────────
+  'TSM','BABA','NIO','XPEV','LI','BIDU','JD','PDD',
+  'SE','MELI','GRAB','CPNG','CHWY','ETSY','W',
+  // ── Consumer tech & mobility ─────────────────────────────────────────────────
+  'MTCH','ZG','IAC',
 ];
 
 // Sector mapping for diversification — 'Other' is assigned to dynamic movers not in this map
@@ -894,55 +920,99 @@ const SYMBOL_SECTOR = {
   // Tech (large)
   AAPL:'Tech', MSFT:'Tech', NVDA:'Tech', GOOGL:'Tech', AMZN:'Tech',
   META:'Tech', TSLA:'Tech', AVGO:'Tech', ORCL:'Tech', AMD:'Tech', XLK:'Tech',
+  CRM:'Tech', INTU:'Tech', NOW:'Tech', ADBE:'Tech', PANW:'Tech', FTNT:'Tech',
+  KLAC:'Semiconductors', LRCX:'Semiconductors', AMAT:'Semiconductors', MU:'Semiconductors',
+  QCOM:'Semiconductors', TXN:'Semiconductors', ADI:'Semiconductors', MCHP:'Semiconductors',
+  ON:'Semiconductors', NXPI:'Semiconductors', INTC:'Semiconductors',
+  IBM:'Tech',
   // Financials
   JPM:'Financials', BAC:'Financials', GS:'Financials', MS:'Financials',
   BLK:'Financials', AXP:'Financials', V:'Financials', MA:'Financials',
   PYPL:'Financials', SCHW:'Financials', XLF:'Financials',
+  C:'Financials', WFC:'Financials', USB:'Financials', COF:'Financials',
+  ICE:'Financials', CME:'Financials', SPGI:'Financials', MCO:'Financials',
+  CB:'Financials', PGR:'Financials', MET:'Financials', PRU:'Financials',
   SQ:'Fintech', AFRM:'Fintech', SOFI:'Fintech', UPST:'Fintech',
-  NU:'Fintech', OPEN:'Fintech', RELY:'Fintech', DAVE:'Fintech',
+  NU:'Fintech', RELY:'Fintech', SMAR:'Fintech',
   // Healthcare
   UNH:'Healthcare', JNJ:'Healthcare', LLY:'Healthcare', PFE:'Healthcare',
   ABBV:'Healthcare', MRK:'Healthcare', CVS:'Healthcare', AMGN:'Healthcare',
   GILD:'Healthcare', ISRG:'Healthcare', XLV:'Healthcare',
+  TMO:'Healthcare', DHR:'Healthcare', SYK:'Healthcare', MDT:'Healthcare',
+  VRTX:'Healthcare', REGN:'Healthcare', BIIB:'Healthcare', BMY:'Healthcare',
+  ALNY:'Healthcare', DXCM:'Healthcare', EW:'Healthcare',
   MRNA:'Biotech', BNTX:'Biotech', RXRX:'Biotech', BEAM:'Biotech',
-  EDIT:'Biotech', NTLA:'Biotech', HIMS:'Biotech', TDOC:'Biotech', ACMR:'Biotech',
+  EDIT:'Biotech', NTLA:'Biotech', HIMS:'Biotech', TDOC:'Biotech',
+  NVAX:'Biotech', SRPT:'Biotech', CRSP:'Biotech', ILMN:'Biotech',
+  PACB:'Biotech', FATE:'Biotech',
   // Energy
   XOM:'Energy', CVX:'Energy', COP:'Energy', XLE:'Energy',
+  SLB:'Energy', HAL:'Energy', MPC:'Energy', VLO:'Energy',
+  OXY:'Energy', PSX:'Energy', DVN:'Energy',
   FSLR:'CleanEnergy', ENPH:'CleanEnergy', PLUG:'CleanEnergy',
   BE:'CleanEnergy', RUN:'CleanEnergy', CHPT:'CleanEnergy',
   // EV
-  RIVN:'EV', LCID:'EV', QS:'EV',
+  RIVN:'EV', LCID:'EV', QS:'EV', NIO:'EV', XPEV:'EV', LI:'EV',
   // Industrials & Defense
   LMT:'Industrials', RTX:'Industrials', CAT:'Industrials', HON:'Industrials',
   GE:'Industrials', BA:'Industrials', UPS:'Industrials', XLI:'Industrials',
+  MMM:'Industrials', EMR:'Industrials', NOC:'Industrials', GD:'Industrials',
+  LDOS:'Industrials', SAIC:'Industrials',
   // Space & Aerospace
-  RKLB:'Space', LUNR:'Space', PL:'Space', ASTS:'Space',
-  RDW:'Space', JOBY:'Space', ACHR:'Space', LILM:'Space',
+  RKLB:'Space', LUNR:'Space', PL:'Space', ASTS:'Space', JOBY:'Space', ACHR:'Space',
+  // Materials
+  LIN:'Materials', FCX:'Materials', NEM:'Materials', AA:'Materials',
+  CLF:'Materials', NUE:'Materials', ALB:'Materials', XLB:'Materials',
+  // Utilities
+  NEE:'Utilities', DUK:'Utilities', SO:'Utilities', D:'Utilities',
+  AEP:'Utilities', EXC:'Utilities', XLU:'Utilities',
+  // REITs
+  SPG:'REIT', PLD:'REIT', AMT:'REIT', EQIX:'REIT', O:'REIT', VICI:'REIT', CCI:'REIT',
+  XLRE:'REIT',
   // Consumer
   WMT:'Consumer', COST:'Consumer', HD:'Consumer', TGT:'Consumer',
   NKE:'Consumer', SBUX:'Consumer', MCD:'Consumer', PG:'Consumer',
   KO:'Consumer', PEP:'Consumer',
-  ETSY:'Consumer', W:'Consumer', CHWY:'Consumer', WISH:'Consumer',
-  CPNG:'Consumer', GRAB:'Consumer',
-  // ETF
-  SPY:'ETF', QQQ:'ETF', IWM:'ETF',
+  LOW:'Consumer', TJX:'Consumer', ROST:'Consumer', CL:'Consumer',
+  PM:'Consumer', STZ:'Consumer', HSY:'Consumer', EL:'Consumer',
+  YUM:'Consumer', CMG:'Consumer',
+  ETSY:'Consumer', W:'Consumer', CHWY:'Consumer', CPNG:'Consumer',
+  GRAB:'Consumer', MTCH:'Consumer', ZG:'Consumer', IAC:'Consumer',
+  // Broad ETFs
+  SPY:'ETF', QQQ:'ETF', IWM:'ETF', DIA:'ETF',
+  XLK:'Tech', XLF:'Financials', XLE:'Energy', XLV:'Healthcare',
+  XLI:'Industrials', XLC:'Tech', XLP:'Consumer',
   // Bonds & Commodities
-  GLD:'Commodities', TLT:'Bonds',
+  GLD:'Commodities', SLV:'Commodities', TLT:'Bonds', HYG:'Bonds', LQD:'Bonds',
+  GDX:'Commodities', GDXJ:'Commodities', USO:'Commodities', UNG:'Commodities',
+  // Leveraged ETFs
+  TQQQ:'LeveragedETF', SQQQ:'LeveragedETF', UPRO:'LeveragedETF', SPXU:'LeveragedETF',
+  SOXL:'LeveragedETF', SOXS:'LeveragedETF', UVXY:'LeveragedETF',
+  LABU:'LeveragedETF', LABD:'LeveragedETF',
   // Growth / Speculative
   PLTR:'Growth', COIN:'Growth', CRWD:'Growth', NET:'Growth',
   DDOG:'Growth', SNOW:'Growth', ZS:'Growth', MSTR:'Growth',
   RBLX:'Growth', HOOD:'Growth',
+  UBER:'Growth', LYFT:'Growth', ABNB:'Growth', DASH:'Growth',
+  DKNG:'Growth', RDDT:'Growth', SNAP:'Growth', PINS:'Growth',
+  // Crypto-adjacent
+  MARA:'Crypto', RIOT:'Crypto', CLSK:'Crypto', BTBT:'Crypto', HUT:'Crypto', CIFR:'Crypto',
   // AI & Quantum
   IONQ:'AIQuantum', RGTI:'AIQuantum', QUBT:'AIQuantum', SOUN:'AIQuantum',
   AI:'AIQuantum', PATH:'AIQuantum', BBAI:'AIQuantum', ARQQ:'AIQuantum',
   // SaaS
   SHOP:'SaaS', HUBS:'SaaS', BILL:'SaaS', GTLB:'SaaS',
-  MNDY:'SaaS', BRZE:'SaaS', DOMO:'SaaS', APP:'SaaS',
+  MNDY:'SaaS', BRZE:'SaaS', APP:'SaaS', WDAY:'SaaS', OKTA:'SaaS',
+  MDB:'SaaS', VEEV:'SaaS', SPLK:'SaaS', COUR:'SaaS', U:'SaaS',
+  ASAN:'SaaS', DOCN:'SaaS', ESTC:'SaaS', CFLT:'SaaS',
   // Semiconductors (mid)
   SMCI:'Semiconductors', WOLF:'Semiconductors', AMBA:'Semiconductors',
   FORM:'Semiconductors', CRUS:'Semiconductors', LSCC:'Semiconductors',
+  MPWR:'Semiconductors', SWKS:'Semiconductors',
   // Media & streaming
-  NFLX:'Media', DIS:'Media', PARA:'Media', WBD:'Media', SPOT:'Media', ROKU:'Media',
+  NFLX:'Media', DIS:'Media', PARA:'Media', WBD:'Media', SPOT:'Media', ROKU:'Media', TTD:'Media',
+  // International ADRs
+  TSM:'Semiconductors', BABA:'Tech', BIDU:'Tech', JD:'Consumer', PDD:'Consumer', SE:'Tech',
 };
 
 function getSector(symbol) { return SYMBOL_SECTOR[symbol] || 'Other'; }
@@ -969,10 +1039,10 @@ const AT = {
   stopLossPct: 8,
   takeProfitPct: 30,
   drawdownLimit: 0.15,
-  allowShort: false,
+  allowShort: true,
   targetVolatility: 0.20,
   aiManagedWatchlist: true,   // Claude picks symbols each cycle from STOCK_UNIVERSE
-  watchlistSize: 30,          // how many symbols Claude picks per cycle
+  watchlistSize: 50,          // how many symbols Claude picks per cycle
   watchlist: [...AT_WATCHLIST_DEFAULT],
   aiSelectedWatchlist: [],    // what Claude picked last cycle
   log: [],
@@ -1100,7 +1170,7 @@ function loadAtState() {
     if (typeof cfg.allowShort === 'boolean') AT.allowShort = cfg.allowShort;
     if (Number.isFinite(+cfg.targetVolatility)) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +cfg.targetVolatility));
     if (typeof cfg.aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = cfg.aiManagedWatchlist;
-    if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(50, +cfg.watchlistSize));
+    if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(100, +cfg.watchlistSize));
     if (Array.isArray(cfg.watchlist) && cfg.watchlist.length) AT.watchlist = cfg.watchlist;
     AT.lastRunAt = state.lastRunAt || null;
     AT.nextRunAt = null;
@@ -1339,13 +1409,13 @@ async function fetchMarketMovers() {
 
   let movers = [];
   try {
-    const r1 = await alpacaDataFetch('/v1beta1/screener/stocks/most-active?top=30&by=volume');
+    const r1 = await alpacaDataFetch('/v1beta1/screener/stocks/most-active?top=100&by=volume');
     const d1 = await r1.json();
     const active = (d1.most_actives || []).map(x => x.symbol);
     movers.push(...active);
   } catch (_) {}
   try {
-    const r2 = await alpacaDataFetch('/v1beta1/screener/stocks/movers?top=20');
+    const r2 = await alpacaDataFetch('/v1beta1/screener/stocks/movers?top=50');
     const d2 = await r2.json();
     const gainers = (d2.gainers || []).map(x => x.symbol);
     const losers  = (d2.losers  || []).map(x => x.symbol);
@@ -1356,30 +1426,30 @@ async function fetchMarketMovers() {
 }
 
 async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
-  const n = Math.max(5, Math.min(50, AT.watchlistSize || 30));
+  const n = Math.max(5, Math.min(100, AT.watchlistSize || 50));
 
   // Combine static universe with live market movers
   const dynamicMovers = await fetchMarketMovers();
   const universe = [...new Set([...STOCK_UNIVERSE, ...dynamicMovers, ...openSymbols])];
 
   const moversLabel = dynamicMovers.length
-    ? `\n\nLIVE MARKET MOVERS (most active + top gainers/losers today): ${dynamicMovers.slice(0, 30).join(', ')}`
+    ? `\n\nLIVE MARKET MOVERS (most active + top gainers/losers today): ${dynamicMovers.slice(0, 80).join(', ')}`
     : '';
 
-  const prompt = `MACRO CONTEXT:\n${macroBrief}${moversLabel}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades in the next session. Prioritize: live movers with momentum, mean-reversion candidates, sector rotation leaders, mid/small-cap growth with catalysts. Do NOT invent tickers not in the list.\n\nFULL UNIVERSE (${universe.length} symbols): ${universe.join(', ')}\n\nMust include open positions: ${openSymbols.join(', ') || 'none'}.\n\nRespond ONLY with a JSON array. Example: ["NVDA","IONQ","RKLB"]`;
+  const prompt = `MACRO CONTEXT:\n${macroBrief}${moversLabel}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades in the next session. Prioritize: live movers with momentum, mean-reversion candidates, sector rotation leaders, mid/small-cap growth with catalysts. Include short candidates (downtrending, high volume) when macro is RISK-OFF. Do NOT invent tickers not in the list.\n\nFULL UNIVERSE (${universe.length} symbols): ${universe.join(', ')}\n\nMust include open positions: ${openSymbols.join(', ') || 'none'}.\n\nRespond ONLY with a JSON array of exactly ${n} symbols. Example: ["NVDA","IONQ","RKLB"]`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 200, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 400, messages: [{ role: 'user', content: prompt }] }),
     });
     const d = await res.json();
     let raw = (d.content?.[0]?.text || '[]').trim();
     if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
     const picks = JSON.parse(raw);
     if (Array.isArray(picks) && picks.length) {
-      const validated = picks.map(s => String(s).toUpperCase().replace(/[^A-Z0-9.]/g, '')).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s)).slice(0, 30);
+      const validated = picks.map(s => String(s).toUpperCase().replace(/[^A-Z0-9.]/g, '')).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s)).slice(0, 100);
       const merged = [...new Set([...openSymbols, ...validated])];
       return { targets: merged, dynamicMovers };
     }
@@ -2009,7 +2079,7 @@ app.post('/api/autotrader/config', (req, res) => {
   // Watchlist/AI-managed settings
   const { aiManagedWatchlist, watchlistSize } = req.body;
   if (typeof aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = aiManagedWatchlist;
-  if (watchlistSize != null && Number.isFinite(+watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(50, +watchlistSize));
+  if (watchlistSize != null && Number.isFinite(+watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(100, +watchlistSize));
 
   saveAtState();
   atSchedule();
