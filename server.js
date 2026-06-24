@@ -507,7 +507,7 @@ TREND & MOMENTUM (required for entry):
 - BUY requires: 5d return > -3% (avoid catching falling knives). If 5d return ≤ -3%, confidence cap = 0.70.
 - If price > 52W high × 0.95 (near breakout zone): acceptable to BUY with other signals.
 - If price < SMA20 AND SMA20 < SMA50 AND 20d return < -8%: only HOLD or SHORT, never BUY.
-- SHORT requires: price below SMA20, negative MACD, RSI < 52, 5d return < 0.
+- SHORT requires: price below SMA20, AND at least 2 of: (negative MACD, RSI < 55, 5d return < 0, 20d return < -3%).
 
 MOMENTUM QUALITY:
 - Relative Volume < 0.7×: weak entry signal — cap confidence at 0.72 for new positions.
@@ -1431,7 +1431,7 @@ async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
     ? `\n\nLIVE MARKET MOVERS (most active + top gainers/losers today): ${dynamicMovers.slice(0, 80).join(', ')}`
     : '';
 
-  const prompt = `MACRO CONTEXT:\n${macroBrief}${moversLabel}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades in the next session. Prioritize: live movers with momentum, mean-reversion candidates, sector rotation leaders, mid/small-cap growth with catalysts. Include short candidates (downtrending, high volume) when macro is RISK-OFF. Do NOT invent tickers not in the list.\n\nFULL UNIVERSE (${universe.length} symbols): ${universe.join(', ')}\n\nMust include open positions: ${openSymbols.join(', ') || 'none'}.\n\nRespond ONLY with a JSON array of exactly ${n} symbols. Example: ["NVDA","IONQ","RKLB"]`;
+  const prompt = `MACRO CONTEXT:\n${macroBrief}${moversLabel}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades in the next session.\n\nALWAYS include BOTH:\n- Long candidates: momentum leaders, breakouts, sector rotation inflows, live movers with volume\n- Short candidates: confirmed downtrends (price < SMA20, negative MACD), sector rotation outflows, weak sectors (e.g. clean energy, biotech, REITs when rates high, Chinese ADRs with regulatory risk, overleveraged names). At least 20% of picks should be short candidates regardless of regime.\n\nDo NOT invent tickers not in the list.\n\nFULL UNIVERSE (${universe.length} symbols): ${universe.join(', ')}\n\nMust include open positions: ${openSymbols.join(', ') || 'none'}.\n\nRespond ONLY with a JSON array of exactly ${n} symbols. Example: ["NVDA","IONQ","RKLB"]`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
