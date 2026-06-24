@@ -2664,10 +2664,16 @@ async function setAutoTraderEnabled(enabled) {
   try {
     const res = await secureFetch('/api/autotrader/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ enabled, ...(enabled ? { resetHalt: true } : {}) }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Errore server');
+    if (!res.ok) {
+      const msg = data.error || 'Errore server';
+      const hint = msg.includes('NEXUS_ENABLE_LIVE_TRADING')
+        ? 'Stai usando l\'URL live di Alpaca. Aggiungi NEXUS_ENABLE_LIVE_TRADING=true nel .env oppure usa ALPACA_BASE_URL paper.'
+        : msg;
+      throw new Error(hint);
+    }
     updateAutoTraderUI(data);
     showToast(enabled ? '🤖 AutoTrader attivato — motore avviato' : 'AutoTrader disattivato', enabled ? 'success' : 'info');
   } catch (e) {
