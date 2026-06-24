@@ -515,23 +515,24 @@ MOMENTUM QUALITY:
 - MACD narrowing (positive but decreasing): momentum fading — prefer HOLD over new BUY.
 
 GEOPOLITICS & MACRO OVERRIDE:
-- If macro context shows active geopolitical risk (sanctions, war escalation, tariffs) directly affecting this sector or company's country of operation: reduce confidence by 0.10–0.15 or HOLD.
-- Fed/ECB rate policy: rising rates = headwind for growth/tech (lower confidence). Falling rates = tailwind.
-- RISK-OFF macro regime: only BUY defensives (XLE, GLD, TLT, healthcare). Do not initiate growth/tech longs.
+- If macro context shows active geopolitical risk directly affecting this sector: reduce confidence by 0.08–0.12, but do NOT force HOLD unless risk is extreme (active war, imminent sanctions on the stock's core market).
+- Fed/ECB rate policy: rising rates = headwind for growth/tech (reduce confidence by 0.05). Falling rates = tailwind.
+- RISK-OFF macro regime: avoid high-beta speculative names (MSTR, MARA, RIOT, leveraged ETFs). Defensives, energy, gold, utilities, healthcare, and mega-cap quality tech (AAPL, MSFT, GOOGL) are still valid BUY candidates.
 - RISK-ON regime: full latitude on growth and momentum names.
+- NEUTRAL regime: normal analysis applies — do not apply blanket restrictions.
 
 BLACK-SCHOLES:
-- P(TP) > 2× P(SL) required to justify BUY or SHORT. Below this ratio: HOLD.
-- If EV (expected value) < 0%: always HOLD for new positions.
+- P(TP) > 1.5× P(SL) required to justify BUY or SHORT. Below this ratio: HOLD.
+- If EV (expected value) < 0%: HOLD for new positions.
 
 CONVICTION THRESHOLD:
-- confidence ≥ 0.85: requires strong technicals + macro alignment + volume confirmation + geopolitical neutral/tailwind.
-- confidence 0.75–0.84: solid setup, one factor uncertain.
-- confidence < 0.75: return HOLD instead — do not trade.
-- reasoning: exactly 3 sentences — (1) technical setup with specific values, (2) macro/geopolitical context and how it affects this stock, (3) why this action beats HOLD right now.
+- confidence ≥ 0.82: strong setup — act.
+- confidence 0.72–0.81: acceptable setup — act if technicals and macro align.
+- confidence < 0.72: return HOLD — do not trade.
+- reasoning: 2 sentences max — (1) key technical signal with values, (2) macro context and final verdict vs HOLD.
 - suggestedNotional: USD ≤ maxBudgetForThisTrade. Use 0 for HOLD/SELL/COVER.
 - replaceSymbol: only for REPLACE action, else omit.
-- Diversification: prefer sectors not yet in portfolio. Concentration only with confidence ≥ 0.88.`;
+- Diversification: prefer sectors not yet in portfolio. Concentration only with confidence ≥ 0.85.`;
 
 const EOD_RECAP_PROMPT = `You are an AutoTrader post-market analyst. Today's trading session has just closed. Produce a rigorous internal daily recap.
 
@@ -997,7 +998,7 @@ const AT_WATCHLIST_DEFAULT = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'AMZ
 const AT = {
   enabled: false,
   intervalMs: 30 * 60 * 1000,
-  confidenceThreshold: 0.75,
+  confidenceThreshold: 0.72,
   maxPositions: 20,
   maxPositionPct: 15,
   maxPositionsPerSector: 3,   // soft guideline — AT can exceed via REPLACE action
@@ -1844,7 +1845,7 @@ ${replaceBlock}`;
         const res = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 300, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 600, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
         });
         const d = await res.json();
         let raw = (d.content?.[0]?.text || '{}').trim();
