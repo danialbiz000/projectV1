@@ -517,136 +517,127 @@ tr:hover td { background: var(--surface2); }
 
     <!-- AutoTrader -->
     <section id="section-autotrader" class="section">
-      <div class="grid-2" style="margin-bottom:20px">
+      <!-- Status + Config -->
+      <div style="display:grid;grid-template-columns:minmax(260px,1fr) 2fr;gap:20px;margin-bottom:20px">
+        <!-- Engine status card -->
         <div class="card">
-          <div class="card-title">Stato AutoTrader</div>
-          <div style="margin-top:12px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-              <span style="font-size:0.9rem;font-weight:600">Attiva motore AI</span>
-              <label class="toggle-switch">
-                <input type="checkbox" id="at-enabled-toggle" onchange="setAutoTraderEnabled(this.checked)">
-                <span class="toggle-slider"></span>
-              </label>
+          <div class="card-title">Motore AI</div>
+          <div style="display:flex;align-items:center;gap:14px;padding:14px 12px;background:var(--surface2);border-radius:10px;margin:14px 0">
+            <label class="toggle-switch" style="flex-shrink:0">
+              <input type="checkbox" id="at-enabled-toggle" onchange="setAutoTraderEnabled(this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+            <div>
+              <div style="font-size:0.9rem;font-weight:700">Attiva motore AI</div>
+              <div id="at-status-badge" style="font-size:0.8rem;margin-top:3px"><span style="color:var(--text-muted)">○ Off</span></div>
             </div>
-            <div style="font-size:0.82rem;line-height:2.2;color:var(--text-muted)">
-              Status:&nbsp;<span id="at-status-badge"><span style="color:var(--text-muted)">○ Off</span></span><br>
-              Ultima run:&nbsp;<span id="at-last-run" style="color:var(--text)">—</span><br>
-              Prossima run:&nbsp;<span id="at-next-run" style="color:var(--text)">—</span><br>
-              Trades oggi:&nbsp;<span id="at-today-trades" style="color:var(--text)">0</span><br>
-              Posizioni aperte:&nbsp;<span id="at-open-positions" style="color:var(--text)">—</span><br>
-              Buying power:&nbsp;<span id="at-buying-power" style="color:var(--text)">—</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.8rem;margin-bottom:14px">
+            <div style="padding:9px 10px;background:var(--surface2);border-radius:8px">
+              <div style="color:var(--text-muted);margin-bottom:2px;font-size:0.72rem;text-transform:uppercase;letter-spacing:.04em">Ultima run</div>
+              <div id="at-last-run" style="font-weight:600">—</div>
             </div>
-            <div id="at-halt-banner" style="display:none;margin-top:12px;padding:10px;background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.3);border-radius:8px;font-size:0.8rem;color:var(--red)">
-              <b>⛔ HALT:</b> <span id="at-halt-reason"></span>
-              <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="resetAutoTraderHalt()">Ripristina sistema</button>
+            <div style="padding:9px 10px;background:var(--surface2);border-radius:8px">
+              <div style="color:var(--text-muted);margin-bottom:2px;font-size:0.72rem;text-transform:uppercase;letter-spacing:.04em">Prossima run</div>
+              <div id="at-next-run" style="font-weight:600">—</div>
             </div>
-            <button class="btn btn-secondary" style="margin-top:14px;width:100%" onclick="runAutoTraderNow()">▶ Esegui Ricerca Ora</button>
+            <div style="padding:9px 10px;background:var(--surface2);border-radius:8px">
+              <div style="color:var(--text-muted);margin-bottom:2px;font-size:0.72rem;text-transform:uppercase;letter-spacing:.04em">Trades oggi</div>
+              <div id="at-today-trades" style="font-weight:600">0</div>
+            </div>
+            <div style="padding:9px 10px;background:var(--surface2);border-radius:8px">
+              <div style="color:var(--text-muted);margin-bottom:2px;font-size:0.72rem;text-transform:uppercase;letter-spacing:.04em">Posizioni</div>
+              <div id="at-open-positions" style="font-weight:600">—</div>
+            </div>
+            <div style="padding:9px 10px;background:var(--surface2);border-radius:8px;grid-column:1/-1">
+              <div style="color:var(--text-muted);margin-bottom:2px;font-size:0.72rem;text-transform:uppercase;letter-spacing:.04em">Buying power</div>
+              <div id="at-buying-power" style="font-weight:600;color:var(--gold)">—</div>
+            </div>
+          </div>
+          <div id="at-halt-banner" style="display:none;margin-bottom:12px;padding:12px;background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.3);border-radius:8px;font-size:0.8rem;color:var(--red)">
+            <b>⛔ HALT:</b> <span id="at-halt-reason"></span>
+            <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="resetAutoTraderHalt()">Ripristina sistema</button>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" style="flex:1" onclick="runAutoTraderNow()">▶ Esegui Ora</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadAutoTraderStatus()" title="Aggiorna stato">↺</button>
           </div>
         </div>
+        <!-- Config card -->
         <div class="card">
           <div class="card-title">Configurazione</div>
-          <div style="margin-top:12px">
-            <div class="form-row">
-              <div class="field">
-                <label>Intervallo ricerca (min)</label>
-                <input type="number" id="at-interval" value="30" min="5" max="480">
-              </div>
-              <div class="field">
-                <label>Soglia confidenza (0.5–1.0)</label>
-                <input type="number" id="at-confidence" value="0.75" min="0.5" max="1.0" step="0.05">
-              </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+            <div class="field">
+              <label>Intervallo ricerca (min)</label>
+              <input type="number" id="at-interval" value="30" min="5" max="480">
             </div>
-            <div class="form-row">
-              <div class="field">
-                <label>Max posizioni totali</label>
-                <input type="number" id="at-max-pos" value="20" min="1" max="50">
-              </div>
-              <div class="field">
-                <label>Max posizioni per settore</label>
-                <input type="number" id="at-max-pos-sector" value="2" min="1" max="10" title="Limite diversificazione: max N posizioni nello stesso settore">
-              </div>
+            <div class="field">
+              <label>Soglia confidenza (0.5–1.0)</label>
+              <input type="number" id="at-confidence" value="0.75" min="0.5" max="1.0" step="0.05">
             </div>
-            <div class="form-row">
-              <div class="field">
-                <label>Max posizioni</label>
-                <input type="number" id="at-max-pos" value="5" min="1" max="20">
-              </div>
-              <div class="field">
-                <label>Max % equity/trade</label>
-                <input type="number" id="at-max-pct" value="15" min="1" max="50">
-              </div>
+            <div class="field">
+              <label>Max posizioni totali</label>
+              <input type="number" id="at-max-pos" value="20" min="1" max="50">
             </div>
-            <div class="form-row">
-              <div class="field" style="grid-column:1/-1">
-                <label style="color:var(--text-muted)">Stop Loss / Take Profit</label>
-                <div style="font-size:0.78rem;color:var(--text-muted);padding:8px;background:rgba(255,255,255,0.03);border-radius:6px;border:1px solid rgba(255,255,255,0.07)">
-                  ⚡ Brackets adattivi alla volatilità (σ) — calcolati automaticamente per ogni stock. SL review AI ogni 2 giorni.
-                </div>
-              <div class="field">
-                <label>Stop Loss % (bracket)</label>
-                <input type="number" id="at-stop-loss" value="8" min="1" max="50" step="0.5">
-              </div>
-              <div class="field">
-                <label>Take Profit % (bracket)</label>
-                <input type="number" id="at-take-profit" value="30" min="1" max="200" step="1">
-              </div>
+            <div class="field">
+              <label>Max per settore</label>
+              <input type="number" id="at-max-pos-sector" value="2" min="1" max="10">
             </div>
-            <div class="form-row">
-              <div class="field">
-                <label>Drawdown Limit % (halt)</label>
-                <input type="number" id="at-drawdown-limit" value="15" min="2" max="50" step="1">
-              </div>
-              <div class="field">
-                <label>Target Volatilità Ann. %</label>
-                <input type="number" id="at-target-vol" value="20" min="5" max="100" step="1">
-              </div>
+            <div class="field">
+              <label>Max % equity / trade</label>
+              <input type="number" id="at-max-pct" value="15" min="1" max="50">
             </div>
-            <div class="field" style="margin-bottom:12px">
-              <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <div class="field">
+              <label>Target volatilità ann. %</label>
+              <input type="number" id="at-target-vol" value="20" min="5" max="100" step="1">
+            </div>
+            <div class="field">
+              <label>Stop Loss % (bracket)</label>
+              <input type="number" id="at-stop-loss" value="8" min="1" max="50" step="0.5">
+            </div>
+            <div class="field">
+              <label>Take Profit % (bracket)</label>
+              <input type="number" id="at-take-profit" value="30" min="1" max="200" step="1">
+            </div>
+            <div class="field" style="grid-column:1/-1">
+              <label>Drawdown Limit % → halt automatico</label>
+              <input type="number" id="at-drawdown-limit" value="15" min="2" max="50" step="1">
+            </div>
+            <div class="field" style="grid-column:1/-1;margin-bottom:4px">
+              <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:0;font-weight:normal">
                 <input type="checkbox" id="at-allow-short" style="width:auto;accent-color:var(--gold)">
                 <span>Abilita short selling (richiede conto margine)</span>
               </label>
             </div>
-            <button class="btn btn-primary btn-full" onclick="saveAutoTraderConfig()">Salva Configurazione</button>
           </div>
+          <div style="margin-top:10px;padding:8px 10px;background:var(--surface2);border-radius:6px;font-size:0.76rem;color:var(--text-muted)">
+            ⚡ SL&amp;TP brackets adattivi alla volatilità (σ) — calcolati automaticamente per ogni stock.
+          </div>
+          <button class="btn btn-primary btn-full" style="margin-top:14px" onclick="saveAutoTraderConfig()">Salva Configurazione</button>
         </div>
       </div>
+
+      <!-- Watchlist -->
       <div class="card" style="margin-bottom:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <div class="card-title" style="margin-bottom:0">🤖 Selezione Simboli</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div class="card-title" style="margin-bottom:0">🎯 Selezione Simboli</div>
           <button class="btn btn-secondary btn-sm" onclick="saveWatchlistConfig()">Salva</button>
         </div>
-        <div class="field" style="margin-bottom:8px;display:flex;align-items:center;gap:10px">
-          <input type="checkbox" id="at-ai-managed" style="width:auto;accent-color:var(--gold)" checked onchange="toggleWatchlistMode()">
-          <label for="at-ai-managed" style="margin:0;cursor:pointer"><b>Claude sceglie autonomamente i simboli</b> — seleziona ogni ciclo i migliori titoli dall'universo di 70+ azioni in base al contesto macro</label>
+        <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px">
+          <input type="checkbox" id="at-ai-managed" style="width:auto;accent-color:var(--gold);margin-top:3px;flex-shrink:0" checked onchange="toggleWatchlistMode()">
+          <label for="at-ai-managed" style="margin:0;cursor:pointer"><b>Claude sceglie autonomamente i simboli</b> — ogni ciclo seleziona i migliori titoli dall'universo 70+ in base al contesto macro</label>
         </div>
-        <div id="at-ai-watchlist-info" style="margin-bottom:12px;padding:10px;background:var(--surface2);border-radius:8px;font-size:0.8rem;color:var(--text-muted)">
-          <div>Universo disponibile: AAPL · MSFT · NVDA · TSLA · SPY · QQQ · JPM · XOM · AMZN · GOOGL · LMT · NVDA · PLTR · COIN · CRWD · GLD · TLT · e altri 55+</div>
+        <div id="at-ai-watchlist-info" style="padding:10px;background:var(--surface2);border-radius:8px;font-size:0.8rem;color:var(--text-muted);margin-bottom:12px">
+          <div>Universo: AAPL · MSFT · NVDA · TSLA · SPY · QQQ · JPM · XOM · AMZN · GOOGL · LMT · PLTR · COIN · CRWD · GLD · TLT · e altri 55+</div>
           <div style="margin-top:6px">Ultima selezione AI: <span id="at-ai-selected" style="color:var(--gold)">—</span></div>
         </div>
-        <div class="field" style="margin-bottom:8px" id="at-watchlist-size-row">
+        <div class="field" id="at-watchlist-size-row" style="margin-bottom:12px">
           <label>Quanti simboli analizzare per ciclo (3–50)</label>
           <input type="number" id="at-watchlist-size" value="30" min="3" max="50" step="1">
         </div>
-        <div class="field" style="margin-bottom:8px" id="at-watchlist-manual-row" style="display:none">
-          <label>Watchlist manuale — simboli separati da virgola (max 50)</label>
-          <input type="text" id="at-watchlist" value="AAPL,MSFT,NVDA,TSLA,SPY,QQQ,AMZN,GOOGL,JPM,XOM" placeholder="AAPL, SPY, QQQ, ...">
-        </div>
-        <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.7">
-          Ogni ciclo: macro brief → AI seleziona i simboli → 60gg bars → RSI · MACD · SMA · Volume → Claude decide BUY/SELL/SHORT/COVER/HOLD → bracket order automatico.<br>
-          <b>Safety:</b> solo NYSE · no holiday · drawdown limit → halt · bracket SL&amp;TP · sizing adattivo · Telegram.
-          <div class="card-title" style="margin-bottom:0">Watchlist Simboli</div>
-          <button class="btn btn-secondary btn-sm" onclick="saveWatchlist()">Salva</button>
-        </div>
-        <div class="field" style="margin-bottom:8px">
-          <label>Simboli separati da virgola (max 50)</label>
-          <input type="text" id="at-watchlist" value="ENB,GIL,IBKR,MC,VNET,AAPL,SPY,QQQ,LMT,RTX" placeholder="AAPL, SPY, QQQ, ...">
-        </div>
-        <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.7">
-          Ogni ciclo: 60 giorni di bars → RSI · MACD · SMA · Volume rel. → Claude decide BUY/SELL/SHORT/COVER/HOLD → se confidence ≥ soglia esegue bracket order (con SL&TP automatici).<br>
-          <b>Safety:</b> solo in orario NYSE · no holiday · drawdown limit → halt · bracket automatico · sizing adattivo alla volatilità · notifiche Telegram.
-        </div>
       </div>
+
+      <!-- Macro Brief -->
       <div class="card" style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <div class="card-title" style="margin-bottom:0">📰 Macro Brief — AI Research</div>
@@ -654,13 +645,14 @@ tr:hover td { background: var(--surface2); }
             <span id="at-macro-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
             <button class="btn btn-secondary btn-sm" id="at-macro-refresh-btn" onclick="refreshMacroBrief()">↺ Aggiorna</button>
           </div>
-          <span id="at-macro-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
         </div>
         <div id="at-macro-brief" class="macro-brief-card">Nessuna ricerca macro ancora — attiva il motore per avviare il primo ciclo.</div>
       </div>
-      <div class="card">
+
+      <!-- Log decisioni -->
+      <div class="card" style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <div class="card-title" style="margin-bottom:0">Log Decisioni AI</div>
+          <div class="card-title" style="margin-bottom:0">📋 Log Decisioni AI</div>
           <button class="btn btn-secondary btn-sm" onclick="loadAutoTraderStatus()">↺ Aggiorna</button>
         </div>
         <div class="table-wrap">
@@ -670,9 +662,11 @@ tr:hover td { background: var(--surface2); }
           </table>
         </div>
       </div>
-      <div class="card" style="margin-top:20px">
+
+      <!-- Storico -->
+      <div class="card" style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <div class="card-title" style="margin-bottom:0">Storico AutoTrader Giornaliero</div>
+          <div class="card-title" style="margin-bottom:0">📅 Storico AutoTrader Giornaliero</div>
           <span id="at-history-date" style="font-size:0.75rem;color:var(--text-muted)">—</span>
         </div>
         <div class="table-wrap">
@@ -684,9 +678,9 @@ tr:hover td { background: var(--surface2); }
       </div>
 
       <!-- Intraday Charts -->
-      <div class="card" style="margin-top:20px">
+      <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <div class="card-title" style="margin-bottom:0">📈 Intraday — Posizioni Aperte (dalla 15:00)</div>
+          <div class="card-title" style="margin-bottom:0">📈 Intraday — Posizioni Aperte</div>
           <div style="display:flex;align-items:center;gap:10px">
             <span id="at-intraday-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
             <button class="btn btn-secondary btn-sm" onclick="refreshIntradayCharts()">↺ Aggiorna</button>
@@ -1257,15 +1251,29 @@ const SECTION_TITLES = {
   autotrader:'AutoTrader — AI Trading Engine',
 };
 function showSection(id, el) {
+  closeDetailPanel();
+  closeOrderPanel();
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('section-' + id).classList.add('active');
-  el.classList.add('active');
+  if (el) el.classList.add('active');
   document.getElementById('section-title').textContent = SECTION_TITLES[id] || id;
   if (id === 'trading') { loadOpenOrders(); loadOrderHistory(); loadAlpacaHistory(); }
   if (id === 'settings') updateSettingsPanel();
   if (id === 'macro') loadFX();
   if (id === 'autotrader') loadAutoTraderStatus();
+  if (id === 'equity') subscribeEquityPrices();
+}
+
+function subscribeEquityPrices() {
+  const symbols = STOCKS.filter(s => s.tradeable).map(s => s.ticker);
+  secureFetch('/api/alpaca/subscribe', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbols }),
+  }).catch(() => {});
+  STOCKS.forEach(s => {
+    if (livePrices[s.ticker] != null) updatePriceDisplays(s.ticker, livePrices[s.ticker]);
+  });
 }
 function showTab(section, tab, el) {
   document.querySelectorAll(`#section-${section} .tab`).forEach(t => t.classList.remove('active'));
@@ -1505,7 +1513,7 @@ async function submitOrder() {
 }
 function openOrderPanel(prefill = {}) {
   // Navigate to trading section → new order tab
-  showSection('section-trading');
+  showSection('trading');
   // Activate "Nuovo Ordine" tab
   const tabs = document.querySelectorAll('#section-trading .tab');
   const tabContents = document.querySelectorAll('#section-trading .tab-content');
@@ -1521,7 +1529,10 @@ function openOrderPanel(prefill = {}) {
   if (prefill.qty) { const el = document.getElementById('order-qty'); if (el) el.value = prefill.qty; }
   setTimeout(() => { const el = document.getElementById('order-symbol'); if (el) el.focus(); }, 150);
 }
-function closeOrderPanel() { /* noop — kept for compatibility */ }
+function closeOrderPanel() {
+  const p = document.getElementById('order-panel');
+  if (p) p.classList.remove('open');
+}
 
 async function closePosition(symbol, qty) {
   document.getElementById('modal-title').textContent = 'Chiudi Posizione';
@@ -2336,11 +2347,6 @@ function updateMacroBrief(brief, ts) {
     ${row('🔄', 'Rotazione Settoriale', data.sectors)}
     ${row('📅', 'Prossimi Eventi', data.events)}
   `;
-function updateMacroBrief(brief, ts) {
-  const el = document.getElementById('at-macro-brief');
-  if (el && brief) el.textContent = brief;
-  const tsEl = document.getElementById('at-macro-ts');
-  if (tsEl && ts) tsEl.textContent = new Date(ts).toLocaleTimeString('it-IT');
 }
 
 async function loadAutoTraderStatus() {
@@ -2415,9 +2421,6 @@ function toggleWatchlistMode() {
 }
 
 const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold', WATCHLIST:'at-action-hold' };
-}
-
-const AT_ACTION_CSS = { BUY:'at-action-buy', SELL:'at-action-sell', SHORT:'at-action-sell', COVER:'at-action-buy', HOLD:'at-action-hold', ERROR:'at-action-error', SKIP:'at-action-hold', HALTED:'at-action-sell', SYSTEM:'at-action-hold', RESEARCH:'at-action-hold', MACRO:'at-action-hold' };
 
 function atLogRowHtml(e) {
   const cls = AT_ACTION_CSS[e.action] || '';
@@ -2480,14 +2483,24 @@ function prependAtLogEntry(entry) {
 }
 
 async function setAutoTraderEnabled(enabled) {
+  const toggle = document.getElementById('at-enabled-toggle');
+  const badge = document.getElementById('at-status-badge');
+  if (toggle) toggle.checked = enabled;
+  if (badge) badge.innerHTML = `<span style="color:var(--text-muted)">⟳ ${enabled ? 'Attivazione' : 'Disattivazione'}…</span>`;
   try {
-    const data = await secureFetch('/api/autotrader/config', {
+    const res = await secureFetch('/api/autotrader/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
-    }).then(r => r.json());
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Errore server');
     updateAutoTraderUI(data);
-    showToast(enabled ? '🤖 AutoTrader attivato' : 'AutoTrader disattivato', enabled ? 'success' : 'info');
-  } catch (e) { showToast('Errore: ' + e.message, 'error'); }
+    showToast(enabled ? '🤖 AutoTrader attivato — motore avviato' : 'AutoTrader disattivato', enabled ? 'success' : 'info');
+  } catch (e) {
+    if (toggle) toggle.checked = !enabled;
+    if (badge) badge.innerHTML = `<span style="color:var(--text-muted)">○ ${enabled ? 'Off' : 'Running'}</span>`;
+    showToast('Errore: ' + e.message, 'error');
+  }
 }
 
 async function saveAutoTraderConfig() {
@@ -2540,6 +2553,8 @@ async function saveWatchlistConfig() {
     } catch (e) { showToast('Errore: ' + e.message, 'error'); return; }
   }
   showToast('Impostazioni watchlist salvate', 'success');
+}
+
 async function saveWatchlist() {
   const raw = (document.getElementById('at-watchlist')?.value || '').split(',');
   const symbols = raw.map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s));
@@ -2564,10 +2579,24 @@ async function resetAutoTraderHalt() {
 }
 
 async function runAutoTraderNow() {
+  const toggle = document.getElementById('at-enabled-toggle');
+  if (toggle && !toggle.checked) {
+    showToast('Attiva prima il motore AI con il toggle', 'error');
+    return;
+  }
   try {
-    await secureFetch('/api/autotrader/run-now', { method: 'POST' });
-    showToast('Ciclo di ricerca avviato...', 'info');
-    setTimeout(loadAutoTraderStatus, 4000);
+    const res = await secureFetch('/api/autotrader/run-now', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 400 && data.error?.includes('disabled')) {
+        showToast('Attiva prima il motore AI con il toggle', 'error');
+      } else {
+        showToast('Errore: ' + (data.error || res.status), 'error');
+      }
+      return;
+    }
+    showToast('🔍 Ciclo di ricerca avviato — attendi i risultati nel log', 'info');
+    setTimeout(loadAutoTraderStatus, 5000);
   } catch (e) { showToast('Errore: ' + e.message, 'error'); }
 }
 
@@ -2617,7 +2646,7 @@ async function refreshIntradayCharts() {
   });
 
   // Fetch bars for each symbol
-  const token = sessionStorage.getItem('nexus_token');
+  const token = sessionStorage.getItem('nexus_auth_token');
   await Promise.all(symbols.map(async sym => {
     try {
       const res = await fetch(`/api/autotrader/intraday/${sym}`, { headers: { Authorization: 'Bearer ' + token } });

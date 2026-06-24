@@ -198,6 +198,18 @@ async function alpacaDataFetch(path, options = {}) {
   });
 }
 
+// Returns URLSearchParams for daily bars going back `calendarDays` from today.
+// Do NOT add feed=iex — daily bars must omit feed parameter.
+function dailyBarsParams(calendarDays = 365, limit = 300) {
+  const start = new Date();
+  start.setDate(start.getDate() - calendarDays);
+  return new URLSearchParams({
+    timeframe: '1Day',
+    limit:     String(limit),
+    start:     start.toISOString().split('T')[0],
+  });
+}
+
 async function parseJsonResponse(response) {
   const text = await response.text();
   if (!text) return null;
@@ -1226,7 +1238,7 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     let annVol = null, closes = [], rsi = null, macd = null, sma20 = null, sma50 = null;
     let lastPrice = +pos.current_price || +pos.avg_entry_price;
     try {
-      const qs = new URLSearchParams({ timeframe: '1Day', limit: '60' });
+      const qs = dailyBarsParams(365, 300);
       const bd = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
       if (Array.isArray(bd.bars) && bd.bars.length) {
         closes = bd.bars.map(b => b.c);
@@ -1478,7 +1490,7 @@ async function atCycle() {
       // Fetch price bars + volumes for technicals
       let closes = [], volumes = [];
       try {
-        const qs = new URLSearchParams({ timeframe: '1Day', limit: '60' });
+        const qs = dailyBarsParams(365, 300);
         const br = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?${qs}`);
         const bd = await br.json();
         if (Array.isArray(bd.bars) && bd.bars.length) {
@@ -1496,7 +1508,7 @@ async function atCycle() {
 
       // Skip symbols with insufficient history for MACD (needs 26+) — avoid wasting AI calls
       if (closes.length < 27 && !posMap.has(symbol)) {
-        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Insufficient history: ${closes.length} bars (need ≥27 for MACD/RSI). Skipping AI call.`, executed: false });
+        atLog({ symbol, action: 'SKIP', confidence: 0, reasoning: `Insufficient history: only ${closes.length} bars returned by Alpaca (need ≥27). Symbol may be too new or illiquid.`, executed: false });
         continue;
       }
 
@@ -1527,12 +1539,15 @@ async function atCycle() {
         ? sectorPositions.sort((a, b) => (+a.unrealized_plpc || 0) - (+b.unrealized_plpc || 0))[0]
         : null;
 
-      // BS filter: skip new entries with mathematically unfavourable setup (saves AI tokens)
-      if (!hasPos && bs && bs.probTP < bs.probSL * 1.5) {
-        atLog({ symbol, action: 'SKIP', confidence: 0,
-          reasoning: `BS filter: P(TP)=${bs.probTP}% < 1.5×P(SL)=${bs.probSL}% — setup sfavorevole, skip AI`,
-          executed: false });
-        continue;
+      // BS filter: skip only when expected value is clearly negative (EV < -8%)
+      if (!hasPos && bs) {
+        const ev = (bs.probTP / 100) * (brackets.tpPct / 100) - (bs.probSL / 100) * (brackets.slPct / 100);
+        if (ev < -0.08) {
+          atLog({ symbol, action: 'SKIP', confidence: 0,
+            reasoning: `BS filter: EV=${(ev*100).toFixed(1)}% (P(TP)=${bs.probTP}%×${brackets.tpPct}% — P(SL)=${bs.probSL}%×${brackets.slPct}%) — skip AI`,
+            executed: false });
+          continue;
+        }
       }
 
       const sectorSummary = Object.entries(secExp).map(([s, n]) => `${s}:${n}`).join(', ') || 'none';
@@ -1982,6 +1997,64 @@ function connectAlpacaTradingWs() {
     alpacaTradingWs.on('error', () => { alpacaConnected = false; });
   } catch (_) { alpacaConnected = false; setTimeout(connectAlpacaTradingWs, 5000); }
 }
+
+// ─── nexus_quant Bridge Endpoints ────────────────────────────────────────────
+// Receive structured signals, risk snapshots, regime, and monitoring from Python
+
+const quantState = {
+  lastSignal:      null,
+  lastRisk:        null,
+  lastRegime:      null,
+  lastMonitoring:  null,
+  signals:         [],   // ring buffer, last 100
+};
+
+function quantAuth(req, res, next) {
+  const key = req.headers['x-nexus-api-key'];
+  if (ADMIN_TOKEN && key !== ADMIN_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+app.post('/api/quant/signal', quantAuth, (req, res) => {
+  const sig = req.body;
+  sig.receivedAt = new Date().toISOString();
+  quantState.lastSignal = sig;
+  quantState.signals.unshift(sig);
+  if (quantState.signals.length > 100) quantState.signals.pop();
+  console.log(`[quant/signal] ${sig.strategy}/${sig.asset} dir=${sig.direction} conf=${sig.confidence}`);
+  res.json({ ok: true });
+});
+
+app.post('/api/quant/risk', quantAuth, (req, res) => {
+  quantState.lastRisk = { ...req.body, receivedAt: new Date().toISOString() };
+  if (req.body.kill_switch_active) {
+    console.warn('[quant/risk] Kill switch ACTIVE from Python risk engine');
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/quant/regime', quantAuth, (req, res) => {
+  quantState.lastRegime = { ...req.body, receivedAt: new Date().toISOString() };
+  console.log(`[quant/regime] ${req.body.regime} | vol: ${req.body.vol_regime} | conf=${req.body.confidence}`);
+  res.json({ ok: true });
+});
+
+app.post('/api/quant/monitoring', quantAuth, (req, res) => {
+  quantState.lastMonitoring = { ...req.body, receivedAt: new Date().toISOString() };
+  res.json({ ok: true });
+});
+
+app.get('/api/quant/state', requireAuth, (req, res) => {
+  res.json({
+    lastSignal:     quantState.lastSignal,
+    lastRisk:       quantState.lastRisk,
+    lastRegime:     quantState.lastRegime,
+    lastMonitoring: quantState.lastMonitoring,
+    recentSignals:  quantState.signals.slice(0, 20),
+  });
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 refreshRiskFreeRate();
