@@ -638,8 +638,12 @@ tr:hover td { background: var(--surface2); }
 
       <!-- Macro Brief -->
       <div class="card" style="margin-bottom:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <div class="card-title" style="margin-bottom:0">📰 Macro Brief — AI Research</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="card-title" style="margin-bottom:0">📰 Macro Brief — AI Research</div>
+            <span id="at-regime-badge" style="display:none;font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:20px;letter-spacing:0.05em">—</span>
+            <span id="at-cycle-badge" style="font-size:0.72rem;color:var(--text-muted)">—</span>
+          </div>
           <div style="display:flex;align-items:center;gap:10px">
             <span id="at-macro-ts" style="font-size:0.75rem;color:var(--text-muted)">—</span>
             <button class="btn btn-secondary btn-sm" id="at-macro-refresh-btn" onclick="refreshMacroBrief()">↺ Aggiorna</button>
@@ -1317,6 +1321,7 @@ function connectWS() {
     if (data.type === 'autotrader_halted') { showToast('⛔ AutoTrader HALT: ' + data.reason, 'error'); loadAutoTraderStatus(); }
     if (data.type === 'autotrader_status') updateAutoTraderUI(data.state);
     if (data.type === 'autotrader_macro') updateMacroBrief(data.brief, data.ts);
+    if (data.type === 'autotrader_regime') { updateRegimeBadge(data.regime, data.intervalMins); showToast(`Regime → ${data.regime} | ciclo ${data.intervalMins}min | maxPos ${data.maxPositionPct}%`, data.regime === 'RISK-OFF' ? 'error' : data.regime === 'RISK-ON' ? 'success' : 'info'); }
     if (data.type === 'autotrader_recap') { renderDailyRecap(data.recap, data.date); showToast(`🔍 Resoconto EOD ${data.date} generato`, 'success'); }
   };
   ws.onclose = () => { wsConnected = false; updateWsStatus(false); setTimeout(connectWS, 3000); };
@@ -2394,6 +2399,24 @@ function updateMacroBrief(brief, ts) {
     });
 }
 
+function updateRegimeBadge(regime, intervalMins) {
+  const badge = document.getElementById('at-regime-badge');
+  const cycle = document.getElementById('at-cycle-badge');
+  if (!badge) return;
+  const colors = {
+    'RISK-ON':  { bg: 'rgba(0,200,100,0.15)', color: '#00c864', border: '#00c864' },
+    'RISK-OFF': { bg: 'rgba(220,60,60,0.15)',  color: '#e05050', border: '#e05050' },
+    'NEUTRAL':  { bg: 'rgba(220,170,0,0.12)',  color: '#d4a500', border: '#d4a500' },
+  };
+  const c = colors[regime] || colors['NEUTRAL'];
+  badge.style.display = 'inline-block';
+  badge.style.background = c.bg;
+  badge.style.color = c.color;
+  badge.style.border = `1px solid ${c.border}`;
+  badge.textContent = regime;
+  if (cycle && intervalMins) cycle.textContent = `ciclo ${intervalMins}min`;
+}
+
 async function loadAutoTraderStatus() {
   try {
     const data = await secureFetch('/api/autotrader/status').then(r => r.json());
@@ -2401,6 +2424,7 @@ async function loadAutoTraderStatus() {
     if (data.log) renderAtLog(data.log);
     if (data.todayTradeHistory) renderAtHistory(data.todayTradeHistory, data.todayKey);
     if (data.lastMacroBrief) updateMacroBrief(data.lastMacroBrief, data.lastMacroTs);
+    if (data.currentRegime) updateRegimeBadge(data.currentRegime, data.regimeConfig?.intervalMins);
     if (Array.isArray(data.recapDates)) populateRecapDateSelect(data.recapDates, data.lastRecapDate);
   } catch (_) {}
 }

@@ -1028,6 +1028,7 @@ const AT = {
   running: false,
   lastMacroBrief: '',
   lastMacroTs: null,
+  currentRegime: 'NEUTRAL',  // updated each cycle from macro brief
   dailyRecaps: {},        // { 'YYYY-MM-DD': { text, ts, generatedAt } }
   lastRecapDate: '',      // which trading day recap was last generated for
 };
@@ -1214,6 +1215,8 @@ function atPublicState() {
     openPositionsCount: latestPositions.length,
     lastMacroBrief: AT.lastMacroBrief,
     lastMacroTs: AT.lastMacroTs,
+    currentRegime: AT.currentRegime,
+    regimeConfig: REGIME_CONFIG[AT.currentRegime] || REGIME_CONFIG['NEUTRAL'],
     recapDates: Object.keys(AT.dailyRecaps).sort().reverse().slice(0, 30),
     lastRecapDate: AT.lastRecapDate,
   };
@@ -1478,7 +1481,8 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     } catch (_) {}
 
     const brackets = computeAdaptiveBrackets(annVol);
-    const reviewThreshold = -(brackets.slPct * 0.6); // trigger at 60% of adaptive SL
+    const regimeCfg = REGIME_CONFIG[AT.currentRegime] || REGIME_CONFIG['NEUTRAL'];
+    const reviewThreshold = -(brackets.slPct * regimeCfg.reviewPct);
     if (plPct > reviewThreshold) continue;
 
     // Emergency hard close at 2.2× adaptive SL — immediate, no AI
@@ -1682,6 +1686,12 @@ async function atCycle() {
     AT.lastMacroTs = Date.now();
     saveAtState();
     broadcast({ type: 'autotrader_macro', brief: macroBrief, ts: AT.lastMacroTs });
+
+    // Adjust cycle speed + position sizing based on macro regime
+    try {
+      const macroData = JSON.parse(macroBrief);
+      if (macroData.regime) applyRegimeAdjustments(macroData.regime);
+    } catch (_) {}
     atLog({ symbol: 'MACRO', action: 'RESEARCH', confidence: 1, reasoning: macroBrief.slice(0, 200) + (macroBrief.length > 200 ? '…' : ''), executed: false });
 
     // Phase 2: symbol selection
@@ -2028,6 +2038,38 @@ function atSchedule() {
   }
   saveAtState();
   broadcast({ type: 'autotrader_status', state: atPublicState() });
+}
+
+// Regime-aware dynamic risk adjustment — called after each macro fetch
+// RISK-ON  → 30 min cycle, 15% max position, review at 60% SL
+// NEUTRAL  → 20 min cycle, 12% max position, review at 50% SL
+// RISK-OFF → 10 min cycle,  8% max position, review at 40% SL
+const REGIME_CONFIG = {
+  'RISK-ON':  { intervalMins: 30, maxPositionPct: 15, reviewPct: 0.60 },
+  'NEUTRAL':  { intervalMins: 20, maxPositionPct: 12, reviewPct: 0.50 },
+  'RISK-OFF': { intervalMins: 10, maxPositionPct:  8, reviewPct: 0.40 },
+};
+
+function applyRegimeAdjustments(regime) {
+  const cfg = REGIME_CONFIG[regime] || REGIME_CONFIG['NEUTRAL'];
+  const prev = AT.currentRegime;
+  AT.currentRegime = regime;
+
+  const newIntervalMs = cfg.intervalMins * 60 * 1000;
+  const intervalChanged = newIntervalMs !== AT.intervalMs;
+
+  AT.maxPositionPct = cfg.maxPositionPct;
+
+  if (intervalChanged) {
+    AT.intervalMs = newIntervalMs;
+    if (AT.enabled) atSchedule(); // restart timer with new cadence
+    atLog({
+      symbol: 'SYSTEM', action: 'REGIME', confidence: 1,
+      reasoning: `Regime ${prev}→${regime}: ciclo ${cfg.intervalMins}min, maxPos ${cfg.maxPositionPct}%, SL review ${(cfg.reviewPct*100).toFixed(0)}% threshold`,
+      executed: false,
+    });
+    broadcast({ type: 'autotrader_regime', regime, intervalMins: cfg.intervalMins, maxPositionPct: cfg.maxPositionPct });
+  }
 }
 
 // ─── AutoTrader Endpoints ─────────────────────────────────────────────────────
