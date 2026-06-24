@@ -488,7 +488,7 @@ Schema: { "ticker":"", "name":"", "country":"", "sector":"", "isFX":false, "rati
 "pe":null, "pb":null, "cr":null, "fcf":null, "div":null, "cap":"", "analysis":"<h3>...</h3>..." }
 Values pe/pb/cr/fcf/div must be decimal numbers or null. analysis must be HTML string on one logical line.`;
 
-const AUTOTRADER_RESEARCH_PROMPT = `You are a quantitative trading engine. Analyze the provided market data and output ONLY a valid JSON object — no text, no markdown, no code fences.
+const AUTOTRADER_RESEARCH_PROMPT = `You are a selective quantitative trading engine. Analyze the provided market data and output ONLY a valid JSON object — no text, no markdown, no code fences.
 
 Schema: {"symbol":"","action":"BUY|SELL|SHORT|COVER|HOLD|REPLACE","confidence":0.0,"reasoning":"","suggestedNotional":0,"replaceSymbol":""}
 
@@ -497,20 +497,72 @@ Action definitions:
 - SELL: close an existing long position (only when positionSide is long)
 - SHORT: open a new short position (only when hasPosition is false and allowShort is true)
 - COVER: close an existing short position (only when positionSide is short)
-- HOLD: take no action
-- REPLACE: sector rotation — close replaceSymbol (weakest in sector) and open this symbol instead. Only when SECTOR ROTATION AVAILABLE is shown and the new setup is clearly superior.
+- HOLD: take no action — this is the DEFAULT when conviction is insufficient
+- REPLACE: close replaceSymbol (weakest in sector) and open this symbol. Only when SECTOR ROTATION AVAILABLE is shown and new setup is clearly superior.
+
+MANDATORY RULES — apply strictly:
+
+TREND & MOMENTUM (required for entry):
+- BUY requires: price above SMA20, AND (SMA20 > SMA50 OR 20d return > 0). Never buy a stock in a confirmed downtrend.
+- BUY requires: 5d return > -3% (avoid catching falling knives). If 5d return ≤ -3%, confidence cap = 0.70.
+- If price > 52W high × 0.95 (near breakout zone): acceptable to BUY with other signals.
+- If price < SMA20 AND SMA20 < SMA50 AND 20d return < -8%: only HOLD or SHORT, never BUY.
+- SHORT requires: price below SMA20, negative MACD, RSI < 52, 5d return < 0.
+
+MOMENTUM QUALITY:
+- Relative Volume < 0.7×: weak entry signal — cap confidence at 0.72 for new positions.
+- Relative Volume > 1.5×: strong confirmation — can raise confidence by up to 0.05.
+- MACD narrowing (positive but decreasing): momentum fading — prefer HOLD over new BUY.
+
+GEOPOLITICS & MACRO OVERRIDE:
+- If macro context shows active geopolitical risk (sanctions, war escalation, tariffs) directly affecting this sector or company's country of operation: reduce confidence by 0.10–0.15 or HOLD.
+- Fed/ECB rate policy: rising rates = headwind for growth/tech (lower confidence). Falling rates = tailwind.
+- RISK-OFF macro regime: only BUY defensives (XLE, GLD, TLT, healthcare). Do not initiate growth/tech longs.
+- RISK-ON regime: full latitude on growth and momentum names.
+
+BLACK-SCHOLES:
+- P(TP) > 2× P(SL) required to justify BUY or SHORT. Below this ratio: HOLD.
+- If EV (expected value) < 0%: always HOLD for new positions.
+
+CONVICTION THRESHOLD:
+- confidence ≥ 0.85: requires strong technicals + macro alignment + volume confirmation + geopolitical neutral/tailwind.
+- confidence 0.75–0.84: solid setup, one factor uncertain.
+- confidence < 0.75: return HOLD instead — do not trade.
+- reasoning: exactly 3 sentences — (1) technical setup with specific values, (2) macro/geopolitical context and how it affects this stock, (3) why this action beats HOLD right now.
+- suggestedNotional: USD ≤ maxBudgetForThisTrade. Use 0 for HOLD/SELL/COVER.
+- replaceSymbol: only for REPLACE action, else omit.
+- Diversification: prefer sectors not yet in portfolio. Concentration only with confidence ≥ 0.88.`;
+
+const EOD_RECAP_PROMPT = `You are an AutoTrader post-market analyst. Today's trading session has just closed. Produce a rigorous internal daily recap.
+
+Output ONLY a valid JSON object (no markdown, no explanation, no code fences):
+{
+  "date": "",
+  "regime": "RISK-ON|RISK-OFF|NEUTRAL",
+  "session_pnl": "positive|negative|flat",
+  "summary": "",
+  "decisions": [],
+  "what_worked": "",
+  "what_failed": "",
+  "missed_opportunities": "",
+  "tomorrow_bias": "BULLISH|BEARISH|NEUTRAL",
+  "tomorrow_watchlist": [],
+  "tomorrow_reasoning": ""
+}
+
+Each item in decisions array:
+{"symbol":"","action":"","outcome":"profitable|losing|neutral|open","pl_pct":null,"analysis":"","lesson":""}
 
 Rules:
-- confidence: 0.0–1.0. Use ≥0.85 only when multiple signals strongly align.
-- reasoning: 2-3 sentences combining technical + macro + Black-Scholes rationale. Be specific.
-- suggestedNotional: USD amount ≤ maxBudgetForThisTrade shown in prompt. Use 0 for HOLD/SELL/COVER.
-- replaceSymbol: only required for REPLACE action, otherwise omit or use "".
-- RSI: <30 oversold (bullish bias), >70 overbought (bearish/short bias).
-- MACD: positive = bullish momentum, negative = bearish.
-- Black-Scholes: P(TP) vs P(SL) ratio guides conviction. Favor setups where P(TP) > 2× P(SL).
-- Diversification: prefer sectors not yet in portfolio. Accept concentration only with very high conviction.
-- ALWAYS integrate macro context. CB/geopolitical events override technicals.
-- Prefer HOLD over low-conviction trades. A missed opportunity is better than a forced loss.`;
+- summary: 2-3 sentences covering overall session P&L, market context, and portfolio impact.
+- For each trade today: was the thesis correct? Did the AI miss signals that should have changed the decision?
+- what_worked: 1-2 sentences on signals/patterns that predicted outcomes correctly.
+- what_failed: 1-2 sentences on errors — bad timing, missed momentum reversal, geopolitical blindspot, overconfidence.
+- missed_opportunities: 1 sentence on stocks that moved significantly that the AI skipped or didn't analyse.
+- tomorrow_bias: directional view for next session based on today's price action + macro.
+- tomorrow_watchlist: 3-5 symbols to prioritize next cycle.
+- tomorrow_reasoning: 1-2 sentences explaining the bias and watchlist rationale.
+- Be brutally honest. The purpose is self-improvement, not self-justification.`;
 
 const POSITION_REVIEW_PROMPT = `You are a risk manager reviewing a losing position. Given technicals, volatility, and macro context, decide what to do.
 
@@ -940,6 +992,8 @@ const AT = {
   running: false,
   lastMacroBrief: '',
   lastMacroTs: null,
+  dailyRecaps: {},        // { 'YYYY-MM-DD': { text, ts, generatedAt } }
+  lastRecapDate: '',      // which trading day recap was last generated for
 };
 
 function ensureAtDayState() {
@@ -1005,6 +1059,8 @@ function saveAtState() {
       haltReason: AT.haltReason,
       lastMacroBrief: AT.lastMacroBrief,
       lastMacroTs: AT.lastMacroTs,
+      dailyRecaps: AT.dailyRecaps,
+      lastRecapDate: AT.lastRecapDate,
       log: AT.log.slice(0, 100),
     };
     const tmp = `${AT_STATE_FILE}.${process.pid}.tmp`;
@@ -1063,6 +1119,8 @@ function loadAtState() {
     AT.haltReason = state.haltReason || '';
     AT.lastMacroBrief = state.lastMacroBrief || '';
     AT.lastMacroTs = state.lastMacroTs || null;
+    AT.dailyRecaps = (state.dailyRecaps && typeof state.dailyRecaps === 'object') ? state.dailyRecaps : {};
+    AT.lastRecapDate = state.lastRecapDate || '';
     AT.log = Array.isArray(state.log) ? state.log.slice(0, 100) : [];
     ensureAtDayState();
   } catch (err) {
@@ -1120,6 +1178,8 @@ function atPublicState() {
     openPositionsCount: latestPositions.length,
     lastMacroBrief: AT.lastMacroBrief,
     lastMacroTs: AT.lastMacroTs,
+    recapDates: Object.keys(AT.dailyRecaps).sort().reverse().slice(0, 30),
+    lastRecapDate: AT.lastRecapDate,
   };
 }
 
@@ -1164,6 +1224,110 @@ Return a JSON object (no markdown, no explanation) with exactly these keys:
   } catch (_) {}
 
   return { brief, fxStr, dateStr };
+}
+
+// ─── End-of-Day Recap ─────────────────────────────────────────────────────────
+async function generateDailyRecap(anthropicKey, dateKey) {
+  const trades = (AT.dailyTradeHistory[dateKey] || []);
+  const macroCtx = AT.lastMacroBrief || '{}';
+
+  // Build positions P&L snapshot
+  const positionsSummary = latestPositions.map(p => {
+    const pl = +(p.unrealized_plpc || 0) * 100;
+    return `${p.symbol} (${p.side}): ${p.qty} shares @ $${p.avg_entry_price} | current $${p.current_price} | P&L ${pl.toFixed(2)}%`;
+  }).join('\n') || 'No open positions';
+
+  const tradesSummary = trades.length
+    ? trades.map(t => `${new Date(t.ts).toISOString()} — ${t.symbol} ${t.action} (conf ${(t.confidence*100).toFixed(0)}%) — ${t.reasoning}`).join('\n')
+    : 'No trades executed today';
+
+  const accountSummary = latestAccount
+    ? `Equity: $${(+latestAccount.equity).toFixed(2)} | Buying power: $${(+latestAccount.buying_power).toFixed(2)} | Day P&L: $${(+latestAccount.equity - +latestAccount.last_equity).toFixed(2)}`
+    : 'Account data unavailable';
+
+  const prompt = `DATE: ${dateKey}
+MACRO CONTEXT:
+${macroCtx}
+
+ACCOUNT SUMMARY:
+${accountSummary}
+
+TRADES EXECUTED TODAY (${trades.length}):
+${tradesSummary}
+
+OPEN POSITIONS AT CLOSE:
+${positionsSummary}
+
+Generate the end-of-day recap JSON as instructed.`;
+
+  let recap = null;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1200, system: EOD_RECAP_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const d = await res.json();
+    let raw = (d.content?.[0]?.text || '').trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+    recap = JSON.parse(raw);
+  } catch (_) {
+    recap = {
+      date: dateKey,
+      regime: 'NEUTRAL',
+      session_pnl: trades.length ? 'flat' : 'flat',
+      summary: 'Recap generation failed — raw data preserved.',
+      decisions: trades.slice(0, 10).map(t => ({ symbol: t.symbol, action: t.action, outcome: 'open', pl_pct: null, analysis: t.reasoning, lesson: '' })),
+      what_worked: '',
+      what_failed: '',
+      missed_opportunities: '',
+      tomorrow_bias: 'NEUTRAL',
+      tomorrow_watchlist: [],
+      tomorrow_reasoning: '',
+    };
+  }
+
+  AT.dailyRecaps[dateKey] = { recap, ts: Date.now() };
+  AT.lastRecapDate = dateKey;
+  // Keep only last 30 days of recaps
+  const recapKeys = Object.keys(AT.dailyRecaps).sort();
+  while (recapKeys.length > 30) delete AT.dailyRecaps[recapKeys.shift()];
+  saveAtState();
+
+  broadcast({ type: 'autotrader_recap', date: dateKey, recap, ts: Date.now() });
+  const pnlIcon = recap.session_pnl === 'positive' ? '🟢' : recap.session_pnl === 'negative' ? '🔴' : '⚪';
+  await sendTelegram(`${pnlIcon} <b>AutoTrader — Resoconto EOD ${dateKey}</b>\n${recap.summary}\n\n📅 Trades: ${trades.length} | Bias domani: ${recap.tomorrow_bias}\n🔍 Domani: ${recap.tomorrow_watchlist.join(', ') || '—'}`);
+  atLog({ symbol: 'SYSTEM', action: 'EOD_RECAP', confidence: 1, reasoning: `Daily recap generated: ${recap.session_pnl} session. ${recap.summary?.slice(0, 120)}`, executed: false });
+
+  return recap;
+}
+
+// Runs every minute — triggers EOD recap once per trading day at 16:05–16:30 ET
+function scheduleEodRecap() {
+  setInterval(async () => {
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (!anthropicKey) return;
+    const now = new Date();
+    const utcMs = now.getTime();
+    const year = now.getUTCFullYear();
+    const dstStart = getNthDayOfMonth(year, 2, 0, 2);
+    const dstEnd = getNthDayOfMonth(year, 10, 0, 1);
+    const isDST = utcMs >= dstStart && utcMs < dstEnd;
+    const et = new Date(utcMs + (isDST ? -4 : -5) * 3600000);
+    const day = et.getUTCDay();
+    // Only Mon–Fri, not holidays
+    if (day === 0 || day === 6) return;
+    const mins = et.getUTCHours() * 60 + et.getUTCMinutes();
+    // Window: 16:05–16:30 ET (965–990 minutes)
+    if (mins < 965 || mins > 990) return;
+    const dateKey = easternDateKey();
+    if (isHoliday()) return;
+    // Only generate once per trading day
+    if (AT.lastRecapDate === dateKey) return;
+    // Only if there's anything to recap (market must have been open today)
+    if (!AT.dailyTradeHistory[dateKey] && !latestPositions.length) return;
+    await generateDailyRecap(anthropicKey, dateKey);
+  }, 60000);
 }
 
 // Fetch top movers and most-active from Alpaca screener — dynamic market discovery
@@ -1527,6 +1691,19 @@ async function atCycle() {
       const sma50 = computeSMA(closes, 50);
       const annVol = computeEWMAVol(closes);
       const brackets = computeAdaptiveBrackets(annVol);
+
+      // Trend & momentum metrics
+      const price5dAgo = closes.length >= 6 ? closes[closes.length - 6] : null;
+      const price20dAgo = closes.length >= 21 ? closes[closes.length - 21] : null;
+      const trend5d = price5dAgo && price5dAgo > 0 ? ((lastPrice - price5dAgo) / price5dAgo) * 100 : null;
+      const trend20d = price20dAgo && price20dAgo > 0 ? ((lastPrice - price20dAgo) / price20dAgo) * 100 : null;
+      const pctVsSMA20 = sma20 && sma20 > 0 ? ((lastPrice - sma20) / sma20) * 100 : null;
+      const pctVsSMA50 = sma50 && sma50 > 0 ? ((lastPrice - sma50) / sma50) * 100 : null;
+      const closes252 = closes.slice(-252);
+      const high52w = closes252.length ? Math.max(...closes252) : null;
+      const low52w = closes252.length ? Math.min(...closes252) : null;
+      const pctFrom52wHigh = high52w && high52w > 0 ? ((lastPrice - high52w) / high52w) * 100 : null;
+      const pctFrom52wLow = low52w && low52w > 0 ? ((lastPrice - low52w) / low52w) * 100 : null;
       const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct, 60 / 252, riskFreeRate);
       const sector = getSector(symbol);
       const secExp = sectorExposure(openPositions);
@@ -1565,6 +1742,14 @@ FX: ${fxStr}
 SYMBOL: ${symbol} | SECTOR: ${sector}
 Last price: $${lastPrice.toFixed(2)}
 30d closes (latest 10): [${closes.slice(-10).map(c => c.toFixed(2)).join(', ')}]
+
+TREND & MOMENTUM:
+5d return: ${trend5d != null ? trend5d.toFixed(2) + '%' : '?'}
+20d return: ${trend20d != null ? trend20d.toFixed(2) + '%' : '?'}
+Price vs SMA20: ${pctVsSMA20 != null ? (pctVsSMA20 >= 0 ? '+' : '') + pctVsSMA20.toFixed(2) + '%' : '?'}
+Price vs SMA50: ${pctVsSMA50 != null ? (pctVsSMA50 >= 0 ? '+' : '') + pctVsSMA50.toFixed(2) + '%' : '?'}
+52W High: ${high52w != null ? '$' + high52w.toFixed(2) + ' (' + (pctFrom52wHigh >= 0 ? '+' : '') + pctFrom52wHigh.toFixed(1) + '%)' : '?'}
+52W Low: ${low52w != null ? '$' + low52w.toFixed(2) + ' (+' + pctFrom52wLow.toFixed(1) + '% above)' : '?'}
 
 TECHNICALS:
 RSI(14): ${rsi != null ? rsi.toFixed(1) : '?'}
@@ -1887,6 +2072,31 @@ app.get('/api/autotrader/intraday/:symbol', async (req, res) => {
   }
 });
 
+// GET /api/autotrader/recap?date=YYYY-MM-DD
+app.get('/api/autotrader/recap', (req, res) => {
+  const date = req.query.date || AT.lastRecapDate || easternDateKey();
+  const entry = AT.dailyRecaps[date];
+  res.json({
+    date,
+    recap: entry ? entry.recap : null,
+    ts: entry ? entry.ts : null,
+    available: Object.keys(AT.dailyRecaps).sort().reverse(),
+  });
+});
+
+// POST /api/autotrader/recap/generate — force-generate recap for a given date
+app.post('/api/autotrader/recap/generate', async (req, res) => {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) return res.status(500).json({ error: 'No Anthropic key' });
+  const date = req.body.date || easternDateKey();
+  try {
+    const recap = await generateDailyRecap(anthropicKey, date);
+    res.json({ ok: true, date, recap });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── WebSocket Server (local clients) ─────────────────────────────────────────
 const wss = new WebSocketServer({ server });
 const localClients = new Set();
@@ -2080,6 +2290,7 @@ server.listen(PORT, () => {
   connectAlpacaDataWs();
   connectAlpacaTradingWs();
   atSchedule();
+  scheduleEodRecap();
 });
 
 module.exports = { app, server, broadcast, subscribeSymbols };

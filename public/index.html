@@ -676,6 +676,22 @@ tr:hover td { background: var(--surface2); }
         </div>
       </div>
 
+      <!-- EOD Recap -->
+      <div class="card" id="at-recap-card" style="margin-bottom:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div class="card-title" style="margin-bottom:0">🔍 Resoconto Giornaliero AutoTrader</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <select id="at-recap-date-select" onchange="loadDailyRecap(this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:6px;font-family:inherit;font-size:0.8rem">
+              <option value="">— seleziona data —</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="generateDailyRecap()" id="at-recap-gen-btn" title="Genera resoconto manuale">⚙ Genera</button>
+          </div>
+        </div>
+        <div id="at-recap-body" style="font-size:0.83rem;line-height:1.7;color:var(--text-muted)">
+          Nessun resoconto disponibile — il motore genera automaticamente il recap a fine sessione (16:05 ET).
+        </div>
+      </div>
+
       <!-- Intraday Charts -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -1301,6 +1317,7 @@ function connectWS() {
     if (data.type === 'autotrader_halted') { showToast('⛔ AutoTrader HALT: ' + data.reason, 'error'); loadAutoTraderStatus(); }
     if (data.type === 'autotrader_status') updateAutoTraderUI(data.state);
     if (data.type === 'autotrader_macro') updateMacroBrief(data.brief, data.ts);
+    if (data.type === 'autotrader_recap') { renderDailyRecap(data.recap, data.date); showToast(`🔍 Resoconto EOD ${data.date} generato`, 'success'); }
   };
   ws.onclose = () => { wsConnected = false; updateWsStatus(false); setTimeout(connectWS, 3000); };
   ws.onerror = () => { wsConnected = false; updateWsStatus(false); };
@@ -2355,7 +2372,112 @@ async function loadAutoTraderStatus() {
     if (data.log) renderAtLog(data.log);
     if (data.todayTradeHistory) renderAtHistory(data.todayTradeHistory, data.todayKey);
     if (data.lastMacroBrief) updateMacroBrief(data.lastMacroBrief, data.lastMacroTs);
+    if (Array.isArray(data.recapDates)) populateRecapDateSelect(data.recapDates, data.lastRecapDate);
   } catch (_) {}
+}
+
+function populateRecapDateSelect(dates, latestDate) {
+  const sel = document.getElementById('at-recap-date-select');
+  if (!sel) return;
+  const current = sel.value || latestDate || '';
+  sel.innerHTML = '<option value="">— seleziona data —</option>' +
+    dates.map(d => `<option value="${d}"${d === current ? ' selected' : ''}>${d}</option>`).join('');
+  if (latestDate && !sel.value) {
+    sel.value = latestDate;
+    loadDailyRecap(latestDate);
+  }
+}
+
+async function loadDailyRecap(date) {
+  if (!date) return;
+  const body = document.getElementById('at-recap-body');
+  if (!body) return;
+  body.innerHTML = '<span style="color:var(--text-muted)">⟳ Caricamento...</span>';
+  try {
+    const res = await secureFetch(`/api/autotrader/recap?date=${encodeURIComponent(date)}`);
+    const data = await res.json();
+    if (data.recap) renderDailyRecap(data.recap, date);
+    else body.innerHTML = '<span style="color:var(--text-muted)">Nessun resoconto per questa data.</span>';
+  } catch(e) {
+    body.innerHTML = `<span style="color:var(--red)">Errore: ${e.message}</span>`;
+  }
+}
+
+function renderDailyRecap(recap, date) {
+  const body = document.getElementById('at-recap-body');
+  if (!body || !recap) return;
+  const pnlColor = recap.session_pnl === 'positive' ? 'var(--green)' : recap.session_pnl === 'negative' ? 'var(--red)' : 'var(--text-muted)';
+  const pnlIcon = recap.session_pnl === 'positive' ? '🟢' : recap.session_pnl === 'negative' ? '🔴' : '⚪';
+  const biasColor = recap.tomorrow_bias === 'BULLISH' ? 'var(--green)' : recap.tomorrow_bias === 'BEARISH' ? 'var(--red)' : 'var(--orange)';
+
+  const decisionsHtml = Array.isArray(recap.decisions) && recap.decisions.length
+    ? `<div style="margin-top:14px">
+        <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Decisioni analizzate</div>
+        ${recap.decisions.map(d => {
+          const oc = d.outcome === 'profitable' ? 'var(--green)' : d.outcome === 'losing' ? 'var(--red)' : 'var(--text-muted)';
+          const plTxt = d.pl_pct != null ? ` | P&L: ${d.pl_pct >= 0 ? '+' : ''}${(+d.pl_pct).toFixed(2)}%` : '';
+          return `<div style="padding:10px;background:var(--surface2);border-radius:8px;margin-bottom:8px;border-left:3px solid ${oc}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <b>${d.symbol}</b> <span style="font-size:0.78rem;color:var(--text-muted)">${d.action}${plTxt}</span>
+            </div>
+            <div style="color:var(--text);font-size:0.8rem">${d.analysis || ''}</div>
+            ${d.lesson ? `<div style="color:var(--gold);font-size:0.78rem;margin-top:4px">💡 ${d.lesson}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>` : '';
+
+  body.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <div style="padding:8px 14px;background:var(--surface2);border-radius:8px">
+        <span style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase">Sessione P&L</span>
+        <div style="font-weight:700;color:${pnlColor};font-size:0.95rem">${pnlIcon} ${(recap.session_pnl||'flat').toUpperCase()}</div>
+      </div>
+      <div style="padding:8px 14px;background:var(--surface2);border-radius:8px">
+        <span style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase">Regime</span>
+        <div style="font-weight:700;font-size:0.95rem">${recap.regime || '—'}</div>
+      </div>
+      <div style="padding:8px 14px;background:var(--surface2);border-radius:8px">
+        <span style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase">Bias domani</span>
+        <div style="font-weight:700;color:${biasColor};font-size:0.95rem">${recap.tomorrow_bias || '—'}</div>
+      </div>
+    </div>
+    <p style="color:var(--text);margin-bottom:12px">${recap.summary || ''}</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      ${recap.what_worked ? `<div style="padding:10px;background:rgba(46,204,113,0.07);border:1px solid rgba(46,204,113,0.2);border-radius:8px"><div style="color:var(--green);font-size:0.72rem;text-transform:uppercase;margin-bottom:4px">✓ Ha funzionato</div><div>${recap.what_worked}</div></div>` : ''}
+      ${recap.what_failed ? `<div style="padding:10px;background:rgba(231,76,60,0.07);border:1px solid rgba(231,76,60,0.2);border-radius:8px"><div style="color:var(--red);font-size:0.72rem;text-transform:uppercase;margin-bottom:4px">✗ Errori</div><div>${recap.what_failed}</div></div>` : ''}
+    </div>
+    ${recap.missed_opportunities ? `<div style="padding:8px 12px;background:rgba(200,169,110,0.08);border-radius:6px;margin-bottom:10px;font-size:0.8rem"><span style="color:var(--gold)">👀 Opportunità mancate:</span> ${recap.missed_opportunities}</div>` : ''}
+    ${decisionsHtml}
+    ${recap.tomorrow_watchlist && recap.tomorrow_watchlist.length ? `
+    <div style="margin-top:12px;padding:10px 14px;background:var(--surface2);border-radius:8px">
+      <div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:6px">Prossima sessione — Watchlist</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">${recap.tomorrow_watchlist.map(s=>`<span style="padding:3px 8px;background:rgba(200,169,110,0.12);border:1px solid var(--gold-dim);border-radius:4px;font-size:0.8rem;color:var(--gold)">${s}</span>`).join('')}</div>
+      <div style="font-size:0.8rem;color:var(--text-muted)">${recap.tomorrow_reasoning || ''}</div>
+    </div>` : ''}`;
+
+  const sel = document.getElementById('at-recap-date-select');
+  if (sel && date) sel.value = date;
+}
+
+async function generateDailyRecap() {
+  const btn = document.getElementById('at-recap-gen-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Generazione...'; }
+  const sel = document.getElementById('at-recap-date-select');
+  const date = (sel && sel.value) || new Date().toISOString().slice(0,10);
+  try {
+    const res = await secureFetch('/api/autotrader/recap/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Errore server');
+    renderDailyRecap(data.recap, data.date);
+    showToast('Resoconto generato', 'success');
+  } catch(e) {
+    showToast('Errore resoconto: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚙ Genera'; }
+  }
 }
 
 function updateAutoTraderUI(data) {
