@@ -854,65 +854,30 @@ async function refreshRiskFreeRate() {
 // Universe of US-listed stocks Claude can pick from when aiManagedWatchlist is enabled.
 // Covers mega-cap anchors + mid/small-cap growth. Supplemented each cycle by live market movers.
 const STOCK_UNIVERSE = [
-  // ── Mega-cap tech ────────────────────────────────────────────────────────────
-  'AAPL','MSFT','NVDA','GOOGL','AMZN','META','TSLA','AVGO','ORCL','AMD',
-  'CRM','INTU','NOW','ADBE','PANW','FTNT','KLAC','LRCX','AMAT','MU',
-  'QCOM','TXN','ADI','MCHP','ON','NXPI','INTC','IBM',
-  // ── Financials ───────────────────────────────────────────────────────────────
-  'JPM','BAC','GS','MS','BLK','AXP','V','MA','PYPL','SCHW',
-  'C','WFC','USB','COF','ICE','CME','SPGI','MCO','CB','PGR','MET','PRU',
-  // ── Healthcare & pharma ──────────────────────────────────────────────────────
-  'UNH','JNJ','LLY','PFE','ABBV','MRK','CVS','AMGN','GILD','ISRG',
-  'TMO','DHR','SYK','MDT','VRTX','REGN','BIIB','BMY','ALNY','DXCM','EW',
-  // ── Energy ───────────────────────────────────────────────────────────────────
+  // ── Mega-cap tech ────────────────────────────────────────────────────
+  'AAPL','MSFT','NVDA','GOOGL','AMZN','META','TSLA','AVGO','ORCL','AMD','CRM','INTU','NOW','ADBE','PANW','FTNT','KLAC','LRCX','AMAT','MU','QCOM','TXN','ADI','MCHP','ON','NXPI','INTC','IBM',
+  // ── Financials ───────────────────────────────────────────────────────
+  'JPM','BAC','GS','MS','BLK','AXP','V','MA','PYPL','SCHW','C','WFC','USB','COF','ICE','CME','SPGI','MCO','CB','PGR','MET','PRU',
+  // ── Healthcare & pharma ──────────────────────────────────────────────
+  'UNH','JNJ','LLY','PFE','ABBV','MRK','CVS','AMGN','GILD','ISRG','TMO','DHR','SYK','MDT','VRTX','REGN','BIIB','BMY','ALNY','DXCM','EW',
+  // ── Energy ───────────────────────────────────────────────────────────
   'XOM','CVX','COP','SLB','HAL','MPC','VLO','OXY','PSX','DVN',
-  // ── Industrials & Defense ────────────────────────────────────────────────────
+  // ── Industrials & Defense ────────────────────────────────────────────
   'LMT','RTX','CAT','HON','GE','BA','UPS','MMM','EMR','NOC','GD','LDOS','SAIC',
-  // ── Consumer ─────────────────────────────────────────────────────────────────
-  'WMT','COST','HD','TGT','NKE','SBUX','MCD','PG','KO','PEP',
-  'LOW','TJX','ROST','CL','PM','STZ','HSY','EL','YUM','CMG',
-  // ── Materials ────────────────────────────────────────────────────────────────
-  'LIN','FCX','NEM','AA','CLF','NUE','ALB',
-  // ── Utilities ────────────────────────────────────────────────────────────────
-  'NEE','DUK','SO','D','AEP','EXC',
-  // ── REITs ────────────────────────────────────────────────────────────────────
-  'SPG','PLD','AMT','EQIX','O','VICI','CCI',
-  // ── Broad & sector ETFs ──────────────────────────────────────────────────────
-  'SPY','QQQ','IWM','DIA',
-  'XLK','XLF','XLE','XLV','XLI','XLB','XLC','XLU','XLP','XLRE',
-  'GLD','SLV','TLT','HYG','LQD',
-  // ── Commodities & macro ETFs ─────────────────────────────────────────────────
-  'GDX','GDXJ','USO','UNG',
-  // ── Leveraged ETFs (short vehicles & momentum) ───────────────────────────────
-  'TQQQ','SQQQ','UPRO','SPXU','SOXL','SOXS','UVXY','LABU','LABD',
-  // ── Growth / high-momentum ───────────────────────────────────────────────────
-  'PLTR','COIN','CRWD','NET','DDOG','SNOW','ZS','MSTR','RBLX','HOOD',
-  'UBER','LYFT','ABNB','DASH','DKNG','RDDT','SNAP','PINS',
-  // ── Crypto-adjacent ──────────────────────────────────────────────────────────
-  'MARA','RIOT','CLSK','BTBT','HUT','CIFR',
-  // ── AI & Quantum computing ───────────────────────────────────────────────────
-  'IONQ','RGTI','QUBT','SOUN','AI','PATH','BBAI','ARQQ',
-  // ── Fintech & neobanks ───────────────────────────────────────────────────────
-  'SQ','AFRM','SOFI','UPST','NU','SMAR','RELY',
-  // ── SaaS & cloud ─────────────────────────────────────────────────────────────
-  'SHOP','HUBS','BILL','GTLB','MNDY','BRZE','APP','WDAY','OKTA','MDB',
-  'VEEV','SPLK','COUR','U','ASAN','DOCN','ESTC','CFLT',
-  // ── Semiconductors mid-cap ───────────────────────────────────────────────────
-  'SMCI','AMBA','CRUS','LSCC','WOLF','MPWR','FORM','SWKS',
-  // ── Biotech & health innovation ──────────────────────────────────────────────
-  'MRNA','BNTX','RXRX','BEAM','EDIT','NTLA','HIMS','TDOC',
-  'NVAX','SRPT','CRSP','ILMN','PACB','FATE','ALNY',
-  // ── Clean energy & EV ────────────────────────────────────────────────────────
-  'FSLR','ENPH','PLUG','RIVN','LCID','QS','BE','RUN','CHPT',
-  // ── Space & defense innovation ───────────────────────────────────────────────
-  'RKLB','ASTS','PL','LUNR','JOBY','ACHR',
-  // ── Media & streaming ────────────────────────────────────────────────────────
-  'NFLX','DIS','PARA','WBD','SPOT','ROKU','TTD',
-  // ── International ADRs (US-listed, Alpaca-tradeable) ─────────────────────────
-  'TSM','BABA','NIO','XPEV','LI','BIDU','JD','PDD',
-  'SE','MELI','GRAB','CPNG','CHWY','ETSY','W',
-  // ── Consumer tech & mobility ─────────────────────────────────────────────────
-  'MTCH','ZG','IAC',
+  // ── Consumer ─────────────────────────────────────────────────────────
+  'WMT','COST','HD','TGT','HSY',
+  // ── Broad & sector ETFs ──────────────────────────────────────────────
+  'XLK',
+  // ── Leveraged ETFs ───────────────────────────────────────────────────
+  'LABU',
+  // ── AI & Quantum ─────────────────────────────────────────────────────
+  'RGTI',
+  // ── SaaS & cloud ─────────────────────────────────────────────────────
+  'DOCN',
+  // ── Clean energy & EV ────────────────────────────────────────────────
+  'RIVN',
+  // ── International ADRs ───────────────────────────────────────────────
+  'JD',
 ];
 
 // Sector mapping for diversification — 'Other' is assigned to dynamic movers not in this map
