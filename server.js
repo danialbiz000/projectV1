@@ -25,6 +25,7 @@ const ADMIN_TOKEN_GENERATED = !process.env.NEXUS_ADMIN_TOKEN;
 const SESSION_TTL_MS = Math.max(1, Number(process.env.NEXUS_SESSION_HOURS || 12)) * 60 * 60 * 1000;
 const DATA_DIR = process.env.NEXUS_DATA_DIR || path.join(__dirname, 'data');
 const AT_STATE_FILE = path.join(DATA_DIR, 'autotrader-state.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const MAX_ORDER_NOTIONAL = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_NOTIONAL || 5000));
 const MAX_ORDER_QTY = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_QTY || 1000));
 const AUTOTRADER_MAX_DAILY_TRADES = Math.max(1, Number(process.env.NEXUS_AUTOTRADER_MAX_DAILY_TRADES || 8));
@@ -35,6 +36,34 @@ const ALLOWED_ORIGINS = new Set(
     .split(',').map(s => s.trim()).filter(Boolean)
 );
 const sessions = new Map();
+
+// ─── Session Persistence ──────────────────────────────────────────────────────
+function loadSessions() {
+  try {
+    if (!fs.existsSync(SESSIONS_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+    const now = Date.now();
+    for (const [digest, entry] of Object.entries(raw)) {
+      if (entry.expiresAt > now) sessions.set(digest, { expiresAt: entry.expiresAt });
+    }
+  } catch (_) {}
+}
+
+function saveSessions() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const now = Date.now();
+    const out = {};
+    for (const [digest, entry] of sessions.entries()) {
+      if (entry.expiresAt > now) out[digest] = { expiresAt: entry.expiresAt };
+    }
+    const tmp = `${SESSIONS_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(out));
+    fs.renameSync(tmp, SESSIONS_FILE);
+  } catch (_) {}
+}
+
+loadSessions();
 
 // ─── Auth Helpers ─────────────────────────────────────────────────────────────
 function isAllowedOrigin(origin) {
@@ -61,6 +90,7 @@ function createSession() {
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = Date.now() + SESSION_TTL_MS;
   sessions.set(tokenDigest(token), { expiresAt });
+  saveSessions();
   return { token, expiresAt };
 }
 
@@ -171,8 +201,10 @@ setInterval(() => {
     if (now - e.windowStart > 120000) rateLimitMap.delete(ip);
   for (const [ip, e] of authAttemptMap.entries())
     if (now - e.windowStart > 15 * 60 * 1000) authAttemptMap.delete(ip);
+  let sessionCleaned = false;
   for (const [digest, s] of sessions.entries())
-    if (s.expiresAt <= now) sessions.delete(digest);
+    if (s.expiresAt <= now) { sessions.delete(digest); sessionCleaned = true; }
+  if (sessionCleaned) saveSessions();
 }, 60000);
 
 // ─── Alpaca Helpers ───────────────────────────────────────────────────────────
