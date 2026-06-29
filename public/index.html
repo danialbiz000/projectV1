@@ -1593,7 +1593,7 @@ function renderDashboardPositions(positions) {
   if (countEl) countEl.textContent = `(${positions.length})`;
   list.innerHTML = positions.map(p => {
     const livePrice = livePrices[p.symbol] || +p.current_price;
-    const qty = +p.qty;
+    const qty = Math.abs(+p.qty);
     const entry = +p.avg_entry_price;
     const isShort = p.side === 'short';
     const pnlVal = isShort ? (entry - livePrice) * qty : (livePrice - entry) * qty;
