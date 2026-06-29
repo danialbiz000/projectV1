@@ -1511,10 +1511,11 @@ function updatePositionsTable(positions) {
   }
   tbody.innerHTML = positions.map(p => {
     const livePrice = livePrices[p.symbol] || +p.current_price;
-    const qty = +p.qty;
+    const qty = Math.abs(+p.qty);
     const entry = +p.avg_entry_price;
-    const pnlVal = (livePrice - entry) * qty;
-    const pnlPct = ((livePrice - entry) / entry) * 100;
+    const isShort = p.side === 'short';
+    const pnlVal = isShort ? (entry - livePrice) * qty : (livePrice - entry) * qty;
+    const pnlPct = isShort ? ((entry - livePrice) / entry) * 100 : ((livePrice - entry) / entry) * 100;
     const mv = livePrice * qty;
     const cls = pnlVal >= 0 ? 'positive' : 'negative';
     return `<tr>
@@ -1602,7 +1603,9 @@ function renderDashboardPositions(positions) {
       ? `<span style="font-size:0.68rem;padding:1px 5px;background:rgba(231,76,60,0.15);border:1px solid rgba(231,76,60,0.4);border-radius:3px;color:var(--red)">SHORT</span>`
       : `<span style="font-size:0.68rem;padding:1px 5px;background:rgba(46,204,113,0.12);border:1px solid rgba(46,204,113,0.3);border-radius:3px;color:var(--green)">LONG</span>`;
     const arrow = livePrice > entry ? '▲' : livePrice < entry ? '▼' : '—';
-    const arrowColor = livePrice >= entry ? 'var(--green)' : 'var(--red)';
+    const arrowColor = isShort
+      ? (livePrice <= entry ? 'var(--green)' : 'var(--red)')
+      : (livePrice >= entry ? 'var(--green)' : 'var(--red)');
     return `<div class="dash-pos-row">
       <div class="dash-pos-symbol">
         <div>${p.symbol} ${sideBadge}</div>
@@ -3477,11 +3480,13 @@ async function openPosChart(symbol) {
   const lp = livePrices[symbol];
   if (el('pos-chart-price')) el('pos-chart-price').textContent = lp ? '$' + lp.toFixed(2) : '—';
   if (pos && lp) {
-    const pnl = (lp - +pos.avg_entry_price) * +pos.qty;
-    const pct = ((lp - +pos.avg_entry_price) / +pos.avg_entry_price) * 100;
+    const _isShort = pos.side === 'short';
+    const _qty = Math.abs(+pos.qty);
+    const pnl = _isShort ? (+pos.avg_entry_price - lp) * _qty : (lp - +pos.avg_entry_price) * _qty;
+    const pct = _isShort ? ((+pos.avg_entry_price - lp) / +pos.avg_entry_price) * 100 : ((lp - +pos.avg_entry_price) / +pos.avg_entry_price) * 100;
     if (el('pos-chart-pnl')) el('pos-chart-pnl').innerHTML =
       `<span style="color:${pnl>=0?'var(--green)':'var(--red)'}">P&L: ${pnl>=0?'+':''}$${pnl.toFixed(2)} (${pct>=0?'+':''}${pct.toFixed(2)}%)</span>` +
-      ` <span style="color:var(--text-muted)">· ${+pos.qty} azioni @ $${pos.avg_entry_price}</span>`;
+      ` <span style="color:var(--text-muted)">· ${_qty} azioni ${_isShort?'SHORT':''} @ $${pos.avg_entry_price}</span>`;
   }
 
   // Canvas
@@ -3524,11 +3529,13 @@ async function openPosChart(symbol) {
     const price = livePrices[posChartSymbol];
     if (price && el('pos-chart-price')) el('pos-chart-price').textContent = '$' + price.toFixed(2);
     if (p && price) {
-      const pnl = (price - +p.avg_entry_price) * +p.qty;
-      const pct = ((price - +p.avg_entry_price) / +p.avg_entry_price) * 100;
+      const _isShort = p.side === 'short';
+      const _qty = Math.abs(+p.qty);
+      const pnl = _isShort ? (+p.avg_entry_price - price) * _qty : (price - +p.avg_entry_price) * _qty;
+      const pct = _isShort ? ((+p.avg_entry_price - price) / +p.avg_entry_price) * 100 : ((price - +p.avg_entry_price) / +p.avg_entry_price) * 100;
       if (el('pos-chart-pnl')) el('pos-chart-pnl').innerHTML =
         `<span style="color:${pnl>=0?'var(--green)':'var(--red)'}">P&L: ${pnl>=0?'+':''}$${pnl.toFixed(2)} (${pct>=0?'+':''}${pct.toFixed(2)}%)</span>` +
-        ` <span style="color:var(--text-muted)">· ${+p.qty} azioni @ $${p.avg_entry_price}</span>`;
+        ` <span style="color:var(--text-muted)">· ${_qty} azioni ${_isShort?'SHORT':''} @ $${p.avg_entry_price}</span>`;
     }
   }, 1000);
 }
