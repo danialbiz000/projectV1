@@ -1669,12 +1669,18 @@ function getSectorForSymbol(sym) {
 }
 
 async function loadATIntelligence() {
+  const tbody = document.getElementById('ai-decisions-tbody');
   try {
-    const data = await secureFetch('/api/autotrader/status').then(r => r.json());
+    const res = await secureFetch('/api/autotrader/status');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
     renderATPerformance(data);
     renderATMercato(data);
-    renderHeatmap(); // populate screener tab
-  } catch(e) { console.error('loadATIntelligence', e); }
+    renderHeatmap();
+  } catch(e) {
+    console.error('loadATIntelligence', e);
+    if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red);text-align:center;padding:20px">Errore caricamento: ${e.message}</td></tr>`;
+  }
 }
 
 function renderATPerformance(data) {
@@ -1699,7 +1705,7 @@ function renderATPerformance(data) {
   const tbody = document.getElementById('ai-decisions-tbody');
   if (tbody) {
     if (!log.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:20px">Nessuna decisione nel log</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:20px">AutoTrader non ha ancora effettuato analisi — attiva l\'AT dalla sezione 🤖 e attendi il primo ciclo.</td></tr>';
     } else {
       const actionColor = { BUY:'var(--green)', SELL:'var(--red)', SHORT:'#e05050', COVER:'var(--blue)', HOLD:'var(--text-muted)', REPLACE:'var(--orange)' };
       tbody.innerHTML = log.slice(0, 30).map(e => {
@@ -1826,7 +1832,7 @@ function renderRischio(positions) {
     totalMV += mv;
     const lp = livePrices[p.symbol] || +p.current_price;
     const isShort = p.side === 'short';
-    const pnl = isShort ? (+p.avg_entry_price - lp) * +p.qty : (lp - +p.avg_entry_price) * +p.qty;
+    const pnl = isShort ? (+p.avg_entry_price - lp) * Math.abs(+p.qty) : (lp - +p.avg_entry_price) * Math.abs(+p.qty);
     totalPnl += pnl;
   });
 
@@ -1863,7 +1869,7 @@ function renderRischio(positions) {
   const pnlData = positions.map(p => {
     const lp = livePrices[p.symbol] || +p.current_price;
     const isShort = p.side === 'short';
-    return isShort ? (+p.avg_entry_price - lp) * +p.qty : (lp - +p.avg_entry_price) * +p.qty;
+    return isShort ? (+p.avg_entry_price - lp) * Math.abs(+p.qty) : (lp - +p.avg_entry_price) * Math.abs(+p.qty);
   });
   if (riskPnlChart) riskPnlChart.destroy();
   const ctx2 = document.getElementById('risk-pnl-chart');
@@ -1884,7 +1890,7 @@ function renderRischio(positions) {
     tbody.innerHTML = positions.map(p => {
       const lp = livePrices[p.symbol] || +p.current_price;
       const isShort = p.side === 'short';
-      const qty = +p.qty;
+      const qty = Math.abs(+p.qty);
       const entry = +p.avg_entry_price;
       const pnlV = isShort ? (entry - lp) * qty : (lp - entry) * qty;
       const pnlP = isShort ? (entry - lp) / entry * 100 : (lp - entry) / entry * 100;
@@ -2203,12 +2209,23 @@ async function initPerfChart() {
   if (titleEl) titleEl.textContent = 'Rendimento Portfolio vs Benchmark — caricamento…';
 
   try {
-    const [histRes, spyRes, aggRes] = await Promise.all([
-      secureFetch('/api/alpaca/portfolio/history?period=6M&timeframe=1D'),
+    // Try progressively shorter periods until we get usable data
+    let hist = null;
+    for (const period of ['6M', '3M', '1M', '1W']) {
+      const r = await secureFetch(`/api/alpaca/portfolio/history?period=${period}&timeframe=1D`);
+      if (!r.ok) continue;
+      const d = await r.json();
+      const eq = d.equity || [];
+      if (eq.filter(v => v !== null && v > 0).length >= 2) { hist = d; break; }
+    }
+    if (!hist) {
+      if (titleEl) titleEl.textContent = 'Rendimento Portfolio — nessuno storico disponibile (account nuovo?)';
+      return;
+    }
+    const [spyRes, aggRes] = await Promise.all([
       secureFetch('/api/alpaca/bars/SPY?timeframe=1Day&limit=200'),
       secureFetch('/api/alpaca/bars/AGG?timeframe=1Day&limit=200'),
     ]);
-    const hist = await histRes.json();
     const spyData = await spyRes.json();
     const aggData = await aggRes.json();
 
@@ -2216,8 +2233,8 @@ async function initPerfChart() {
     const ptEquity = hist.equity || [];
 
     const firstIdx = ptEquity.findIndex(v => v !== null && v > 0);
-    if (firstIdx < 0 || ptEquity.filter(v => v !== null).length < 2) {
-      if (titleEl) titleEl.textContent = 'Rendimento Portfolio — storico non disponibile';
+    if (firstIdx < 0) {
+      if (titleEl) titleEl.textContent = 'Rendimento Portfolio — nessuno storico disponibile';
       return;
     }
 
