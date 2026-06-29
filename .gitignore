@@ -2,4 +2,7 @@
 node_modules/
 package-lock.json
 .claude/
-data/
+/data/
+__pycache__/
+*.pyc
+*.pyo
