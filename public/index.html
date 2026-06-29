@@ -215,6 +215,22 @@ tr:hover td { background: var(--surface2); }
 .heat-cell .score { font-size: 1.2rem; font-weight: 700; }
 .heat-cell .metrics { font-size: 0.7rem; opacity: 0.85; }
 
+/* Dashboard Positions Widget */
+.dash-pos-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 180px 90px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dash-pos-row:last-child { border-bottom: none; }
+.dash-pos-symbol { font-weight: 700; font-size: 0.95rem; }
+.dash-pos-prices { font-size: 0.82rem; display: flex; flex-direction: column; gap: 3px; }
+.dash-pos-pnl { text-align: right; font-weight: 700; font-size: 0.9rem; }
+.dash-pos-pnl small { display: block; font-weight: 400; font-size: 0.75rem; }
+.dash-pos-candle { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+
 /* Watchdog */
 .watchdog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .pair-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
@@ -392,6 +408,17 @@ tr:hover td { background: var(--surface2); }
       <div class="card">
         <div class="card-title">Performance Simulata — Portfolio vs S&P500 vs 60/40 (120 giorni)</div>
         <div class="chart-wrap-lg"><canvas id="chart-perf"></canvas></div>
+      </div>
+
+      <!-- Posizioni Aperte — Dashboard Widget -->
+      <div class="card" id="dash-positions-card" style="margin-top:24px">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Posizioni Aperte <span id="dash-pos-count" style="color:var(--text-muted);font-weight:400;font-size:0.8rem"></span></span>
+          <button class="btn btn-secondary btn-sm" onclick="loadDashboardPositions()" title="Aggiorna">↺</button>
+        </div>
+        <div id="dash-positions-list" style="margin-top:14px">
+          <span style="color:var(--text-muted);font-size:0.85rem">Caricamento posizioni…</span>
+        </div>
       </div>
     </section>
 
@@ -1314,7 +1341,7 @@ function connectWS() {
     try { data = JSON.parse(e.data); } catch(_) { return; }
     if (data.type === 'quote') { livePrices[data.symbol] = data.price; updatePriceDisplays(data.symbol, data.price); }
     if (data.type === 'account') updateAccountKPIs(data.account);
-    if (data.type === 'positions') { updatePositionsTable(data.positions); refreshIntradayCharts(); }
+    if (data.type === 'positions') { updatePositionsTable(data.positions); renderDashboardPositions(data.positions); refreshIntradayCharts(); }
     if (data.type === 'trade_update') handleTradeUpdate(data.order);
     if (data.type === 'autotrader_log') prependAtLogEntry(data.entry);
     if (data.type === 'autotrader_trade') showToast(`🤖 AutoTrader: ${data.action} ${data.symbol}${data.notional ? ' $'+data.notional : data.qty ? ' '+data.qty+' shares' : ''}`, 'success');
@@ -1340,6 +1367,7 @@ function updatePriceDisplays(symbol, price) {
     el.textContent = '$' + (+price).toFixed(2);
   });
   if (currentPositions.length) updatePositionsTable(currentPositions);
+  updateDashPositionPrices();
 
   // Feed live buffer
   if (!liveBuffer[symbol]) liveBuffer[symbol] = [];
@@ -1426,6 +1454,127 @@ function updatePositionsTable(positions) {
       </td>
     </tr>`;
   }).join('');
+  renderDashboardPositions(positions);
+}
+
+// ============================================================
+// DASHBOARD POSITIONS WIDGET
+// ============================================================
+function drawMiniCandles(canvas, bars, entryPrice) {
+  if (!canvas || !bars || !bars.length) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const recent = bars.slice(-30);
+  const allP = recent.flatMap(b => [+b.h, +b.l]);
+  if (entryPrice) allP.push(entryPrice);
+  const lo = Math.min(...allP), hi = Math.max(...allP);
+  const range = hi - lo || 1;
+  const padV = 4, padH = 2;
+  const chartH = H - padV * 2;
+  const toY = p => padV + (1 - (p - lo) / range) * chartH;
+  const spacing = (W - padH * 2) / recent.length;
+  const bw = Math.max(1, spacing - 2);
+  recent.forEach((b, i) => {
+    const x = padH + i * spacing + spacing / 2;
+    const isUp = +b.c >= +b.o;
+    const color = isUp ? '#2ecc71' : '#e74c3c';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, toY(+b.h));
+    ctx.lineTo(x, toY(+b.l));
+    ctx.stroke();
+    ctx.fillStyle = color;
+    const top = Math.min(toY(+b.o), toY(+b.c));
+    const bot = Math.max(toY(+b.o), toY(+b.c));
+    ctx.fillRect(x - bw / 2, top, bw, Math.max(1, bot - top));
+  });
+  if (entryPrice) {
+    const ey = toY(entryPrice);
+    ctx.strokeStyle = '#c8a96e';
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padH, ey);
+    ctx.lineTo(W - padH, ey);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function renderDashboardPositions(positions) {
+  const list = document.getElementById('dash-positions-list');
+  const countEl = document.getElementById('dash-pos-count');
+  if (!list) return;
+  if (!positions || !positions.length) {
+    if (countEl) countEl.textContent = '';
+    list.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem">Nessuna posizione aperta</span>';
+    return;
+  }
+  if (countEl) countEl.textContent = `(${positions.length})`;
+  list.innerHTML = positions.map(p => {
+    const livePrice = livePrices[p.symbol] || +p.current_price;
+    const qty = +p.qty;
+    const entry = +p.avg_entry_price;
+    const isShort = p.side === 'short';
+    const pnlVal = isShort ? (entry - livePrice) * qty : (livePrice - entry) * qty;
+    const pnlPct = isShort ? ((entry - livePrice) / entry) * 100 : ((livePrice - entry) / entry) * 100;
+    const cls = pnlVal >= 0 ? 'var(--green)' : 'var(--red)';
+    const sideBadge = isShort
+      ? `<span style="font-size:0.68rem;padding:1px 5px;background:rgba(231,76,60,0.15);border:1px solid rgba(231,76,60,0.4);border-radius:3px;color:var(--red)">SHORT</span>`
+      : `<span style="font-size:0.68rem;padding:1px 5px;background:rgba(46,204,113,0.12);border:1px solid rgba(46,204,113,0.3);border-radius:3px;color:var(--green)">LONG</span>`;
+    const arrow = livePrice > entry ? '▲' : livePrice < entry ? '▼' : '—';
+    const arrowColor = livePrice >= entry ? 'var(--green)' : 'var(--red)';
+    return `<div class="dash-pos-row">
+      <div class="dash-pos-symbol">
+        <div>${p.symbol} ${sideBadge}</div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">${qty} azioni</div>
+      </div>
+      <div class="dash-pos-prices">
+        <div>Apertura: <b>${fmt$(entry)}</b></div>
+        <div>Live: <b data-dash-price="${p.symbol}" style="color:${arrowColor}">${fmt$(livePrice)}</b> <span style="color:${arrowColor};font-size:0.7rem">${arrow}</span></div>
+      </div>
+      <div>
+        <canvas id="dash-candle-${p.symbol}" width="200" height="60" style="border-radius:4px;background:var(--surface2);display:block"></canvas>
+      </div>
+      <div class="dash-pos-pnl" style="color:${cls}">
+        ${pnlVal >= 0 ? '+' : ''}${fmt$(pnlVal)}
+        <small style="color:${cls}">${fmtPct(pnlPct)}</small>
+        <button class="btn btn-secondary btn-sm" style="margin-top:6px;width:100%" onclick="openPosChart('${p.symbol}')">📊 Live</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Load daily candles for each position
+  positions.forEach(p => loadDashPositionCandle(p.symbol, +p.avg_entry_price));
+}
+
+async function loadDashPositionCandle(symbol, entryPrice) {
+  try {
+    const res = await secureFetch(`/api/alpaca/bars/${symbol}`);
+    const bd = await res.json();
+    const bars = bd.bars?.[symbol] || [];
+    const canvas = document.getElementById(`dash-candle-${symbol}`);
+    if (canvas && bars.length) drawMiniCandles(canvas, bars, entryPrice);
+  } catch (_) {}
+}
+
+async function loadDashboardPositions() {
+  try {
+    const positions = await alpacaAPI('/positions');
+    if (Array.isArray(positions)) renderDashboardPositions(positions);
+  } catch (_) {}
+}
+
+// Update live prices in dashboard position widget
+function updateDashPositionPrices() {
+  const rows = document.querySelectorAll('[data-dash-price]');
+  rows.forEach(el => {
+    const sym = el.getAttribute('data-dash-price');
+    const price = livePrices[sym];
+    if (price != null) el.textContent = fmt$(price);
+  });
 }
 
 // ============================================================
@@ -3049,8 +3198,9 @@ async function init() {
   } catch(_) {}
   try {
     const positions = await alpacaAPI('/positions');
-    if (positions) updatePositionsTable(positions);
+    if (positions) { updatePositionsTable(positions); renderDashboardPositions(positions); }
   } catch(_) {}
+  loadDashboardPositions();
   updateSettingsPanel();
   try {
     const health = await secureFetch('/health').then(r=>r.json());
