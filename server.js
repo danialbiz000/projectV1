@@ -586,7 +586,14 @@ Output ONLY a valid JSON object (no markdown, no explanation, no code fences):
 }
 
 Each item in decisions array:
-{"symbol":"","action":"","outcome":"profitable|losing|neutral|open","pl_pct":null,"analysis":"","lesson":""}
+{"symbol":"","action":"","outcome":"profitable|losing|neutral|open","pl_pct":null,"analysis":"","lesson":"","situation_tags":[]}
+
+situation_tags: 1-5 tags from this exact list that describe the CONTEXT of this trade (not the outcome):
+  Position side: SHORT, LONG, COVER, DRAWDOWN
+  Sector: TECH, ENERGY, FINANCIALS, HEALTHCARE, CONSUMER, INDUSTRIALS, UTILITIES, COMMS, MATERIALS
+  Regime: RISK_ON, RISK_OFF, NEUTRAL_REGIME
+  Technical state: OVERSOLD, OVERBOUGHT, TRENDING_UP, TRENDING_DOWN, HIGH_VOL, NEAR_52W_HIGH, NEAR_52W_LOW
+  Setup: NEW_POSITION, EARNINGS_RISK, SECTOR_ROTATION, MEGA_CAP
 
 Rules:
 - summary: 2-3 sentences covering overall session P&L, market context, and portfolio impact.
@@ -1072,8 +1079,9 @@ const AT = {
   currentRegime: 'NEUTRAL',  // updated each cycle from macro brief
   dailyRecaps: {},        // { 'YYYY-MM-DD': { text, ts, generatedAt } }
   lastRecapDate: '',      // which trading day recap was last generated for
-  patternMemory: [],      // rolling array of global lessons from past EOD recaps (max 20)
-  tradeHistory: {},       // { [symbol]: [{date, action, outcome, pl_pct, lesson}] } max 5 per symbol
+  patternMemory: [],      // chronological flat log of all lessons (full history)
+  tradeHistory: {},       // { [symbol]: [{date, action, outcome, pl_pct, lesson, tags}] }
+  lessonsByTag: {},       // { [tag]: [{date, symbol, lesson}] } — indexed for fast retrieval
 };
 
 function ensureAtDayState() {
@@ -1143,6 +1151,7 @@ function saveAtState() {
       lastRecapDate: AT.lastRecapDate,
       patternMemory: AT.patternMemory,
       tradeHistory: AT.tradeHistory,
+      lessonsByTag: AT.lessonsByTag,
       log: AT.log.slice(0, 100),
     };
     const tmp = `${AT_STATE_FILE}.${process.pid}.tmp`;
@@ -1205,6 +1214,7 @@ function loadAtState() {
     AT.lastRecapDate = state.lastRecapDate || '';
     AT.patternMemory = Array.isArray(state.patternMemory) ? state.patternMemory : [];
     AT.tradeHistory = (state.tradeHistory && typeof state.tradeHistory === 'object') ? state.tradeHistory : {};
+    AT.lessonsByTag = (state.lessonsByTag && typeof state.lessonsByTag === 'object') ? state.lessonsByTag : {};
     AT.log = Array.isArray(state.log) ? state.log.slice(0, 100) : [];
     ensureAtDayState();
   } catch (err) {
@@ -1267,6 +1277,7 @@ function atPublicState() {
     recapDates: Object.keys(AT.dailyRecaps).sort().reverse().slice(0, 30),
     lastRecapDate: AT.lastRecapDate,
     patternMemory: AT.patternMemory,
+    lessonsByTag: AT.lessonsByTag,
     tradeHistorySymbols: Object.keys(AT.tradeHistory),
   };
 }
@@ -1341,6 +1352,81 @@ Based on the above real-time data, return a JSON object (no markdown, no explana
 }
 
 // ─── End-of-Day Recap ─────────────────────────────────────────────────────────
+// Rule-based fallback tagger — used when AI doesn't return situation_tags
+function ruleBasedTags(d, regime, sector) {
+  const tags = new Set();
+  const action = (d.action || '').toUpperCase();
+  if (['SHORT','COVER'].includes(action)) tags.add('SHORT');
+  if (['BUY','ADD'].includes(action)) tags.add('LONG');
+  if (action === 'COVER') tags.add('DRAWDOWN');
+  if (d.outcome === 'losing') tags.add('DRAWDOWN');
+  // Sector
+  const sectorTag = {
+    'Technology': 'TECH', 'Energy': 'ENERGY', 'Financial Services': 'FINANCIALS',
+    'Healthcare': 'HEALTHCARE', 'Consumer Cyclical': 'CONSUMER', 'Consumer Defensive': 'CONSUMER',
+    'Industrials': 'INDUSTRIALS', 'Utilities': 'UTILITIES', 'Communication Services': 'COMMS',
+    'Basic Materials': 'MATERIALS', 'Real Estate': 'REALESTATE',
+  }[sector] || null;
+  if (sectorTag) tags.add(sectorTag);
+  // Regime
+  if (regime === 'RISK-ON') tags.add('RISK_ON');
+  else if (regime === 'RISK-OFF') tags.add('RISK_OFF');
+  else tags.add('NEUTRAL_REGIME');
+  return [...tags];
+}
+
+// Retrieve lessons relevant to a set of situation tags — max maxPerTag per tag, totalMax overall
+function getRelevantLessons(situationTags, maxPerTag = 3, totalMax = 12) {
+  const seen = new Set();
+  const results = [];
+  for (const tag of situationTags) {
+    const entries = (AT.lessonsByTag[tag] || []);
+    // Take the most recent maxPerTag entries for this tag
+    for (const e of entries.slice(-maxPerTag)) {
+      const key = `${e.date}|${e.symbol}|${e.lesson}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(`[${e.date}] ${e.symbol} ${e.action} → ${e.outcome}${e.pl_pct != null ? ' (' + (e.pl_pct >= 0 ? '+' : '') + (+e.pl_pct).toFixed(1) + '%)' : ''}: ${e.lesson}`);
+        if (results.length >= totalMax) return results;
+      }
+    }
+  }
+  return results;
+}
+
+// Compute situation tags from current analysis context
+function computeSituationTags({ sector, regime, rsi, annVol, trend20d, pctFrom52wHigh, pctFrom52wLow, hasPos, isShort, isLong }) {
+  const tags = [];
+  if (isShort) tags.push('SHORT');
+  if (isLong) tags.push('LONG');
+  if (!hasPos) tags.push('NEW_POSITION');
+  // Sector
+  const sectorTag = {
+    'Technology': 'TECH', 'Energy': 'ENERGY', 'Financial Services': 'FINANCIALS',
+    'Healthcare': 'HEALTHCARE', 'Consumer Cyclical': 'CONSUMER', 'Consumer Defensive': 'CONSUMER',
+    'Industrials': 'INDUSTRIALS', 'Utilities': 'UTILITIES', 'Communication Services': 'COMMS',
+    'Basic Materials': 'MATERIALS', 'Real Estate': 'REALESTATE',
+  }[sector] || null;
+  if (sectorTag) tags.push(sectorTag);
+  // Regime
+  if (regime === 'RISK-ON') tags.push('RISK_ON');
+  else if (regime === 'RISK-OFF') tags.push('RISK_OFF');
+  else tags.push('NEUTRAL_REGIME');
+  // Technicals
+  if (rsi != null) {
+    if (rsi < 35) tags.push('OVERSOLD');
+    else if (rsi > 65) tags.push('OVERBOUGHT');
+  }
+  if (trend20d != null) {
+    if (trend20d > 3) tags.push('TRENDING_UP');
+    else if (trend20d < -3) tags.push('TRENDING_DOWN');
+  }
+  if (annVol != null && annVol > 0.35) tags.push('HIGH_VOL');
+  if (pctFrom52wHigh != null && pctFrom52wHigh > -5) tags.push('NEAR_52W_HIGH');
+  if (pctFrom52wLow != null && pctFrom52wLow < 10) tags.push('NEAR_52W_LOW');
+  return tags;
+}
+
 async function generateDailyRecap(anthropicKey, dateKey) {
   const trades = (AT.dailyTradeHistory[dateKey] || []);
   const macroCtx = AT.lastMacroBrief || '{}';
@@ -1407,15 +1493,23 @@ Generate the end-of-day recap JSON as instructed.`;
   const recapKeys = Object.keys(AT.dailyRecaps).sort();
   while (recapKeys.length > 30) delete AT.dailyRecaps[recapKeys.shift()];
 
-  // ── Extract lessons into pattern memory ──────────────────────────────────────
+  // ── Extract lessons → patternMemory (flat log) + lessonsByTag (index) ────────
   const newLessons = [];
   for (const d of (recap.decisions || [])) {
-    if (d.lesson && d.symbol) {
-      newLessons.push(`[${dateKey}] ${d.symbol} ${d.action} → ${d.outcome}${d.pl_pct != null ? ' (' + (d.pl_pct >= 0 ? '+' : '') + d.pl_pct.toFixed(1) + '%)' : ''}: ${d.lesson}`);
-      // Per-symbol history
-      if (!AT.tradeHistory[d.symbol]) AT.tradeHistory[d.symbol] = [];
-      AT.tradeHistory[d.symbol].push({ date: dateKey, action: d.action, outcome: d.outcome, pl_pct: d.pl_pct, lesson: d.lesson });
-      // no limit — keep full per-symbol history
+    if (!d.lesson || !d.symbol) continue;
+    const entry = { date: dateKey, symbol: d.symbol, action: d.action, outcome: d.outcome, pl_pct: d.pl_pct, lesson: d.lesson };
+    const flatLine = `[${dateKey}] ${d.symbol} ${d.action} → ${d.outcome}${d.pl_pct != null ? ' (' + (d.pl_pct >= 0 ? '+' : '') + (+d.pl_pct).toFixed(1) + '%)' : ''}: ${d.lesson}`;
+    newLessons.push(flatLine);
+    // Per-symbol history (unlimited)
+    if (!AT.tradeHistory[d.symbol]) AT.tradeHistory[d.symbol] = [];
+    AT.tradeHistory[d.symbol].push({ ...entry, tags: d.situation_tags || [] });
+    // Tag index — use AI tags if valid, else rule-based fallback
+    const tags = Array.isArray(d.situation_tags) && d.situation_tags.length
+      ? d.situation_tags
+      : ruleBasedTags(d, recap.regime, getSector(d.symbol));
+    for (const tag of tags) {
+      if (!AT.lessonsByTag[tag]) AT.lessonsByTag[tag] = [];
+      AT.lessonsByTag[tag].push(entry);
     }
   }
   if (recap.what_failed) newLessons.push(`[${dateKey}] SESSION FAILURE: ${recap.what_failed}`);
@@ -1605,12 +1699,25 @@ Position side: ${isLongPos ? 'LONG (price fell)' : 'SHORT (price rose against us
 REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brackets.slPct}% | hard stop: -${(brackets.slPct*2.2).toFixed(0)}%
 ${canAdd ? '' : 'NOTE: ADD not available (max 1 ADD already used or insufficient buying power)'}
 Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}${
-  AT.tradeHistory[pos.symbol]?.length
-    ? '\n\nTRADE HISTORY FOR ' + pos.symbol + ' (past mistakes — learn from them):\n' +
-      AT.tradeHistory[pos.symbol].map(h =>
-        `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + h.pl_pct.toFixed(1) + '%)' : ''} | ${h.lesson}`
-      ).join('\n')
-    : ''
+  (() => {
+    const symHist = AT.tradeHistory[pos.symbol];
+    const histBlock = symHist?.length
+      ? '\n\nTRADE HISTORY FOR ' + pos.symbol + ':\n' +
+        symHist.map(h => `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + (+h.pl_pct).toFixed(1) + '%)' : ''} | ${h.lesson}`).join('\n')
+      : '';
+    const reviewTags = computeSituationTags({
+      sector: getSector(pos.symbol), regime: AT.currentRegime, rsi, annVol,
+      trend20d: null, pctFrom52wHigh: null, pctFrom52wLow: null,
+      hasPos: true, isShort: isShortPos, isLong: isLongPos,
+    });
+    reviewTags.push('DRAWDOWN');
+    const reviewLessons = getRelevantLessons(reviewTags);
+    const lessonsBlock = reviewLessons.length
+      ? '\n\nSITUATION-RELEVANT LESSONS [tags: ' + reviewTags.join(', ') + ']:\n' +
+        reviewLessons.map(l => `• ${l}`).join('\n')
+      : '';
+    return histBlock + lessonsBlock;
+  })()
 }`;
 
     let reviewResult = null;
@@ -1900,17 +2007,21 @@ SECTOR ROTATION AVAILABLE: ${sector} is at soft limit (${sectorCount}/${AT.maxPo
 You may use action=REPLACE and replaceSymbol="${weakestInSector.symbol}" to close it (P&L: ${(+(weakestInSector.unrealized_plpc||0)*100).toFixed(1)}%) and open ${symbol} instead.
 Only do this if ${symbol} setup is clearly superior. Otherwise HOLD.` : '';
 
-      // ── Build learned-knowledge blocks ──────────────────────────────────────
+      // ── Build learned-knowledge blocks (RAG: only relevant lessons) ─────────
       const symbolHistory = AT.tradeHistory[symbol]?.length
-        ? `\nTRADE HISTORY FOR ${symbol} (learn from past errors):\n` +
+        ? `\nTRADE HISTORY FOR ${symbol} (past outcomes — learn from these):\n` +
           AT.tradeHistory[symbol].map(h =>
-            `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + h.pl_pct.toFixed(1) + '%)' : ''} | ${h.lesson}`
+            `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + (+h.pl_pct).toFixed(1) + '%)' : ''} | ${h.lesson}`
           ).join('\n')
         : '';
-      const recentLessons = AT.patternMemory;
-      const memoryBlock = recentLessons.length
-        ? `\nPATTERN MEMORY (lessons from past sessions — apply these to current decision):\n` +
-          recentLessons.map(l => `• ${l}`).join('\n')
+      const situationTags = computeSituationTags({
+        sector, regime: AT.currentRegime, rsi, annVol, trend20d,
+        pctFrom52wHigh, pctFrom52wLow, hasPos, isShort, isLong,
+      });
+      const relevantLessons = getRelevantLessons(situationTags);
+      const memoryBlock = relevantLessons.length
+        ? `\nSITUATION-RELEVANT LESSONS [tags: ${situationTags.join(', ')}]:\n` +
+          relevantLessons.map(l => `• ${l}`).join('\n')
         : '';
 
       const prompt = `MACRO CONTEXT:

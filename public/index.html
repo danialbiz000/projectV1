@@ -1751,22 +1751,47 @@ function renderATPerformance(data) {
     });
   }
 
-  // Pattern Memory
+  // Pattern Memory — grouped by tag
   const memList = document.getElementById('pattern-memory-list');
   if (memList) {
-    const lessons = (data.patternMemory || []).slice().reverse();
-    if (!lessons.length) {
+    const byTag = data.lessonsByTag || {};
+    const tags = Object.keys(byTag).filter(t => byTag[t].length > 0).sort((a, b) => byTag[b].length - byTag[a].length);
+    if (!tags.length) {
       memList.innerHTML = '<span style="color:var(--text-muted);font-size:0.82rem">Nessuna lezione disponibile — si accumula dopo il primo resoconto EOD.</span>';
     } else {
-      memList.innerHTML = lessons.map(l => {
-        const isFailure = l.includes('SESSION FAILURE') || l.includes('→ losing');
-        const isSuccess = l.includes('SESSION SUCCESS') || l.includes('→ profitable');
-        const color = isFailure ? 'var(--red)' : isSuccess ? 'var(--green)' : 'var(--gold)';
-        const dot = isFailure ? '🔴' : isSuccess ? '🟢' : '🔵';
-        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 12px;background:var(--surface2);border-radius:6px;border-left:3px solid ${color}">
-          <span style="flex-shrink:0;margin-top:1px">${dot}</span>
-          <span style="font-size:0.81rem;color:var(--text);line-height:1.5">${l}</span>
-        </div>`;
+      const tagColors = {
+        SHORT:'#e05050', LONG:'#2ecc71', DRAWDOWN:'#e74c3c', NEW_POSITION:'#3498db',
+        TECH:'#9b59b6', ENERGY:'#f39c12', FINANCIALS:'#1abc9c', HEALTHCARE:'#2980b9',
+        CONSUMER:'#e67e22', INDUSTRIALS:'#7f8c8d', UTILITIES:'#27ae60', COMMS:'#8e44ad',
+        MATERIALS:'#95a5a6', REALESTATE:'#d35400',
+        RISK_ON:'#2ecc71', RISK_OFF:'#e74c3c', NEUTRAL_REGIME:'#c8a96e',
+        OVERSOLD:'#3498db', OVERBOUGHT:'#e74c3c', TRENDING_UP:'#2ecc71', TRENDING_DOWN:'#e74c3c',
+        HIGH_VOL:'#f39c12', NEAR_52W_HIGH:'#e67e22', NEAR_52W_LOW:'#27ae60',
+        EARNINGS_RISK:'#c0392b', SECTOR_ROTATION:'#8e44ad', MEGA_CAP:'#2c3e50',
+      };
+      memList.innerHTML = tags.map(tag => {
+        const entries = byTag[tag].slice().reverse();
+        const color = tagColors[tag] || 'var(--gold)';
+        const rows = entries.map(e => {
+          const isLoss = e.outcome === 'losing';
+          const isProfit = e.outcome === 'profitable';
+          const dot = isLoss ? '🔴' : isProfit ? '🟢' : '🔵';
+          const plStr = e.pl_pct != null ? ` (${e.pl_pct >= 0 ? '+' : ''}${(+e.pl_pct).toFixed(1)}%)` : '';
+          return `<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)">
+            <span style="flex-shrink:0">${dot}</span>
+            <div style="font-size:0.79rem;line-height:1.45">
+              <span style="color:var(--text-muted)">${e.date} · <b style="color:var(--text)">${e.symbol}</b> ${e.action}${plStr}</span><br>
+              <span style="color:var(--text)">${e.lesson}</span>
+            </div>
+          </div>`;
+        }).join('');
+        return `<details style="margin-bottom:8px">
+          <summary style="cursor:pointer;padding:8px 12px;background:var(--surface2);border-radius:6px;border-left:3px solid ${color};list-style:none;display:flex;justify-content:space-between;align-items:center;font-size:0.83rem;font-weight:600">
+            <span>${tag}</span>
+            <span style="color:var(--text-muted);font-weight:400">${entries.length} lezioni</span>
+          </summary>
+          <div style="padding:4px 12px 0 12px">${rows}</div>
+        </details>`;
       }).join('');
     }
   }
