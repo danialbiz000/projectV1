@@ -1465,7 +1465,7 @@ Generate the end-of-day recap JSON as instructed.`;
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1200, system: EOD_RECAP_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1200, system: EOD_RECAP_PROMPT, messages: [{ role: 'user', content: prompt }] }),
     });
     const d = await res.json();
     let raw = (d.content?.[0]?.text || '').trim();
@@ -1726,7 +1726,7 @@ Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFix
         const res = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, system: POSITION_REVIEW_PROMPT, messages: [{ role: 'user', content: reviewPrompt }] }),
+          body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 250, system: POSITION_REVIEW_PROMPT, messages: [{ role: 'user', content: reviewPrompt }] }),
         });
         const d = await res.json();
         if (d.error) {
@@ -2074,7 +2074,7 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
           const res = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 600, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+            body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 600, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
           });
           const d = await res.json();
           if (d.error) {
