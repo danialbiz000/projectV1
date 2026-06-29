@@ -365,10 +365,9 @@ tr:hover td { background: var(--surface2); }
     <div class="logo">Portfolio Nexus<br><span>× Trading Desk</span></div>
     <nav>
       <a data-section="dashboard" class="active" onclick="showSection('dashboard', this)">📊 Dashboard</a>
-      <a data-section="equity" onclick="showSection('equity', this)">📈 Equity Desk</a>
+      <a data-section="equity" onclick="showSection('equity', this)">🧠 AT Intelligence</a>
       <a data-section="trading" onclick="showSection('trading', this)">⚡ Trading</a>
-      <a data-section="heatmap" onclick="showSection('heatmap', this)">🔥 Heatmap</a>
-      <a data-section="watchdog" onclick="showSection('watchdog', this)">🐕 Watchdog</a>
+      <a data-section="watchdog" onclick="showSection('watchdog', this)">🛡️ Rischio</a>
       <a data-section="autotrader" onclick="showSection('autotrader', this)">🤖 AutoTrader</a>
       <a data-section="screener" onclick="showSection('screener', this)">🔍 Screener</a>
       <a data-section="macro" onclick="showSection('macro', this)">🌍 Macro</a>
@@ -405,8 +404,8 @@ tr:hover td { background: var(--surface2); }
           <div class="chart-wrap"><canvas id="chart-history"></canvas></div>
         </div>
       </div>
-      <div class="card">
-        <div class="card-title">Performance Simulata — Portfolio vs S&P500 vs 60/40 (120 giorni)</div>
+      <div class="card" id="perf-chart-card">
+        <div class="card-title" id="perf-chart-title">Rendimento Portfolio vs Benchmark — caricamento…</div>
         <div class="chart-wrap-lg"><canvas id="chart-perf"></canvas></div>
       </div>
 
@@ -422,9 +421,65 @@ tr:hover td { background: var(--surface2); }
       </div>
     </section>
 
-    <!-- 2. Equity Desk -->
+    <!-- 2. AT Intelligence -->
     <section id="section-equity" class="section">
-      <div id="stocks-grid" class="stocks-grid"></div>
+      <div class="tabs">
+        <div class="tab active" onclick="showTab('equity','performance',this)">📊 Performance AT</div>
+        <div class="tab" onclick="showTab('equity','mercato',this)">🌐 Contesto Mercato</div>
+        <div class="tab" onclick="showTab('equity','screener',this)">🔍 Screener</div>
+      </div>
+
+      <!-- Tab: Performance AT -->
+      <div id="equity-tab-performance" class="tab-content active">
+        <div class="kpi-row" style="margin-bottom:20px">
+          <div class="card"><div class="card-title">Decisioni Totali</div><div class="card-value" id="ai-kpi-total">—</div></div>
+          <div class="card"><div class="card-title">Operazioni Eseguite</div><div class="card-value" id="ai-kpi-executed">—</div></div>
+          <div class="card"><div class="card-title">Hold Rate</div><div class="card-value" id="ai-kpi-hold">—</div></div>
+          <div class="card"><div class="card-title">Confidenza Media</div><div class="card-value" id="ai-kpi-conf">—</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:20px">
+          <div class="card">
+            <div class="card-title">Breakdown Azioni</div>
+            <canvas id="ai-actions-chart" height="220" style="margin-top:12px"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-title">Decisioni Recenti</div>
+            <div class="table-wrap" style="margin-top:12px">
+              <table><thead><tr><th>Ora</th><th>Symbol</th><th>Azione</th><th>Conf.</th><th>Status</th><th>Settore</th></tr></thead>
+              <tbody id="ai-decisions-tbody"><tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:20px">Caricamento…</td></tr></tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab: Contesto Mercato -->
+      <div id="equity-tab-mercato" class="tab-content">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+          <div class="card">
+            <div class="card-title">Regime Macro Attuale</div>
+            <div id="intel-regime-box" style="margin-top:14px;padding:16px;background:var(--surface2);border-radius:8px">
+              <div id="intel-regime-badge" style="font-size:1.1rem;font-weight:700;margin-bottom:8px">—</div>
+              <div id="intel-macro-summary" style="font-size:0.8rem;color:var(--text-muted);line-height:1.6">Caricamento brief…</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Focus Settoriale AT (ultime decisioni)</div>
+            <canvas id="ai-sector-chart" height="200" style="margin-top:12px"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Watchlist AT — Segnali</div>
+          <div id="intel-watchlist-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:14px">
+            <span style="color:var(--text-muted);font-size:0.82rem">Caricamento…</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab: Screener -->
+      <div id="equity-tab-screener" class="tab-content">
+        <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:16px">Score fondamentale composito. Clicca su un titolo per aggiungerlo alla watchlist AT o per l'analisi AI.</p>
+        <div id="heatmap-grid" class="heatmap-grid"></div>
+      </div>
     </section>
 
     <!-- 3. Trading -->
@@ -738,19 +793,45 @@ tr:hover td { background: var(--surface2); }
       </div>
     </section>
 
-    <!-- 4. Heatmap -->
-    <section id="section-heatmap" class="section">
-      <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:16px">Score composito: FCF 25% · P/E 22% · Current Ratio 20% · P/B 18% · Dividendo 15% — click per analisi AI</p>
-      <div id="heatmap-grid" class="heatmap-grid"></div>
-    </section>
+    <!-- 4. Heatmap (hidden — grid moved to AT Intelligence → Screener tab) -->
+    <section id="section-heatmap" class="section" style="display:none!important"></section>
 
-    <!-- 5. Watchdog -->
+    <!-- 5. Rischio Portfolio -->
     <section id="section-watchdog" class="section">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-        <p style="color:var(--text-muted);font-size:0.82rem">Alert se ≥2 metriche sotto 25° percentile o backup supera primario di >15 punti.</p>
-        <button class="btn btn-secondary" onclick="simulateMarket()">📈 Simula Mercato</button>
+      <!-- KPI row -->
+      <div class="kpi-row" style="margin-bottom:20px">
+        <div class="card"><div class="card-title">Posizioni Aperte</div><div class="card-value" id="risk-pos-count">—</div></div>
+        <div class="card"><div class="card-title">Settori Esposti</div><div class="card-value" id="risk-sectors">—</div></div>
+        <div class="card"><div class="card-title">P&L Totale</div><div class="card-value" id="risk-total-pnl">—</div></div>
+        <div class="card"><div class="card-title">Concentrazione Max</div><div class="card-value" id="risk-max-conc">—</div></div>
       </div>
-      <div id="watchdog-grid" class="watchdog-grid"></div>
+
+      <!-- Alert banner -->
+      <div id="risk-alert-banner" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(243,156,18,0.1);border:1px solid rgba(243,156,18,0.4);border-radius:8px;font-size:0.82rem;color:var(--orange)"></div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+        <div class="card">
+          <div class="card-title">Esposizione per Settore</div>
+          <canvas id="risk-sector-chart" height="260" style="margin-top:12px"></canvas>
+          <div id="risk-sector-legend" style="margin-top:10px;font-size:0.75rem;display:flex;flex-wrap:wrap;gap:6px"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">P&L per Posizione</div>
+          <canvas id="risk-pnl-chart" height="260" style="margin-top:12px"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Dettaglio Posizioni — Rischio</div>
+        <div class="table-wrap" style="margin-top:12px">
+          <table><thead><tr>
+            <th>Symbol</th><th>Settore</th><th>Side</th><th>Qty</th>
+            <th>Entry</th><th>Live</th><th>P&L $</th><th>P&L %</th>
+            <th>Stop Loss</th><th>Distanza SL</th><th>Market Value</th>
+          </tr></thead>
+          <tbody id="risk-table-tbody"><tr><td colspan="11" style="color:var(--text-muted);text-align:center;padding:24px">Nessuna posizione aperta</td></tr></tbody></table>
+        </div>
+      </div>
     </section>
 
     <!-- 6. Screener -->
@@ -1064,11 +1145,6 @@ function mkSeeded(n, start, annualReturn, volatility, seed) {
   }
   return arr;
 }
-const CHART_SERIES = {
-  portfolio: mkSeeded(120, 100, 9.4,  10, 42001),
-  sp500:     mkSeeded(120, 100, 11.0, 18, 42002),
-  classic60: mkSeeded(120, 100, 6.5,   7, 42003),
-};
 
 // ============================================================
 // REALTIME CANDLE CHART ENGINE
@@ -1290,8 +1366,8 @@ function resetSession() {
 // NAVIGATION
 // ============================================================
 const SECTION_TITLES = {
-  dashboard:'Dashboard', equity:'Equity Desk', trading:'Trading — Alpaca Live',
-  heatmap:'Heatmap Fondamentali', watchdog:'Watchdog & Backup',
+  dashboard:'Dashboard', equity:'AT Intelligence', trading:'Trading — Alpaca Live',
+  heatmap:'Heatmap Fondamentali', watchdog:'Rischio Portfolio',
   screener:'Screener Aziende', macro:'Macro & Geopolitica',
   chat:'Trading Desk AI', allocator:'Allocatore Budget', settings:'Impostazioni',
   autotrader:'AutoTrader — AI Trading Engine',
@@ -1308,7 +1384,8 @@ function showSection(id, el) {
   if (id === 'settings') updateSettingsPanel();
   if (id === 'macro') loadFX();
   if (id === 'autotrader') loadAutoTraderStatus();
-  if (id === 'equity') subscribeEquityPrices();
+  if (id === 'equity') loadATIntelligence();
+  if (id === 'watchdog') loadRischioPortfolio();
 }
 
 function subscribeEquityPrices() {
@@ -1575,6 +1652,261 @@ function updateDashPositionPrices() {
     const price = livePrices[sym];
     if (price != null) el.textContent = fmt$(price);
   });
+}
+
+// ============================================================
+// AT INTELLIGENCE
+// ============================================================
+let aiActionsChart = null;
+let aiSectorChart = null;
+
+function getSectorForSymbol(sym) {
+  const s = STOCKS.find(x => x.ticker === sym);
+  return s ? s.sector : 'Altro';
+}
+
+async function loadATIntelligence() {
+  try {
+    const data = await secureFetch('/api/autotrader/status').then(r => r.json());
+    renderATPerformance(data);
+    renderATMercato(data);
+    renderHeatmap(); // populate screener tab
+  } catch(e) { console.error('loadATIntelligence', e); }
+}
+
+function renderATPerformance(data) {
+  const log = (data.log || []).filter(e => e.action && !['SKIP','HALTED','MACRO','REGIME'].includes(e.action));
+  const counts = {};
+  let executed = 0, confSum = 0, confN = 0;
+  log.forEach(e => {
+    counts[e.action] = (counts[e.action] || 0) + 1;
+    if (e.executed) executed++;
+    if (e.confidence > 0 && e.action !== 'SYSTEM') { confSum += e.confidence; confN++; }
+  });
+  const total = log.length;
+  const holdRate = total > 0 ? Math.round((counts.HOLD || 0) / total * 100) : null;
+  const avgConf = confN > 0 ? Math.round(confSum / confN * 100) : null;
+  const setEl = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setEl('ai-kpi-total', total || '0');
+  setEl('ai-kpi-executed', executed || '0');
+  setEl('ai-kpi-hold', holdRate != null ? holdRate + '%' : '—');
+  setEl('ai-kpi-conf', avgConf != null ? avgConf + '%' : '—');
+
+  // Decisions table
+  const tbody = document.getElementById('ai-decisions-tbody');
+  if (tbody) {
+    if (!log.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:20px">Nessuna decisione nel log</td></tr>';
+    } else {
+      const actionColor = { BUY:'var(--green)', SELL:'var(--red)', SHORT:'#e05050', COVER:'var(--blue)', HOLD:'var(--text-muted)', REPLACE:'var(--orange)' };
+      tbody.innerHTML = log.slice(0, 30).map(e => {
+        const t = new Date(e.ts).toLocaleTimeString('it-IT', { hour:'2-digit', minute:'2-digit' });
+        const col = actionColor[e.action] || 'var(--text)';
+        const exec = e.executed ? `<span style="color:var(--green)">✓ ${e.executedAction || e.action}</span>` : `<span style="color:var(--text-muted)">—</span>`;
+        const conf = e.confidence > 0 ? `<span style="color:${e.confidence >= 0.8 ? 'var(--green)' : e.confidence >= 0.72 ? 'var(--gold)' : 'var(--text-muted)'}">${(e.confidence*100).toFixed(0)}%</span>` : '—';
+        const sector = e.symbol === 'SYSTEM' ? '' : getSectorForSymbol(e.symbol);
+        return `<tr>
+          <td style="color:var(--text-muted)">${t}</td>
+          <td><b>${e.symbol}</b></td>
+          <td><span style="color:${col};font-weight:700">${e.action}</span></td>
+          <td>${conf}</td>
+          <td>${exec}</td>
+          <td style="color:var(--text-muted);font-size:0.78rem">${sector}</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
+  // Actions breakdown doughnut
+  const actionLabels = ['BUY','SELL','SHORT','COVER','HOLD','REPLACE'];
+  const actionColors = ['#2ecc71','#e74c3c','#c0392b','#3498db','#7a7a8e','#f39c12'];
+  const actionData = actionLabels.map(a => counts[a] || 0);
+  if (aiActionsChart) aiActionsChart.destroy();
+  const ctx = document.getElementById('ai-actions-chart');
+  if (ctx && actionData.some(v => v > 0)) {
+    aiActionsChart = new Chart(ctx, {
+      type: 'doughnut',
+      data: { labels: actionLabels, datasets: [{ data: actionData, backgroundColor: actionColors, borderWidth: 0 }] },
+      options: { plugins: { legend: { position: 'bottom', labels: { color: '#e8e8f0', font: { size: 11 }, boxWidth: 12 } } }, cutout: '60%' },
+    });
+  }
+}
+
+function renderATMercato(data) {
+  // Regime box
+  const regime = data.currentRegime || 'NEUTRAL';
+  const regimeEl = document.getElementById('intel-regime-badge');
+  const regimeColors = { 'RISK-ON':'var(--green)', 'RISK-OFF':'var(--red)', 'NEUTRAL':'var(--gold)' };
+  if (regimeEl) {
+    regimeEl.textContent = regime;
+    regimeEl.style.color = regimeColors[regime] || 'var(--text)';
+  }
+  // Macro summary — extract first 3 sentences from brief
+  const summaryEl = document.getElementById('intel-macro-summary');
+  if (summaryEl && data.lastMacroBrief) {
+    const lines = data.lastMacroBrief.split('\n').filter(l => l.trim() && !l.startsWith('**') && !l.startsWith('#')).slice(0, 5);
+    summaryEl.textContent = lines.join(' ').slice(0, 600) || data.lastMacroBrief.slice(0, 600);
+  }
+
+  // Sector focus from log
+  const log = (data.log || []).filter(e => e.executed && e.symbol && e.symbol !== 'SYSTEM');
+  const sectorCounts = {};
+  log.forEach(e => {
+    const s = getSectorForSymbol(e.symbol);
+    sectorCounts[s] = (sectorCounts[s] || 0) + 1;
+  });
+  const sectorEntries = Object.entries(sectorCounts).sort((a,b) => b[1]-a[1]).slice(0, 8);
+  if (aiSectorChart) aiSectorChart.destroy();
+  const ctx2 = document.getElementById('ai-sector-chart');
+  if (ctx2 && sectorEntries.length) {
+    const palette = ['#c8a96e','#2ecc71','#3498db','#e74c3c','#9b59b6','#f39c12','#1abc9c','#e67e22'];
+    aiSectorChart = new Chart(ctx2, {
+      type: 'bar',
+      data: { labels: sectorEntries.map(e => e[0]), datasets: [{ data: sectorEntries.map(e => e[1]), backgroundColor: palette, borderWidth: 0 }] },
+      options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { ticks: { color:'#7a7a8e' }, grid: { color:'#2a2a35' } }, y: { ticks: { color:'#e8e8f0', font:{ size:11 } }, grid: { display:false } } } },
+    });
+  }
+
+  // Watchlist chips with live price
+  const wlGrid = document.getElementById('intel-watchlist-grid');
+  if (wlGrid && Array.isArray(data.watchlist) && data.watchlist.length) {
+    wlGrid.innerHTML = data.watchlist.map(sym => {
+      const price = livePrices[sym];
+      const sector = getSectorForSymbol(sym);
+      return `<div style="padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;cursor:pointer" onclick="addSymbolToATWatchlist('${sym}',true)">
+        <div style="font-weight:700;font-size:0.9rem">${sym}</div>
+        <div style="font-size:0.72rem;color:var(--text-muted)">${sector}</div>
+        <div style="font-size:0.85rem;color:var(--gold);margin-top:4px">${price ? fmt$(price) : '—'}</div>
+      </div>`;
+    }).join('');
+  }
+}
+
+// ============================================================
+// RISCHIO PORTFOLIO
+// ============================================================
+let riskSectorChart = null;
+let riskPnlChart = null;
+
+async function loadRischioPortfolio() {
+  try {
+    const positions = await alpacaAPI('/positions');
+    renderRischio(positions || []);
+  } catch(e) { renderRischio([]); }
+}
+
+function renderRischio(positions) {
+  const setEl = (id, v, cls) => { const el = document.getElementById(id); if (el) { el.textContent = v; if (cls) el.className = 'card-value ' + cls; } };
+
+  if (!positions.length) {
+    setEl('risk-pos-count', '0');
+    setEl('risk-sectors', '—');
+    setEl('risk-total-pnl', '—');
+    setEl('risk-max-conc', '—');
+    const tb = document.getElementById('risk-table-tbody');
+    if (tb) tb.innerHTML = '<tr><td colspan="11" style="color:var(--text-muted);text-align:center;padding:24px">Nessuna posizione aperta</td></tr>';
+    const banner = document.getElementById('risk-alert-banner');
+    if (banner) banner.style.display = 'none';
+    return;
+  }
+
+  // Compute sector exposure
+  const sectorMap = {};
+  let totalMV = 0;
+  let totalPnl = 0;
+  const atConfig = {}; // will try to get SL from AT state
+
+  positions.forEach(p => {
+    const sector = getSectorForSymbol(p.symbol);
+    const mv = Math.abs(+p.market_value);
+    sectorMap[sector] = (sectorMap[sector] || 0) + mv;
+    totalMV += mv;
+    const lp = livePrices[p.symbol] || +p.current_price;
+    const isShort = p.side === 'short';
+    const pnl = isShort ? (+p.avg_entry_price - lp) * +p.qty : (lp - +p.avg_entry_price) * +p.qty;
+    totalPnl += pnl;
+  });
+
+  const sectors = Object.entries(sectorMap).sort((a,b) => b[1]-a[1]);
+  const maxConc = totalMV > 0 ? sectors[0][1] / totalMV * 100 : 0;
+  const uniqueSectors = sectors.length;
+
+  setEl('risk-pos-count', positions.length);
+  setEl('risk-sectors', uniqueSectors);
+  const pnlCls = totalPnl >= 0 ? 'positive' : 'negative';
+  setEl('risk-total-pnl', (totalPnl >= 0 ? '+' : '') + fmt$(totalPnl), pnlCls);
+  setEl('risk-max-conc', maxConc.toFixed(0) + '%', maxConc > 40 ? 'negative' : maxConc > 30 ? '' : 'positive');
+
+  // Concentration alert
+  const banner = document.getElementById('risk-alert-banner');
+  const alerts = [];
+  if (maxConc > 50) alerts.push(`⚠️ Concentrazione elevata: ${sectors[0][0]} rappresenta il ${maxConc.toFixed(0)}% del portafoglio.`);
+  if (positions.length === 1) alerts.push('⚠️ Portfolio non diversificato — singola posizione.');
+  if (banner) { banner.style.display = alerts.length ? '' : 'none'; banner.textContent = alerts.join(' '); }
+
+  // Sector doughnut
+  const palette = ['#c8a96e','#2ecc71','#3498db','#e74c3c','#9b59b6','#f39c12','#1abc9c','#e67e22','#7a7a8e'];
+  if (riskSectorChart) riskSectorChart.destroy();
+  const ctx1 = document.getElementById('risk-sector-chart');
+  if (ctx1) {
+    riskSectorChart = new Chart(ctx1, {
+      type: 'doughnut',
+      data: { labels: sectors.map(s => s[0]), datasets: [{ data: sectors.map(s => s[1].toFixed(0)), backgroundColor: palette.slice(0, sectors.length), borderWidth: 0 }] },
+      options: { plugins: { legend: { position: 'bottom', labels: { color: '#e8e8f0', font: { size: 11 }, boxWidth: 12 } }, tooltip: { callbacks: { label: ctx => { const pct = totalMV > 0 ? (ctx.raw / totalMV * 100).toFixed(1) : 0; return ` ${ctx.label}: ${pct}% (${fmt$(ctx.raw)})`; } } } }, cutout: '55%' },
+    });
+  }
+
+  // P&L bar chart
+  const pnlData = positions.map(p => {
+    const lp = livePrices[p.symbol] || +p.current_price;
+    const isShort = p.side === 'short';
+    return isShort ? (+p.avg_entry_price - lp) * +p.qty : (lp - +p.avg_entry_price) * +p.qty;
+  });
+  if (riskPnlChart) riskPnlChart.destroy();
+  const ctx2 = document.getElementById('risk-pnl-chart');
+  if (ctx2) {
+    riskPnlChart = new Chart(ctx2, {
+      type: 'bar',
+      data: {
+        labels: positions.map(p => p.symbol),
+        datasets: [{ data: pnlData.map(v => +v.toFixed(2)), backgroundColor: pnlData.map(v => v >= 0 ? 'rgba(46,204,113,0.7)' : 'rgba(231,76,60,0.7)'), borderWidth: 0 }],
+      },
+      options: { plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` P&L: ${ctx.raw >= 0 ? '+' : ''}$${ctx.raw.toFixed(2)}` } } }, scales: { x: { ticks: { color:'#e8e8f0' }, grid: { display:false } }, y: { ticks: { color:'#7a7a8e', callback: v => '$'+v }, grid: { color:'#2a2a35' } } } },
+    });
+  }
+
+  // Detail table
+  const tbody = document.getElementById('risk-table-tbody');
+  if (tbody) {
+    tbody.innerHTML = positions.map(p => {
+      const lp = livePrices[p.symbol] || +p.current_price;
+      const isShort = p.side === 'short';
+      const qty = +p.qty;
+      const entry = +p.avg_entry_price;
+      const pnlV = isShort ? (entry - lp) * qty : (lp - entry) * qty;
+      const pnlP = isShort ? (entry - lp) / entry * 100 : (lp - entry) / entry * 100;
+      const cls = pnlV >= 0 ? 'positive' : 'negative';
+      const sector = getSectorForSymbol(p.symbol);
+      // SL from AT config — estimate from position side
+      const slPct = isShort ? 8 : 8; // default, could read from AT state
+      const slPrice = isShort ? entry * (1 + slPct/100) : entry * (1 - slPct/100);
+      const distSL = isShort ? (slPrice - lp) / lp * 100 : (lp - slPrice) / slPrice * 100;
+      const distCls = distSL < 30 ? 'style="color:var(--red)"' : distSL < 60 ? 'style="color:var(--orange)"' : '';
+      return `<tr>
+        <td><b>${p.symbol}</b></td>
+        <td style="color:var(--text-muted);font-size:0.78rem">${sector}</td>
+        <td>${isShort ? '<span style="color:var(--red)">SHORT</span>' : '<span style="color:var(--green)">LONG</span>'}</td>
+        <td>${qty}</td>
+        <td>${fmt$(entry)}</td>
+        <td data-price="${p.symbol}">${fmt$(lp)}</td>
+        <td class="${cls}">${pnlV >= 0?'+':''}${fmt$(pnlV)}</td>
+        <td class="${cls}">${fmtPct(pnlP)}</td>
+        <td style="color:var(--text-muted)">${fmt$(slPrice)}</td>
+        <td ${distCls}>${distSL > 0 ? '+' : ''}${distSL.toFixed(1)}%</td>
+        <td>${fmt$(Math.abs(+p.market_value))}</td>
+      </tr>`;
+    }).join('');
+  }
 }
 
 // ============================================================
@@ -1860,23 +2192,75 @@ async function initHistoryChart() {
   } catch(_) {}
 }
 
-function initPerfChart() {
+async function initPerfChart() {
   destroyChart('perf');
   const ctx = document.getElementById('chart-perf');
   if (!ctx) return;
-  const labels = Array.from({length:120}, (_,i) => `D-${119-i}`);
-  charts['perf'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label:'Portfolio Nexus', data: CHART_SERIES.portfolio, borderColor:'#c8a96e', borderWidth:2, pointRadius:0, tension:0.3 },
-        { label:'S&P 500', data: CHART_SERIES.sp500, borderColor:'#3498db', borderWidth:1.5, pointRadius:0, tension:0.3 },
-        { label:'60/40', data: CHART_SERIES.classic60, borderColor:'#7a7a8e', borderWidth:1.5, pointRadius:0, tension:0.3, borderDash:[4,4] },
-      ],
-    },
-    options: { ...CHART_DEFAULTS, scales: { x: { ticks:{color:TICK_COLOR,maxTicksLimit:8}, grid:{color:GRID_COLOR} }, y: { ticks:{color:TICK_COLOR}, grid:{color:GRID_COLOR} } } },
-  });
+  const titleEl = document.getElementById('perf-chart-title');
+  if (titleEl) titleEl.textContent = 'Rendimento Portfolio vs Benchmark — caricamento…';
+
+  try {
+    const [histRes, spyRes, aggRes] = await Promise.all([
+      secureFetch('/api/alpaca/portfolio/history?period=6M&timeframe=1D'),
+      secureFetch('/api/alpaca/bars/SPY?timeframe=1Day&limit=200'),
+      secureFetch('/api/alpaca/bars/AGG?timeframe=1Day&limit=200'),
+    ]);
+    const hist = await histRes.json();
+    const spyData = await spyRes.json();
+    const aggData = await aggRes.json();
+
+    const ptStamps = (hist.timestamp || []).map(ts => new Date(ts * 1000).toISOString().slice(0, 10));
+    const ptEquity = hist.equity || [];
+
+    const firstIdx = ptEquity.findIndex(v => v !== null && v > 0);
+    if (firstIdx < 0 || ptEquity.filter(v => v !== null).length < 2) {
+      if (titleEl) titleEl.textContent = 'Rendimento Portfolio — storico non disponibile';
+      return;
+    }
+
+    const ptBase = ptEquity[firstIdx];
+    const ptNorm = ptEquity.map(v => v !== null ? +((v / ptBase * 100).toFixed(3)) : null);
+
+    const spyMap = {};
+    for (const b of (spyData.bars || [])) spyMap[b.t.slice(0, 10)] = b.c;
+    const aggMap = {};
+    for (const b of (aggData.bars || [])) aggMap[b.t.slice(0, 10)] = b.c;
+
+    let spyBase = null, aggBase = null;
+    const spyNorm = [], mixed6040 = [];
+
+    for (const dt of ptStamps) {
+      const sc = spyMap[dt];
+      const ac = aggMap[dt];
+      if (sc != null && spyBase === null) spyBase = sc;
+      if (ac != null && aggBase === null) aggBase = ac;
+      const sv = sc != null && spyBase ? +((sc / spyBase * 100).toFixed(3)) : null;
+      const av = ac != null && aggBase ? +((ac / aggBase * 100).toFixed(3)) : null;
+      spyNorm.push(sv);
+      mixed6040.push(sv !== null && av !== null ? +((0.6 * sv + 0.4 * av).toFixed(3)) : null);
+    }
+
+    const start = ptStamps[firstIdx];
+    const end = ptStamps[ptStamps.length - 1];
+    if (titleEl) titleEl.textContent = `Rendimento Portfolio vs Benchmark — ${start} → ${end} (base 100)`;
+
+    charts['perf'] = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: ptStamps,
+        datasets: [
+          { label: 'Portfolio Nexus', data: ptNorm, borderColor: '#c8a96e', borderWidth: 2, pointRadius: 0, tension: 0.3, spanGaps: true },
+          { label: 'S&P 500 (SPY)', data: spyNorm, borderColor: '#3498db', borderWidth: 1.5, pointRadius: 0, tension: 0.3, spanGaps: true },
+          { label: '60/40 (SPY+AGG)', data: mixed6040, borderColor: '#7a7a8e', borderWidth: 1.5, pointRadius: 0, tension: 0.3, borderDash: [4, 4], spanGaps: true },
+        ],
+      },
+      options: { ...CHART_DEFAULTS, scales: { x: { ticks:{color:TICK_COLOR,maxTicksLimit:8}, grid:{color:GRID_COLOR} }, y: { ticks:{color:TICK_COLOR, callback: v => v?.toFixed(1)}, grid:{color:GRID_COLOR} } } },
+    });
+
+  } catch (e) {
+    console.error('initPerfChart', e);
+    if (titleEl) titleEl.textContent = 'Rendimento Portfolio — errore nel caricamento dati';
+  }
 }
 
 // ============================================================
