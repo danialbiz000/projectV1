@@ -1509,7 +1509,8 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     let lastPrice = +pos.current_price || +pos.avg_entry_price;
     try {
       const qs = dailyBarsParams(365, 300);
-      const bd = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
+      const bRes = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
+      const bd = await bRes.json();
       if (Array.isArray(bd.bars) && bd.bars.length) {
         closes = bd.bars.map(b => b.c);
         lastPrice = closes[closes.length - 1] || lastPrice;
@@ -1582,15 +1583,34 @@ REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brac
 ${canAdd ? '' : 'NOTE: ADD not available (max 1 ADD already used or insufficient buying power)'}
 Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}`;
 
+    let reviewResult = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, system: POSITION_REVIEW_PROMPT, messages: [{ role: 'user', content: reviewPrompt }] }),
+        });
+        const d = await res.json();
+        if (d.error) {
+          const retryable = d.error.type === 'overloaded_error' || d.error.type === 'rate_limit_error' || res.status === 529 || res.status === 429;
+          if (retryable && attempt < 3) { await new Promise(r => setTimeout(r, attempt * 8000)); continue; }
+          throw new Error(`Anthropic API error: ${d.error.message || d.error.type}`);
+        }
+        let raw = (d.content?.[0]?.text || '{}').trim().replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+        reviewResult = JSON.parse(raw);
+        break;
+      } catch (e) {
+        if (attempt >= 3) {
+          atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: 'Review AI error: ' + e.message, executed: false });
+        } else {
+          await new Promise(r => setTimeout(r, attempt * 4000));
+        }
+      }
+    }
+    if (!reviewResult) continue;
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, system: POSITION_REVIEW_PROMPT, messages: [{ role: 'user', content: reviewPrompt }] }),
-      });
-      const d = await res.json();
-      let raw = (d.content?.[0]?.text || '{}').trim().replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
-      const review = JSON.parse(raw);
+      const review = reviewResult;
       const { action: rAction, confidence: rConf, reasoning: rReason, addNotional } = review;
 
       AT.lastReviewDate[pos.symbol] = todayDate;
@@ -1893,21 +1913,37 @@ buyingPower: $${buyingPower.toFixed(0)} | allowShort: ${AT.allowShort}
 ${replaceBlock}`;
 
       let decision;
-      try {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 600, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
-        });
-        const d = await res.json();
-        let raw = (d.content?.[0]?.text || '{}').trim();
-        if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
-        decision = JSON.parse(raw);
-      } catch (e) {
-        atLog({ symbol, action: 'ERROR', confidence: 0, reasoning: 'AI parse error: ' + e.message, executed: false });
-        await new Promise(r => setTimeout(r, 1000));
-        continue;
+      let aiAttempt = 0;
+      while (aiAttempt < 3) {
+        aiAttempt++;
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 600, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+          });
+          const d = await res.json();
+          if (d.error) {
+            const errType = d.error.type || '';
+            const retryable = errType === 'overloaded_error' || errType === 'rate_limit_error' || res.status === 529 || res.status === 429;
+            if (retryable && aiAttempt < 3) {
+              await new Promise(r => setTimeout(r, aiAttempt * 8000));
+              continue;
+            }
+            throw new Error(`Anthropic API error: ${d.error.message || errType}`);
+          }
+          let raw = (d.content?.[0]?.text || '{}').trim();
+          if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+          decision = JSON.parse(raw);
+          break;
+        } catch (e) {
+          if (aiAttempt >= 3) {
+            atLog({ symbol, action: 'ERROR', confidence: 0, reasoning: 'AI error: ' + e.message, executed: false });
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        }
       }
+      if (!decision) continue;
 
       const { action, confidence, reasoning, suggestedNotional, replaceSymbol } = decision;
       const logEntry = { symbol, action, confidence, reasoning, suggestedNotional, executed: false };
