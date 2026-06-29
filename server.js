@@ -1266,7 +1266,7 @@ function atPublicState() {
     regimeConfig: REGIME_CONFIG[AT.currentRegime] || REGIME_CONFIG['NEUTRAL'],
     recapDates: Object.keys(AT.dailyRecaps).sort().reverse().slice(0, 30),
     lastRecapDate: AT.lastRecapDate,
-    patternMemory: AT.patternMemory.slice(-20),
+    patternMemory: AT.patternMemory,
     tradeHistorySymbols: Object.keys(AT.tradeHistory),
   };
 }
@@ -1415,12 +1415,12 @@ Generate the end-of-day recap JSON as instructed.`;
       // Per-symbol history
       if (!AT.tradeHistory[d.symbol]) AT.tradeHistory[d.symbol] = [];
       AT.tradeHistory[d.symbol].push({ date: dateKey, action: d.action, outcome: d.outcome, pl_pct: d.pl_pct, lesson: d.lesson });
-      AT.tradeHistory[d.symbol] = AT.tradeHistory[d.symbol].slice(-5);
+      // no limit — keep full per-symbol history
     }
   }
   if (recap.what_failed) newLessons.push(`[${dateKey}] SESSION FAILURE: ${recap.what_failed}`);
   if (recap.what_worked) newLessons.push(`[${dateKey}] SESSION SUCCESS: ${recap.what_worked}`);
-  AT.patternMemory = [...AT.patternMemory, ...newLessons].slice(-20);
+  AT.patternMemory = [...AT.patternMemory, ...newLessons];
   saveAtState();
 
   broadcast({ type: 'autotrader_recap', date: dateKey, recap, ts: Date.now() });
@@ -1907,7 +1907,7 @@ Only do this if ${symbol} setup is clearly superior. Otherwise HOLD.` : '';
             `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + h.pl_pct.toFixed(1) + '%)' : ''} | ${h.lesson}`
           ).join('\n')
         : '';
-      const recentLessons = AT.patternMemory.slice(-8);
+      const recentLessons = AT.patternMemory;
       const memoryBlock = recentLessons.length
         ? `\nPATTERN MEMORY (lessons from past sessions — apply these to current decision):\n` +
           recentLessons.map(l => `• ${l}`).join('\n')
