@@ -1072,6 +1072,8 @@ const AT = {
   currentRegime: 'NEUTRAL',  // updated each cycle from macro brief
   dailyRecaps: {},        // { 'YYYY-MM-DD': { text, ts, generatedAt } }
   lastRecapDate: '',      // which trading day recap was last generated for
+  patternMemory: [],      // rolling array of global lessons from past EOD recaps (max 20)
+  tradeHistory: {},       // { [symbol]: [{date, action, outcome, pl_pct, lesson}] } max 5 per symbol
 };
 
 function ensureAtDayState() {
@@ -1139,6 +1141,8 @@ function saveAtState() {
       lastMacroTs: AT.lastMacroTs,
       dailyRecaps: AT.dailyRecaps,
       lastRecapDate: AT.lastRecapDate,
+      patternMemory: AT.patternMemory,
+      tradeHistory: AT.tradeHistory,
       log: AT.log.slice(0, 100),
     };
     const tmp = `${AT_STATE_FILE}.${process.pid}.tmp`;
@@ -1199,6 +1203,8 @@ function loadAtState() {
     AT.lastMacroTs = state.lastMacroTs || null;
     AT.dailyRecaps = (state.dailyRecaps && typeof state.dailyRecaps === 'object') ? state.dailyRecaps : {};
     AT.lastRecapDate = state.lastRecapDate || '';
+    AT.patternMemory = Array.isArray(state.patternMemory) ? state.patternMemory : [];
+    AT.tradeHistory = (state.tradeHistory && typeof state.tradeHistory === 'object') ? state.tradeHistory : {};
     AT.log = Array.isArray(state.log) ? state.log.slice(0, 100) : [];
     ensureAtDayState();
   } catch (err) {
@@ -1260,6 +1266,8 @@ function atPublicState() {
     regimeConfig: REGIME_CONFIG[AT.currentRegime] || REGIME_CONFIG['NEUTRAL'],
     recapDates: Object.keys(AT.dailyRecaps).sort().reverse().slice(0, 30),
     lastRecapDate: AT.lastRecapDate,
+    patternMemory: AT.patternMemory.slice(-20),
+    tradeHistorySymbols: Object.keys(AT.tradeHistory),
   };
 }
 
@@ -1398,6 +1406,21 @@ Generate the end-of-day recap JSON as instructed.`;
   // Keep only last 30 days of recaps
   const recapKeys = Object.keys(AT.dailyRecaps).sort();
   while (recapKeys.length > 30) delete AT.dailyRecaps[recapKeys.shift()];
+
+  // ── Extract lessons into pattern memory ──────────────────────────────────────
+  const newLessons = [];
+  for (const d of (recap.decisions || [])) {
+    if (d.lesson && d.symbol) {
+      newLessons.push(`[${dateKey}] ${d.symbol} ${d.action} → ${d.outcome}${d.pl_pct != null ? ' (' + (d.pl_pct >= 0 ? '+' : '') + d.pl_pct.toFixed(1) + '%)' : ''}: ${d.lesson}`);
+      // Per-symbol history
+      if (!AT.tradeHistory[d.symbol]) AT.tradeHistory[d.symbol] = [];
+      AT.tradeHistory[d.symbol].push({ date: dateKey, action: d.action, outcome: d.outcome, pl_pct: d.pl_pct, lesson: d.lesson });
+      AT.tradeHistory[d.symbol] = AT.tradeHistory[d.symbol].slice(-5);
+    }
+  }
+  if (recap.what_failed) newLessons.push(`[${dateKey}] SESSION FAILURE: ${recap.what_failed}`);
+  if (recap.what_worked) newLessons.push(`[${dateKey}] SESSION SUCCESS: ${recap.what_worked}`);
+  AT.patternMemory = [...AT.patternMemory, ...newLessons].slice(-20);
   saveAtState();
 
   broadcast({ type: 'autotrader_recap', date: dateKey, recap, ts: Date.now() });
@@ -1581,7 +1604,14 @@ ATM call delta: ${bs ? bs.callDelta : '?'}
 Position side: ${isLongPos ? 'LONG (price fell)' : 'SHORT (price rose against us)'}
 REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brackets.slPct}% | hard stop: -${(brackets.slPct*2.2).toFixed(0)}%
 ${canAdd ? '' : 'NOTE: ADD not available (max 1 ADD already used or insufficient buying power)'}
-Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}`;
+Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}${
+  AT.tradeHistory[pos.symbol]?.length
+    ? '\n\nTRADE HISTORY FOR ' + pos.symbol + ' (past mistakes — learn from them):\n' +
+      AT.tradeHistory[pos.symbol].map(h =>
+        `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + h.pl_pct.toFixed(1) + '%)' : ''} | ${h.lesson}`
+      ).join('\n')
+    : ''
+}`;
 
     let reviewResult = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1870,6 +1900,19 @@ SECTOR ROTATION AVAILABLE: ${sector} is at soft limit (${sectorCount}/${AT.maxPo
 You may use action=REPLACE and replaceSymbol="${weakestInSector.symbol}" to close it (P&L: ${(+(weakestInSector.unrealized_plpc||0)*100).toFixed(1)}%) and open ${symbol} instead.
 Only do this if ${symbol} setup is clearly superior. Otherwise HOLD.` : '';
 
+      // ── Build learned-knowledge blocks ──────────────────────────────────────
+      const symbolHistory = AT.tradeHistory[symbol]?.length
+        ? `\nTRADE HISTORY FOR ${symbol} (learn from past errors):\n` +
+          AT.tradeHistory[symbol].map(h =>
+            `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + h.pl_pct.toFixed(1) + '%)' : ''} | ${h.lesson}`
+          ).join('\n')
+        : '';
+      const recentLessons = AT.patternMemory.slice(-8);
+      const memoryBlock = recentLessons.length
+        ? `\nPATTERN MEMORY (lessons from past sessions — apply these to current decision):\n` +
+          recentLessons.map(l => `• ${l}`).join('\n')
+        : '';
+
       const prompt = `MACRO CONTEXT:
 ${macroBrief}
 FX: ${fxStr}
@@ -1910,7 +1953,7 @@ sectorExposure: ${sectorSummary}
 ${sector} positions: ${sectorCount} (soft guideline: ${AT.maxPositionsPerSector}/sector)
 maxBudgetForThisTrade: $${maxBudget.toFixed(0)} (${AT.maxPositionPct}% of $${equity.toFixed(0)} equity, vol-adjusted)
 buyingPower: $${buyingPower.toFixed(0)} | allowShort: ${AT.allowShort}
-${replaceBlock}`;
+${replaceBlock}${symbolHistory}${memoryBlock}`;
 
       let decision;
       let aiAttempt = 0;

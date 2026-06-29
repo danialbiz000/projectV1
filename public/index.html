@@ -450,6 +450,17 @@ tr:hover td { background: var(--surface2); }
             </div>
           </div>
         </div>
+
+        <!-- Pattern Memory card -->
+        <div class="card" style="margin-top:20px" id="pattern-memory-card">
+          <div class="card-title" style="display:flex;align-items:center;gap:10px">
+            🧠 Memoria AT — Lezioni Apprese
+            <span style="font-size:0.72rem;color:var(--text-muted);font-weight:400">Estratta dai resoconti EOD — usata dal modello ad ogni ciclo di analisi</span>
+          </div>
+          <div id="pattern-memory-list" style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
+            <span style="color:var(--text-muted);font-size:0.82rem">Nessuna lezione disponibile — si accumula dopo il primo resoconto EOD.</span>
+          </div>
+        </div>
       </div>
 
       <!-- Tab: Contesto Mercato -->
@@ -1738,6 +1749,26 @@ function renderATPerformance(data) {
       data: { labels: actionLabels, datasets: [{ data: actionData, backgroundColor: actionColors, borderWidth: 0 }] },
       options: { plugins: { legend: { position: 'bottom', labels: { color: '#e8e8f0', font: { size: 11 }, boxWidth: 12 } } }, cutout: '60%' },
     });
+  }
+
+  // Pattern Memory
+  const memList = document.getElementById('pattern-memory-list');
+  if (memList) {
+    const lessons = (data.patternMemory || []).slice().reverse();
+    if (!lessons.length) {
+      memList.innerHTML = '<span style="color:var(--text-muted);font-size:0.82rem">Nessuna lezione disponibile — si accumula dopo il primo resoconto EOD.</span>';
+    } else {
+      memList.innerHTML = lessons.map(l => {
+        const isFailure = l.includes('SESSION FAILURE') || l.includes('→ losing');
+        const isSuccess = l.includes('SESSION SUCCESS') || l.includes('→ profitable');
+        const color = isFailure ? 'var(--red)' : isSuccess ? 'var(--green)' : 'var(--gold)';
+        const dot = isFailure ? '🔴' : isSuccess ? '🟢' : '🔵';
+        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 12px;background:var(--surface2);border-radius:6px;border-left:3px solid ${color}">
+          <span style="flex-shrink:0;margin-top:1px">${dot}</span>
+          <span style="font-size:0.81rem;color:var(--text);line-height:1.5">${l}</span>
+        </div>`;
+      }).join('');
+    }
   }
 }
 
