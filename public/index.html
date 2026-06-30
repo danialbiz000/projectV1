@@ -427,6 +427,7 @@ tr:hover td { background: var(--surface2); }
         <div class="tab active" onclick="showTab('equity','performance',this)">📊 Performance AT</div>
         <div class="tab" onclick="showTab('equity','mercato',this)">🌐 Contesto Mercato</div>
         <div class="tab" onclick="showTab('equity','screener',this)">🔍 Screener</div>
+        <div class="tab" onclick="showTab('equity','options',this)">📈 Opzioni</div>
       </div>
 
       <!-- Tab: Performance AT -->
@@ -490,6 +491,55 @@ tr:hover td { background: var(--surface2); }
       <div id="equity-tab-screener" class="tab-content">
         <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:16px">Score fondamentale composito. Clicca su un titolo per aggiungerlo alla watchlist AT o per l'analisi AI.</p>
         <div id="heatmap-grid" class="heatmap-grid"></div>
+      </div>
+
+      <!-- Tab: Opzioni -->
+      <div id="equity-tab-options" class="tab-content">
+        <div class="kpi-row" style="margin-bottom:20px">
+          <div class="card"><div class="card-title">Stato Modulo</div><div class="card-value" id="opt-status">—</div></div>
+          <div class="card"><div class="card-title">Opzioni Attive</div><div class="card-value" id="opt-active-count">0</div></div>
+          <div class="card"><div class="card-title">Strategia</div><div class="card-value" style="font-size:0.85rem">CSP + Covered Call</div></div>
+          <div class="card"><div class="card-title">Eseguito Oggi</div><div class="card-value" id="opt-today-count">0</div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+          <!-- Active options positions -->
+          <div class="card">
+            <div class="card-title">Opzioni Attive</div>
+            <div class="table-wrap" style="margin-top:12px">
+              <table>
+                <thead><tr><th>Sottostante</th><th>Tipo</th><th>Strike</th><th>Scad.</th><th>Contratti</th><th>Premium</th><th>Aperto</th><th>Azioni</th></tr></thead>
+                <tbody id="opt-active-tbody"><tr><td colspan="8" style="color:var(--text-muted);text-align:center;padding:16px">Nessuna opzione attiva</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Strategy guide -->
+          <div class="card">
+            <div class="card-title">Guida Strategie</div>
+            <div style="margin-top:12px;font-size:0.82rem;line-height:1.7;color:var(--text-muted)">
+              <p><strong style="color:var(--text)">💰 Cash-Secured Put (CSP)</strong><br>
+              Vendi una put OTM (Δ~0.30) incassando un premio. Se il titolo rimane sopra lo strike alla scadenza incassi tutto. Se scende, acquisti le azioni al prezzo che avevi scelto (con sconto del premio). Richiede liquidità = strike × 100 per contratto come collaterale.</p>
+              <p style="margin-top:10px"><strong style="color:var(--text)">📋 Covered Call</strong><br>
+              Sulle posizioni long con P&L > 2%, vendi una call OTM (Δ~0.30) sopra il prezzo medio di carico. Incassi il premio limitando il potenziale upside allo strike. Ideale in regime laterale o dopo un rally.</p>
+              <p style="margin-top:10px"><strong style="color:var(--text)">🦅 Iron Condor</strong><br>
+              Vendi contemporaneamente una put OTM e una call OTM, poi compra protezione ancora più OTM su entrambi i lati. Profitti se il prezzo rimane in un range. Massimo profitto = credito netto incassato. Rischio limitato alla larghezza del wing meno il credito.</p>
+              <p style="margin-top:10px;padding:8px;background:rgba(245,158,11,0.1);border-radius:6px;border-left:3px solid #f59e0b;color:var(--text)">
+                ⚠️ Le opzioni girano automaticamente solo se <code>NEXUS_OPTIONS_ENABLED=true</code> nell'ambiente.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Options log -->
+        <div class="card">
+          <div class="card-title">Log Opzioni</div>
+          <div class="table-wrap" style="margin-top:12px">
+            <table>
+              <thead><tr><th>Ora</th><th>Messaggio</th><th>Dati</th></tr></thead>
+              <tbody id="opt-log-tbody"><tr><td colspan="3" style="color:var(--text-muted);text-align:center;padding:16px">Nessuna attività registrata</td></tr></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1687,6 +1737,7 @@ async function loadATIntelligence() {
     const data = await res.json();
     renderATPerformance(data);
     renderATMercato(data);
+    renderOptionsTab(data);
     renderHeatmap();
   } catch(e) {
     console.error('loadATIntelligence', e);
@@ -1795,6 +1846,78 @@ function renderATPerformance(data) {
       }).join('');
     }
   }
+}
+
+function renderOptionsTab(data) {
+  const enabled = data.optionsEnabled;
+  const statusEl = document.getElementById('opt-status');
+  if (statusEl) {
+    statusEl.textContent = enabled ? 'ATTIVO' : 'DISATTIVO';
+    statusEl.style.color = enabled ? 'var(--green)' : 'var(--text-muted)';
+  }
+
+  const activeOptions = data.activeOptions || {};
+  const activeKeys = Object.keys(activeOptions);
+  const setEl = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setEl('opt-active-count', activeKeys.length);
+
+  // Active options table
+  const activeTbody = document.getElementById('opt-active-tbody');
+  if (activeTbody) {
+    if (!activeKeys.length) {
+      activeTbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-muted);text-align:center;padding:16px">Nessuna opzione attiva</td></tr>';
+    } else {
+      activeTbody.innerHTML = activeKeys.map(sym => {
+        const o = activeOptions[sym];
+        const typeColor = o.type === 'cash_secured_put' ? '#3498db' : '#2ecc71';
+        const typeLabel = o.type === 'cash_secured_put' ? 'CSP' : 'Covered Call';
+        return `<tr>
+          <td><b>${sym}</b></td>
+          <td><span style="color:${typeColor};font-weight:600">${typeLabel}</span></td>
+          <td>$${o.strike}</td>
+          <td style="color:var(--text-muted)">${o.expiration}</td>
+          <td>${o.qty}</td>
+          <td style="color:var(--gold)">$${(+o.premium).toFixed(2)}</td>
+          <td style="color:var(--text-muted);font-size:0.78rem">${o.openedAt || '—'}</td>
+          <td><button onclick="clearActiveOption('${sym}')" style="font-size:0.72rem;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);color:var(--text-muted);border-radius:4px;cursor:pointer">Rimuovi</button></td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
+  // Options log
+  const optLog = (data.optionsLog || []).slice().reverse();
+  const today = new Date().toISOString().slice(0, 10);
+  const todayCount = (data.optionsLog || []).filter(e => e.ts && e.ts.startsWith(today)).length;
+  setEl('opt-today-count', todayCount);
+
+  const logTbody = document.getElementById('opt-log-tbody');
+  if (logTbody) {
+    if (!optLog.length) {
+      logTbody.innerHTML = '<tr><td colspan="3" style="color:var(--text-muted);text-align:center;padding:16px">Nessuna attività registrata</td></tr>';
+    } else {
+      logTbody.innerHTML = optLog.slice(0, 50).map(e => {
+        const t = new Date(e.ts).toLocaleTimeString('it-IT', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+        const extra = Object.entries(e).filter(([k]) => !['ts','msg'].includes(k)).map(([k,v]) => `${k}=${JSON.stringify(v)}`).join(' · ');
+        return `<tr>
+          <td style="color:var(--text-muted);white-space:nowrap">${t}</td>
+          <td>${e.msg}</td>
+          <td style="color:var(--text-muted);font-size:0.75rem">${extra}</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+}
+
+async function clearActiveOption(underlying) {
+  try {
+    const tok = sessionStorage.getItem('nexus_token');
+    await fetch(`/api/autotrader/options/${encodeURIComponent(underlying)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${tok}` },
+    });
+    loadAtStatus();
+  } catch (e) { console.error('clearActiveOption error', e); }
 }
 
 function renderATMercato(data) {

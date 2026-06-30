@@ -853,6 +853,315 @@ function computeBlackScholes(S, sigma, tpPct, slPct, T = 60 / 252, r = 0.043) {
   };
 }
 
+// ─── Options Trading System ────────────────────────────────────────────────────
+
+const OPTIONS_ENABLED = process.env.NEXUS_OPTIONS_ENABLED === 'true';
+
+function computeOptionGreeks(S, K, T, r, sigma, type) {
+  if (T <= 0 || sigma <= 0) return null;
+  const sqrtT = Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+  const d2 = d1 - sigma * sqrtT;
+  const Nd1  = normalCDF(d1);
+  const Nd2  = normalCDF(d2);
+  const Nnd1 = normalCDF(-d1);
+  const Nnd2 = normalCDF(-d2);
+  const phi  = Math.exp(-0.5 * d1 * d1) / Math.sqrt(2 * Math.PI);
+
+  let delta, theta, price;
+  if (type === 'call') {
+    price = S * Nd1 - K * Math.exp(-r * T) * Nd2;
+    delta = Nd1;
+    theta = (-(S * phi * sigma) / (2 * sqrtT) - r * K * Math.exp(-r * T) * Nd2) / 365;
+  } else {
+    price = K * Math.exp(-r * T) * Nnd2 - S * Nnd1;
+    delta = Nd1 - 1;
+    theta = (-(S * phi * sigma) / (2 * sqrtT) + r * K * Math.exp(-r * T) * Nnd2) / 365;
+  }
+  const gamma = phi / (S * sigma * sqrtT);
+  const vega  = S * phi * sqrtT / 100;
+
+  return { price, delta, gamma, theta, vega };
+}
+
+function parseOccSymbol(occ) {
+  try {
+    for (let i = 1; i <= 5; i++) {
+      if (occ.length >= i + 15 && occ.slice(i, i + 6).match(/^\d{6}$/)) {
+        const ticker = occ.slice(0, i);
+        const dateStr = occ.slice(i, i + 6);
+        const cp = occ[i + 6];
+        const strikeRaw = occ.slice(i + 7);
+        if (!['C', 'P'].includes(cp)) return null;
+        return {
+          ticker,
+          expiration: `20${dateStr.slice(0,2)}-${dateStr.slice(2,4)}-${dateStr.slice(4,6)}`,
+          type: cp === 'C' ? 'call' : 'put',
+          strike: parseInt(strikeRaw, 10) / 1000,
+        };
+      }
+    }
+    return null;
+  } catch { return null; }
+}
+
+async function fetchOptionsChain(symbol, dteMin = 14, dteMax = 40, limit = 500) {
+  const today = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const addDays = d => {
+    const dt = new Date(today);
+    dt.setDate(dt.getDate() + d);
+    return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`;
+  };
+  const params = new URLSearchParams({
+    feed: 'indicative',
+    limit: String(Math.min(limit, 1000)),
+    expiration_date_gte: addDays(dteMin),
+    expiration_date_lte: addDays(dteMax),
+  });
+  try {
+    const res = await alpacaDataFetch(`/v1beta1/options/snapshots/${encodeURIComponent(symbol)}?${params}`);
+    const data = await res.json();
+    const snapshots = data.snapshots || {};
+    const results = [];
+    for (const [occ, snap] of Object.entries(snapshots)) {
+      const contract = parseOccSymbol(occ);
+      if (!contract) continue;
+      const quote = snap.latestQuote || {};
+      const bid = parseFloat(quote.bp || 0);
+      const ask = parseFloat(quote.ap || 0);
+      if (bid <= 0 && ask <= 0) continue;
+      results.push({
+        symbol: occ,
+        underlying: symbol,
+        type: contract.type,
+        strike: contract.strike,
+        expiration: contract.expiration,
+        bid,
+        ask,
+        mid: (bid + ask) / 2,
+        iv: snap.impliedVolatility || null,
+        greeks: snap.greeks || {},
+        dte: Math.round((new Date(contract.expiration) - today) / 86400000),
+      });
+    }
+    return results;
+  } catch (e) {
+    console.error(`[Options] fetchOptionsChain ${symbol} error:`, e.message);
+    return [];
+  }
+}
+
+function enrichWithGreeks(contracts, spot, annVol, r = 0.053) {
+  return contracts.map(c => {
+    const T = c.dte / 365;
+    if (T <= 0) return null;
+    const sigma = c.iv && c.iv > 0 ? c.iv : annVol;
+    if (!sigma || sigma <= 0) return null;
+    const g = (c.greeks && c.greeks.delta != null)
+      ? { delta: +c.greeks.delta, gamma: +(c.greeks.gamma||0), theta: +(c.greeks.theta||0)/365, vega: +(c.greeks.vega||0)/100 }
+      : computeOptionGreeks(spot, c.strike, T, r, sigma, c.type);
+    if (!g) return null;
+    const spreadPct = c.mid > 0 ? (c.ask - c.bid) / c.mid : 999;
+    return { ...c, sigma, ...g, spreadPct };
+  }).filter(Boolean);
+}
+
+function findBestCSP(contracts, spot, annVol) {
+  const puts = enrichWithGreeks(
+    contracts.filter(c => c.type === 'put' && c.strike < spot),
+    spot, annVol
+  );
+  // Target Δ ~−0.30: short put, delta between −0.15 and −0.40
+  const candidates = puts.filter(c =>
+    Math.abs(c.delta) >= 0.15 &&
+    Math.abs(c.delta) <= 0.40 &&
+    c.spreadPct <= 0.15 &&
+    c.mid >= 0.05
+  );
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => Math.abs(Math.abs(a.delta) - 0.30) - Math.abs(Math.abs(b.delta) - 0.30));
+  return candidates[0];
+}
+
+function findBestCoveredCall(contracts, spot, avgEntry, annVol) {
+  const calls = enrichWithGreeks(
+    contracts.filter(c => c.type === 'call' && c.strike > avgEntry),
+    spot, annVol
+  );
+  // Target Δ ~0.30: short call above avg entry
+  const candidates = calls.filter(c =>
+    c.delta >= 0.15 &&
+    c.delta <= 0.40 &&
+    c.spreadPct <= 0.15 &&
+    c.mid >= 0.05
+  );
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => Math.abs(a.delta - 0.30) - Math.abs(b.delta - 0.30));
+  return candidates[0];
+}
+
+async function optionsCycle(account, openPositions, anthropicKey) {
+  if (!OPTIONS_ENABLED) return;
+
+  const equity = parseFloat(account.equity || 0);
+  const buyingPower = parseFloat(account.buying_power || 0);
+  const today = easternDateKey();
+
+  const optLog = (msg, data = {}) => {
+    const entry = { ts: new Date().toISOString(), msg, ...data };
+    AT.optionsLog.push(entry);
+    if (AT.optionsLog.length > 500) AT.optionsLog.splice(0, AT.optionsLog.length - 500);
+    console.log(`[Options] ${msg}`, data);
+    broadcast({ type: 'options_log', entry });
+  };
+
+  // 1. Covered Calls — overlay on existing long positions with P&L > 2%
+  for (const pos of openPositions) {
+    if (pos.side !== 'long') continue;
+    const plPct = parseFloat(pos.unrealized_plpc || 0) * 100;
+    if (plPct < 2) continue;
+    if (AT.activeOptions[pos.symbol]) continue; // already have an option on this
+
+    const spot = parseFloat(pos.current_price || 0);
+    const avgEntry = parseFloat(pos.avg_entry_price || spot);
+    if (spot <= 0) continue;
+
+    // Get 20d historical vol for this symbol
+    let annVol = 0.25; // default fallback
+    try {
+      const bRes = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?timeframe=1Day&limit=25&adjustment=split&feed=iex`);
+      const bd = await bRes.json();
+      if (bd.bars && bd.bars.length >= 10) {
+        const closes = bd.bars.map(b => b.c);
+        const rets = closes.slice(1).map((c, i) => Math.log(c / closes[i]));
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length;
+        annVol = Math.sqrt(variance * 252);
+      }
+    } catch (_) {}
+
+    const chain = await fetchOptionsChain(pos.symbol, 14, 40);
+    if (!chain.length) continue;
+
+    const bestCall = findBestCoveredCall(chain, spot, avgEntry, annVol);
+    if (!bestCall) { optLog(`${pos.symbol}: no suitable covered call found`); continue; }
+
+    const qty = parseInt(pos.qty || 0);
+    const contracts = Math.floor(qty / 100);
+    if (contracts < 1) { optLog(`${pos.symbol}: position < 100 shares, skip CC`); continue; }
+
+    optLog(`${pos.symbol}: Covered Call candidate`, {
+      strike: bestCall.strike, expiration: bestCall.expiration,
+      delta: bestCall.delta?.toFixed(2), mid: bestCall.mid, dte: bestCall.dte,
+    });
+
+    // Submit sell-to-open limit order at mid price
+    try {
+      const order = {
+        symbol: bestCall.symbol,
+        qty: String(contracts),
+        side: 'sell',
+        type: 'limit',
+        time_in_force: 'day',
+        limit_price: String(bestCall.mid.toFixed(2)),
+        order_class: 'simple',
+      };
+      const oRes = await alpacaFetch('/v2/orders', { method: 'POST', body: JSON.stringify(order) });
+      const oData = await oRes.json();
+      if (oData.id) {
+        AT.activeOptions[pos.symbol] = {
+          orderId: oData.id, symbol: bestCall.symbol, type: 'covered_call',
+          strike: bestCall.strike, expiration: bestCall.expiration,
+          qty: contracts, premium: bestCall.mid, openedAt: today,
+        };
+        optLog(`${pos.symbol}: Covered Call SOLD`, { orderId: oData.id, strike: bestCall.strike, premium: bestCall.mid });
+        await sendTelegram(`📋 <b>Opzioni — Covered Call</b> — <b>${pos.symbol}</b>\nK=${bestCall.strike} exp=${bestCall.expiration} | Premium $${bestCall.mid.toFixed(2)} | Δ${bestCall.delta?.toFixed(2)} | DTE=${bestCall.dte}\nContratti: ${contracts}`);
+      } else {
+        optLog(`${pos.symbol}: CC order rejected`, { error: oData.message || JSON.stringify(oData) });
+      }
+    } catch (e) {
+      optLog(`${pos.symbol}: CC submit error`, { error: e.message });
+    }
+  }
+
+  // 2. Cash-Secured Puts — on bullish watchlist symbols not already held or optioned
+  const heldSymbols = new Set(openPositions.map(p => p.symbol));
+  const cspBudget = Math.min(buyingPower * 0.10, equity * 0.05); // max 10% BP or 5% equity per CSP
+  if (cspBudget < 500) { optLog('CSP: buying power too low, skip'); return; }
+
+  // Use AI-selected watchlist; filter to symbols not already held and not already optioned
+  const cspCandidates = (AT.aiSelectedWatchlist.length ? AT.aiSelectedWatchlist : AT.watchlist)
+    .filter(sym => !heldSymbols.has(sym) && !AT.activeOptions[sym])
+    .slice(0, 5); // check max 5 per cycle
+
+  for (const symbol of cspCandidates) {
+    let spot = 0;
+    let annVol = 0.25;
+    try {
+      const bRes = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=1Day&limit=25&adjustment=split&feed=iex`);
+      const bd = await bRes.json();
+      if (bd.bars && bd.bars.length >= 10) {
+        const closes = bd.bars.map(b => b.c);
+        spot = closes[closes.length - 1];
+        const rets = closes.slice(1).map((c, i) => Math.log(c / closes[i]));
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length;
+        annVol = Math.sqrt(variance * 252);
+      }
+    } catch (_) {}
+    if (spot <= 0) continue;
+
+    // CSP requires cash collateral = strike × 100 per contract
+    const maxContracts = Math.floor(cspBudget / (spot * 100));
+    if (maxContracts < 1) { optLog(`${symbol}: spot $${spot.toFixed(0)} too high for CSP budget`); continue; }
+
+    const chain = await fetchOptionsChain(symbol, 14, 40);
+    if (!chain.length) continue;
+
+    const bestPut = findBestCSP(chain, spot, annVol);
+    if (!bestPut) { optLog(`${symbol}: no suitable CSP found`); continue; }
+
+    // IV/HV filter: IV should be >= 0.90× HV (at least near-parity) so we collect fair premium
+    const ivHvRatio = annVol > 0 ? (bestPut.sigma / annVol) : 1;
+    if (ivHvRatio < 0.90) { optLog(`${symbol}: IV/HV ${ivHvRatio.toFixed(2)} too low for CSP`); continue; }
+
+    const qty = Math.min(maxContracts, 2); // cap at 2 contracts per symbol
+
+    optLog(`${symbol}: CSP candidate`, {
+      strike: bestPut.strike, expiration: bestPut.expiration,
+      delta: bestPut.delta?.toFixed(2), mid: bestPut.mid, dte: bestPut.dte, ivHv: ivHvRatio.toFixed(2),
+    });
+
+    try {
+      const order = {
+        symbol: bestPut.symbol,
+        qty: String(qty),
+        side: 'sell',
+        type: 'limit',
+        time_in_force: 'day',
+        limit_price: String(bestPut.mid.toFixed(2)),
+        order_class: 'simple',
+      };
+      const oRes = await alpacaFetch('/v2/orders', { method: 'POST', body: JSON.stringify(order) });
+      const oData = await oRes.json();
+      if (oData.id) {
+        AT.activeOptions[symbol] = {
+          orderId: oData.id, symbol: bestPut.symbol, type: 'cash_secured_put',
+          strike: bestPut.strike, expiration: bestPut.expiration,
+          qty, premium: bestPut.mid, openedAt: today,
+        };
+        optLog(`${symbol}: CSP SOLD`, { orderId: oData.id, strike: bestPut.strike, premium: bestPut.mid });
+        await sendTelegram(`💰 <b>Opzioni — Cash-Secured Put</b> — <b>${symbol}</b>\nK=${bestPut.strike} exp=${bestPut.expiration} | Premium $${bestPut.mid.toFixed(2)} | Δ${bestPut.delta?.toFixed(2)} | DTE=${bestPut.dte}\nContratti: ${qty} | IV/HV: ${ivHvRatio.toFixed(2)}x`);
+      } else {
+        optLog(`${symbol}: CSP order rejected`, { error: oData.message || JSON.stringify(oData) });
+      }
+    } catch (e) {
+      optLog(`${symbol}: CSP submit error`, { error: e.message });
+    }
+  }
+}
+
 // ─── Telegram Notifications ───────────────────────────────────────────────────
 async function sendTelegram(text) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
@@ -1082,6 +1391,8 @@ const AT = {
   patternMemory: [],      // chronological flat log of all lessons (full history)
   tradeHistory: {},       // { [symbol]: [{date, action, outcome, pl_pct, lesson, tags}] }
   lessonsByTag: {},       // { [tag]: [{date, symbol, lesson}] } — indexed for fast retrieval
+  activeOptions: {},      // { [underlying]: { symbol, type, strike, expiration, qty, premium } }
+  optionsLog: [],         // chronological log of options actions
 };
 
 function ensureAtDayState() {
@@ -1152,6 +1463,8 @@ function saveAtState() {
       patternMemory: AT.patternMemory,
       tradeHistory: AT.tradeHistory,
       lessonsByTag: AT.lessonsByTag,
+      activeOptions: AT.activeOptions,
+      optionsLog: AT.optionsLog.slice(-200),
       log: AT.log.slice(0, 100),
     };
     const tmp = `${AT_STATE_FILE}.${process.pid}.tmp`;
@@ -1215,6 +1528,8 @@ function loadAtState() {
     AT.patternMemory = Array.isArray(state.patternMemory) ? state.patternMemory : [];
     AT.tradeHistory = (state.tradeHistory && typeof state.tradeHistory === 'object') ? state.tradeHistory : {};
     AT.lessonsByTag = (state.lessonsByTag && typeof state.lessonsByTag === 'object') ? state.lessonsByTag : {};
+    AT.activeOptions = (state.activeOptions && typeof state.activeOptions === 'object') ? state.activeOptions : {};
+    AT.optionsLog = Array.isArray(state.optionsLog) ? state.optionsLog : [];
     AT.log = Array.isArray(state.log) ? state.log.slice(0, 100) : [];
     ensureAtDayState();
   } catch (err) {
@@ -1279,6 +1594,9 @@ function atPublicState() {
     patternMemory: AT.patternMemory,
     lessonsByTag: AT.lessonsByTag,
     tradeHistorySymbols: Object.keys(AT.tradeHistory),
+    activeOptions: AT.activeOptions,
+    optionsEnabled: OPTIONS_ENABLED,
+    optionsLog: AT.optionsLog.slice(-50),
   };
 }
 
@@ -2255,6 +2573,13 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
       atLog(logEntry);
       await new Promise(r => setTimeout(r, 1500));
     }
+
+    // Options cycle runs after main equity loop
+    try {
+      await optionsCycle(account, openPositions, anthropicKey);
+    } catch (e) {
+      console.error('[Options] optionsCycle error:', e.message);
+    }
   } finally {
     AT.running = false;
     if (AT.enabled && AT.timer) AT.nextRunAt = Date.now() + AT.intervalMs;
@@ -2552,6 +2877,35 @@ function connectAlpacaTradingWs() {
     alpacaTradingWs.on('error', () => { alpacaConnected = false; });
   } catch (_) { alpacaConnected = false; setTimeout(connectAlpacaTradingWs, 5000); }
 }
+
+// ─── Options Endpoints ───────────────────────────────────────────────────────
+
+app.get('/api/alpaca/options/chain/:symbol', requireAuth, async (req, res) => {
+  const { symbol } = req.params;
+  const dteMin = parseInt(req.query.dte_min || '14', 10);
+  const dteMax = parseInt(req.query.dte_max || '40', 10);
+  try {
+    const chain = await fetchOptionsChain(symbol.toUpperCase(), dteMin, dteMax, 500);
+    res.json({ symbol: symbol.toUpperCase(), count: chain.length, contracts: chain });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/autotrader/options', requireAuth, (req, res) => {
+  res.json({
+    enabled: OPTIONS_ENABLED,
+    activeOptions: AT.activeOptions,
+    log: AT.optionsLog.slice(-100),
+  });
+});
+
+app.delete('/api/autotrader/options/:underlying', requireAuth, (req, res) => {
+  const { underlying } = req.params;
+  delete AT.activeOptions[underlying.toUpperCase()];
+  saveAtState();
+  res.json({ ok: true, message: `Cleared active option tracking for ${underlying.toUpperCase()}` });
+});
 
 // ─── nexus_quant Bridge Endpoints ────────────────────────────────────────────
 // Receive structured signals, risk snapshots, regime, and monitoring from Python
