@@ -153,7 +153,7 @@ function rateLimit(req, res, next) {
     return next();
   }
   entry.count++;
-  if (entry.count > 200) return res.status(429).json({ error: 'Too many requests.' });
+  if (entry.count > 600) return res.status(429).json({ error: 'Too many requests.' });
   next();
 }
 

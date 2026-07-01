@@ -1479,7 +1479,7 @@ function connectWS() {
     try { data = JSON.parse(e.data); } catch(_) { return; }
     if (data.type === 'quote') { livePrices[data.symbol] = data.price; updatePriceDisplays(data.symbol, data.price); }
     if (data.type === 'account') updateAccountKPIs(data.account);
-    if (data.type === 'positions') { updatePositionsTable(data.positions); renderDashboardPositions(data.positions); refreshIntradayCharts(); }
+    if (data.type === 'positions') { updatePositionsTable(data.positions); renderDashboardPositions(data.positions); }
     if (data.type === 'trade_update') handleTradeUpdate(data.order);
     if (data.type === 'autotrader_log') prependAtLogEntry(data.entry);
     if (data.type === 'autotrader_trade') showToast(`🤖 AutoTrader: ${data.action} ${data.symbol}${data.notional ? ' $'+data.notional : data.qty ? ' '+data.qty+' shares' : ''}`, 'success');
@@ -1911,12 +1911,12 @@ function renderOptionsTab(data) {
 
 async function clearActiveOption(underlying) {
   try {
-    const tok = sessionStorage.getItem('nexus_token');
+    const tok = sessionStorage.getItem('nexus_auth_token');
     await fetch(`/api/autotrader/options/${encodeURIComponent(underlying)}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${tok}` },
     });
-    loadAtStatus();
+    loadAutoTraderStatus();
   } catch (e) { console.error('clearActiveOption error', e); }
 }
 
