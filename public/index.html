@@ -2390,12 +2390,14 @@ async function initPerfChart() {
   try {
     // Try progressively shorter periods until we get usable data
     let hist = null;
-    for (const period of ['6M', '3M', '1M', '1W']) {
-      const r = await secureFetch(`/api/alpaca/portfolio/history?period=${period}&timeframe=1D`);
-      if (!r.ok) continue;
-      const d = await r.json();
-      const eq = d.equity || [];
-      if (eq.filter(v => v !== null && v > 0).length >= 2) { hist = d; break; }
+    for (const period of ['1M', '1W']) {
+      try {
+        const r = await secureFetch(`/api/alpaca/portfolio/history?period=${period}&timeframe=1D`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const eq = d.equity || [];
+        if (eq.filter(v => v !== null && v > 0).length >= 2) { hist = d; break; }
+      } catch(_) {}
     }
     if (!hist) {
       if (titleEl) titleEl.textContent = 'Rendimento Portfolio — nessuno storico disponibile (account nuovo?)';
@@ -3517,8 +3519,11 @@ async function runAutoTraderNow() {
 // ============================================================
 const intradayCharts = {};  // symbol -> Chart instance
 let intradayRefreshTimer = null;
+let intradayRefreshing = false; // guard against concurrent runs
 
 async function refreshIntradayCharts() {
+  if (intradayRefreshing) return;
+  intradayRefreshing = true;
   const positions = currentPositions || [];
   const grid = document.getElementById('at-intraday-grid');
   if (!grid) return;
@@ -3570,6 +3575,7 @@ async function refreshIntradayCharts() {
 
   const ts = document.getElementById('at-intraday-ts');
   if (ts) ts.textContent = 'Aggiornato ' + new Date().toLocaleTimeString('it-IT', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  intradayRefreshing = false;
 }
 
 function renderIntradayChart(sym, bars, pos) {
@@ -3658,7 +3664,7 @@ function startIntradayAutoRefresh() {
     const now = new Date();
     const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
     if (utcH >= 13.0 && utcH <= 20.5) refreshIntradayCharts();
-  }, 30000);
+  }, 60000);
 }
 
 // ============================================================
@@ -3787,7 +3793,6 @@ async function init() {
     const positions = await alpacaAPI('/positions');
     if (positions) { updatePositionsTable(positions); renderDashboardPositions(positions); }
   } catch(_) {}
-  loadDashboardPositions();
   updateSettingsPanel();
   try {
     const health = await secureFetch('/health').then(r=>r.json());
