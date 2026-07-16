@@ -49,6 +49,16 @@ function loadSessions() {
   } catch (_) {}
 }
 
+// Windows-safe atomic write: rename fails with EPERM if dest exists on Windows
+function safeRename(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (_) {
+    try { fs.unlinkSync(dest); } catch (__) {}
+    fs.renameSync(src, dest);
+  }
+}
+
 function saveSessions() {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -59,7 +69,7 @@ function saveSessions() {
     }
     const tmp = `${SESSIONS_FILE}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(out));
-    fs.renameSync(tmp, SESSIONS_FILE);
+    safeRename(tmp, SESSIONS_FILE);
   } catch (_) {}
 }
 
@@ -1469,7 +1479,7 @@ function saveAtState() {
     };
     const tmp = `${AT_STATE_FILE}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, AT_STATE_FILE);
+    safeRename(tmp, AT_STATE_FILE);
   } catch (err) {
     console.error('[AutoTrader] Failed to persist state:', err.message);
   }
