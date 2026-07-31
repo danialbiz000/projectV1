@@ -6,3 +6,10 @@ package-lock.json
 __pycache__/
 *.pyc
 *.pyo
+
+# REMIP
+remip/backend/*.db
+remip/backend/.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

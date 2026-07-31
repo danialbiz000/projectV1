@@ -1,0 +1,31 @@
+name: REMIP CI
+
+on:
+  push:
+    paths:
+      - "remip/**"
+      - ".github/workflows/remip-ci.yml"
+  pull_request:
+    paths:
+      - "remip/**"
+      - ".github/workflows/remip-ci.yml"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: remip/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: ruff check app tests
+      - name: Type check (mypy)
+        run: mypy app
+      - name: Tests (pytest)
+        run: pytest -q

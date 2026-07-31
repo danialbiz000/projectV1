@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: remip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-remip_dev_password}
+      POSTGRES_DB: remip
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remip"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: ./backend
+    environment:
+      REMIP_DATABASE_URL: postgresql+psycopg2://remip:${POSTGRES_PASSWORD:-remip_dev_password}@db:5432/remip
+      REMIP_SECRET_KEY: ${REMIP_SECRET_KEY:?set REMIP_SECRET_KEY in .env}
+      REMIP_ENVIRONMENT: development
+      REMIP_SEED_ON_STARTUP: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # frontend (Next.js) arrives with Milestone 2 — see frontend/README.md
+
+volumes:
+  pgdata:
