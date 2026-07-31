@@ -29,3 +29,31 @@ jobs:
         run: mypy app
       - name: Tests (pytest)
         run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: remip/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: npm install
+      - name: Lint (eslint)
+        run: npm run lint
+      - name: Type check (tsc)
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend for E2E
+        run: pip install -e "../backend"
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: E2E (Playwright)
+        run: npx playwright test

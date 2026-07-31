@@ -13,3 +13,10 @@ remip/backend/.venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+remip/frontend/node_modules/
+remip/frontend/.next/
+remip/frontend/test-results/
+remip/frontend/playwright-report/
+remip/frontend/next-env.d.ts
+remip/frontend/tsconfig.tsbuildinfo
+.env.local

@@ -9,9 +9,11 @@ watchlist, notifiche e previsioni baseline con scenari.
 > [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md). Ogni risposta analitica
 > dell'API dichiara `is_demo_data: true` nel blocco `data_context`.
 
-**Stato: Milestone 1 completata** — fondamenta backend (API, modello dati,
-versionamento annunci, notifiche, forecast baseline, seed demo, test).
-Frontend in Milestone 2, mappa in Milestone 3 (roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
+**Stato: Milestone 2 completata** — backend (M1: API, modello dati, versionamento
+annunci, notifiche, forecast baseline, seed demo, test) + frontend Next.js (M2:
+landing, auth, onboarding, dashboard di zona con grafici, ricerca, dettaglio
+immobile, watchlist, centro notifiche, dark/light, E2E Playwright).
+Mappa interattiva in Milestone 3 (roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
 
 ## Documentazione
 
@@ -25,15 +27,22 @@ Frontend in Milestone 2, mappa in Milestone 3 (roadmap: [`docs/PLAN.md`](docs/PL
 ## Avvio rapido (senza Docker — SQLite)
 
 ```bash
+# Backend (terminale 1)
 cd remip/backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 uvicorn app.main:app --reload
+
+# Frontend (terminale 2)
+cd remip/frontend
+npm install
+npm run dev
 ```
 
 Al primo avvio il database viene creato e popolato con i dati demo
 (3 città, 9 quartieri, ~100 annunci, 36 mesi di metriche, previsioni).
-API interattive: <http://localhost:8000/docs> — health: <http://localhost:8000/health>.
+App: <http://localhost:3000> — API interattive: <http://localhost:8000/docs> —
+health: <http://localhost:8000/health>.
 
 ## Avvio con Docker Compose (PostgreSQL + PostGIS + Redis)
 
@@ -77,10 +86,16 @@ curl -s -X POST localhost:8000/api/v1/admin/simulate/listing-update \
 ## Qualità
 
 ```bash
+# Backend
 cd remip/backend
 ruff check app tests      # lint
 mypy app                  # type checking
 pytest -q                 # test (SQLite in-memory, seed ridotto)
+
+# Frontend
+cd remip/frontend
+npm run lint && npm run typecheck && npm run build
+npm run e2e               # E2E Playwright (avvia backend + app buildata)
 ```
 
 ## Sicurezza

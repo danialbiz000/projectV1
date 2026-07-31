@@ -33,7 +33,16 @@ services:
       db:
         condition: service_healthy
 
-  # frontend (Next.js) arrives with Milestone 2 — see frontend/README.md
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Browser-side URL of the backend as reachable from the host.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
 
 volumes:
   pgdata:
