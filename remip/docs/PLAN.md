@@ -148,9 +148,15 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 > (trimestrale), scelto perché non richiede una chiave API. Provato
 > manualmente in questo ambiente: la chiamata viene bloccata dalla policy di
 > rete del sandbox (403, verificato anche verso host generici) e il job
-> fallisce onestamente con l'errore reale — non verificabile con una
-> risposta 200 da qui, ma il test dedicato (`test_live_fetch_or_skip`) la
-> verifica per davvero in qualunque ambiente con accesso a internet vero.
+> fallisce onestamente con l'errore reale, senza dati inventati.
+>
+> **Verificato con successo dall'utente** in un ambiente con internet reale
+> (2026-08-01): job `status="success"`, 126 osservazioni ingerite, indice
+> trimestrale IT 2010→2026 con andamento coerente con la storia nota del
+> mercato immobiliare italiano, variazione annua incrociata a mano contro
+> l'indice (combacia esattamente) — conferma che l'endpoint, i filtri e il
+> parser SDMX-JSON funzionano correttamente contro la risposta reale
+> Eurostat, non solo in teoria.
 
 ## 10. Struttura del repository
 

@@ -6,10 +6,12 @@ watchlist, notifiche e previsioni baseline con scenari.
 
 > ⚠️ **La maggior parte dei dati è sintetica (demo).** Un'eccezione:
 > `eurostat_hpi` è un adapter a dato **genuinamente live** (chiamata HTTP
-> reale, nessun fallback a valori finti) — vedi sotto. Ogni risposta
-> analitica dell'API dichiara `is_demo_data` nel blocco `data_context`; le
-> fonti candidate non ancora integrate e i prerequisiti legali/commerciali
-> sono in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+> reale, nessun fallback a valori finti), **verificato con dati reali**
+> (House Price Index italiano, 126 osservazioni, 2026-08-01 — vedi
+> `docs/INTEGRATIONS.md`). Ogni risposta analitica dell'API dichiara
+> `is_demo_data` nel blocco `data_context`; le fonti candidate non ancora
+> integrate e i prerequisiti legali/commerciali sono in
+> [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
 **Stato: Milestone 4 completata** — backend (M1: API, modello dati, versionamento
 annunci, notifiche, forecast baseline, seed demo, test) + frontend Next.js (M2:
@@ -161,8 +163,10 @@ Nessun segreto nel repository: configurazione via `.env` (vedi `.env.example`).
   pipeline (coda, scheduler, dedup/upsert, tracciamento job) è reale, i
   *valori* delle quotazioni sono dimostrativi. L'adapter Eurostat
   (`eurostat_hpi`) fa invece una chiamata HTTP reale senza alcun fallback:
-  in ambienti con rete in uscita bloccata (come questo sandbox — verificato,
-  403 anche verso host generici) l'ingestion fallisce onestamente e
-  `/market/economic-indicators` resta vuoto; in un ambiente con accesso a
-  internet normale dovrebbe popolarsi al primo trigger riuscito (admin o
-  scheduler). `SavedSearch`/`AlertRule` e digest via email restano V2/M6.
+  in ambienti con rete in uscita bloccata (come il sandbox di sviluppo — 403
+  anche verso host generici) l'ingestion fallisce onestamente e
+  `/market/economic-indicators` resta vuoto. **Verificato funzionante con
+  dati reali** dall'utente in un ambiente con internet normale
+  (2026-08-01): 126 osservazioni ingerite, indice House Price Index IT
+  2010→2026 corretto e incrociato con la variazione annua dichiarata.
+  `SavedSearch`/`AlertRule` e digest via email restano V2/M6.

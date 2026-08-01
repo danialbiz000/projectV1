@@ -5,20 +5,21 @@ Da M4 esistono due adapter reali con caratteristiche diverse:
 - **OMI** (`omi_it`): pipeline genuina — fetch, validazione, normalizzazione,
   risoluzione geografica, dedup/upsert — ma i *valori* provengono da una
   fixture locale versionata, non da un endpoint verificato (`is_demo=true`).
-- **Eurostat House Price Index** (`eurostat_hpi`): **dato genuinamente live**.
-  L'adapter fa una vera chiamata HTTP all'API pubblica Eurostat a ogni
-  esecuzione, senza alcun fallback a valori sintetici — se la chiamata
-  fallisce, l'ingestion fallisce visibilmente (`is_demo=false`, righe scritte
-  solo da una risposta reale riuscita). Provato manualmente in questo
-  ambiente: la richiesta viene bloccata dalla policy di rete del sandbox
-  (`403 Forbidden`, stesso comportamento verificato anche verso host generici
-  come `example.com`) e il job risultante mostra onestamente
-  `status="failed"` con l'errore reale — non è stato possibile verificare una
-  risposta 200 da qui. In un ambiente con accesso a internet normale (incluso
-  probabilmente `docker compose up` su una macchina reale, o la CI di GitHub
-  Actions) dovrebbe funzionare: vedi `tests/test_eurostat_adapter.py::test_live_fetch_or_skip`,
-  che esegue la chiamata reale e verifica per davvero quando la rete lo
-  consente.
+- **Eurostat House Price Index** (`eurostat_hpi`): **dato genuinamente live,
+  verificato con una risposta reale**. L'adapter fa una vera chiamata HTTP
+  all'API pubblica Eurostat a ogni esecuzione, senza alcun fallback a valori
+  sintetici — se la chiamata fallisce, l'ingestion fallisce visibilmente
+  (`is_demo=false`, righe scritte solo da una risposta reale riuscita). In
+  questo sandbox la richiesta è bloccata dalla policy di rete (`403
+  Forbidden`, stesso comportamento verificato anche verso host generici come
+  `example.com`) e il job mostra onestamente `status="failed"`. **Verificato
+  dall'utente in un ambiente con internet reale (2026-08-01)**: 126
+  osservazioni ingerite correttamente, indice trimestrale IT 2010→2026 con
+  andamento coerente con la storia nota del mercato (calo 2010-2015, ripresa
+  2021-2026) e variazione annua incrociata a mano contro l'indice
+  (2026-Q1: (119.2-113.3)/113.3=5.2%, combacia col valore `RCH_A`
+  restituito) — conferma che il parser SDMX-JSON generico decodifica
+  correttamente entrambe le dimensioni richieste dalla risposta reale.
 
 Ogni altra fonte in questo registro resta **candidata**, non integrata: i
 dati restano sintetici o illustrativi (`is_demo=true`) finché non viene
@@ -28,7 +29,7 @@ verificare con i provider: non sono state confermate.**
 | Fonte | Tipo | Stato | Prerequisito per l'attivazione |
 |---|---|---|---|
 | OMI — Agenzia delle Entrate (quotazioni immobiliari) | Open data | **Adapter costruito (M4), non verificato live** | `adapters/omi.py` riproduce la struttura reale (comune/zona/tipologia/stato, bande €/m² per semestre) ma legge da fixture locale versionata, non da un endpoint verificato: questo ambiente non ha potuto testare una connessione live, e OMI distribuisce comunque CSV/Excel semestrali anziché una API REST convenzionale. Prima di uno switch a dati live serve verificare licenza di riuso, formato di download effettivo e granularità/ritardo di pubblicazione |
-| Eurostat — House Price Index (`prc_hpi_q`) | Open data | **Adapter live costruito (M4)** | `adapters/eurostat.py`, chiamata HTTP reale, nessuna chiave. Non verificato con una risposta 200 da questo sandbox (rete bloccata per policy — vedi sopra); verificabile subito in un ambiente con internet reale |
+| Eurostat — House Price Index (`prc_hpi_q`) | Open data | **Attiva, verificata con dati reali (M4)** | `adapters/eurostat.py`, chiamata HTTP reale, nessuna chiave. Rete bloccata in questo sandbox (403), ma verificata con successo dall'utente il 2026-08-01 in un ambiente con internet reale: 126 osservazioni, valori coerenti e incrociati (vedi nota sopra) |
 | ISTAT (popolazione, redditi, occupazione) | Open data | Candidata M5 | Dataset distinto da Eurostat HPI sopra. Verifica licenza (tip. CC-BY) e API/SDMX |
 | Eurostat — altri indicatori (BCE, inflazione, tassi) | Open data | Candidata M5 | Stesso pattern dell'adapter Eurostat HPI, dataset diverso; verifica termini API specifici |
 | OpenStreetMap tile raster (`tile.openstreetmap.org`) | Open data | **Attiva in demo, solo basso volume** | Basemap della mappa (M3). Uso pubblico soggetto alla [OSM Tile Usage Policy](https://operations.osmfoundation.org/policies/tiles/): non idoneo a traffico di produzione. Prima della scala reale serve un provider a licenza (es. MapTiler, Mapbox, Stadia) — vedi anche voce Overpass sotto |

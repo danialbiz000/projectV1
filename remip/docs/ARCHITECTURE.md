@@ -190,6 +190,12 @@ davvero la chiamata live. Provato manualmente end-to-end in questo ambiente:
 `POST /admin/ingestion/run/eurostat_hpi` produce onestamente un job
 `status="failed", error_message="403 Forbidden"` e
 `GET /market/economic-indicators` resta vuoto — nessun dato inventato.
+**Verificato con successo dall'utente in un ambiente con internet reale
+(2026-08-01)**: job `status="success"`, 126 osservazioni, `I15_Q`/`RCH_A`
+decodificati correttamente e cross-validati a mano (variazione annua
+2026-Q1 calcolata dall'indice = 5.2%, combacia col valore `RCH_A`
+restituito) — la pipeline live è confermata funzionante contro Eurostat
+reale, non solo in teoria.
 
 **Deduplicazione cross-agenzia**: `services/dedup.py` assegna un punteggio di
 confidenza (distanza geografica, similarità superficie/locali, sovrapposizione
