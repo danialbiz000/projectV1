@@ -137,6 +137,20 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 > API. Sostituire la fixture con un fetch live, una volta verificata licenza e
 > formato reale, non richiede modifiche al resto della pipeline. Vedi
 > `docs/ARCHITECTURE.md` e `docs/INTEGRATIONS.md`.
+>
+> **Addendum (richiesta esplicita di dato live, non demo)**: aggiunto un
+> secondo adapter, `eurostat_hpi` (Eurostat House Price Index), che fa una
+> vera chiamata HTTP all'API pubblica Eurostat senza alcun fallback a valori
+> sintetici — se la chiamata fallisce, l'ingestion fallisce visibilmente
+> (`is_demo_data: false`, nessuna riga scritta senza una risposta reale
+> riuscita). Non è OMI in tempo reale (OMI resta strutturalmente semestrale,
+> nessuna fonte può renderlo "live"): è un indicatore macro più frequente
+> (trimestrale), scelto perché non richiede una chiave API. Provato
+> manualmente in questo ambiente: la chiamata viene bloccata dalla policy di
+> rete del sandbox (403, verificato anche verso host generici) e il job
+> fallisce onestamente con l'errore reale — non verificabile con una
+> risposta 200 da qui, ma il test dedicato (`test_live_fetch_or_skip`) la
+> verifica per davvero in qualunque ambiente con accesso a internet vero.
 
 ## 10. Struttura del repository
 

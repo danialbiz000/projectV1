@@ -1,8 +1,8 @@
 """Ingestion job orchestration: adapter → area resolution → dedup upsert →
 DataIngestionJob bookkeeping. Each registered adapter kind gets its own small
-persistence branch below (only OMI exists today); this stays a plain
-function so it can run inline (seed bootstrap, tests, Redis-unavailable
-fallback) or wrapped as an RQ task (scheduler, worker) identically.
+persistence branch below; this stays a plain function so it can run inline
+(seed bootstrap, tests, Redis-unavailable fallback) or wrapped as an RQ task
+(scheduler, worker) identically.
 """
 from __future__ import annotations
 
@@ -13,13 +13,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.base import AdapterError, BaseAdapter
+from app.adapters.eurostat import EurostatHpiAdapter
 from app.adapters.omi import OmiAdapter
 from app.db.base import SessionLocal, utcnow
-from app.models import AdministrativeArea, DataIngestionJob, DataProvider, OmiZoneQuotation
+from app.models import (
+    AdministrativeArea,
+    DataIngestionJob,
+    DataProvider,
+    EconomicIndicator,
+    OmiZoneQuotation,
+)
 
 logger = logging.getLogger("remip.ingestion.jobs")
 
-ADAPTER_REGISTRY: dict[str, type[BaseAdapter]] = {"omi_it": OmiAdapter}
+ADAPTER_REGISTRY: dict[str, type[BaseAdapter]] = {
+    "omi_it": OmiAdapter,
+    "eurostat_hpi": EurostatHpiAdapter,
+}
 
 
 def _resolve_area(db: Session, comune: str, zona_descrizione: str) -> AdministrativeArea | None:
@@ -86,6 +96,34 @@ def _upsert_omi_quotation(db: Session, provider: DataProvider, payload: dict) ->
     return "created"
 
 
+def _upsert_economic_indicator(db: Session, provider: DataProvider, payload: dict) -> str:
+    """Returns 'created' or 'updated'."""
+    existing = db.scalar(
+        select(EconomicIndicator).where(
+            EconomicIndicator.country_code == payload["country_code"],
+            EconomicIndicator.indicator_code == payload["indicator_code"],
+            EconomicIndicator.period == payload["period"],
+        )
+    )
+    if existing:
+        existing.value = payload["value"]
+        existing.unit = payload["unit"]
+        existing.ingested_at = utcnow()
+        return "updated"
+    db.add(
+        EconomicIndicator(
+            country_code=payload["country_code"],
+            indicator_code=payload["indicator_code"],
+            indicator_name=payload["indicator_name"],
+            period=payload["period"],
+            value=payload["value"],
+            unit=payload["unit"],
+            source_code=provider.code,
+        )
+    )
+    return "created"
+
+
 def run_ingestion(
     db: Session, provider_code: str, trigger: str = "manual", force: bool = False
 ) -> DataIngestionJob:
@@ -120,6 +158,11 @@ def run_ingestion(
     if provider_code == "omi_it":
         for raw in raw_records:
             outcome = _upsert_omi_quotation(db, provider, raw.payload)
+            created += outcome == "created"
+            updated += outcome == "updated"
+    elif provider_code == "eurostat_hpi":
+        for raw in raw_records:
+            outcome = _upsert_economic_indicator(db, provider, raw.payload)
             created += outcome == "created"
             updated += outcome == "updated"
 

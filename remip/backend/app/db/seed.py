@@ -165,6 +165,20 @@ def seed_database(db: Session, listings_per_neighborhood: int = 12, seed: int = 
                 "locale versionata, non da endpoint live verificato. Vedi docs/INTEGRATIONS.md.",
             ),
             DataProvider(
+                code="eurostat_hpi",
+                name="Eurostat - House Price Index (dato live)",
+                kind="open_data",
+                tos_compliant=True,
+                enabled=True,
+                is_demo=False,
+                quality_score=0.85,
+                notes="Adapter con chiamata HTTP reale all'API pubblica Eurostat (M4), "
+                "nessun fallback a valori sintetici. Non eseguito al bootstrap del seed "
+                "(a differenza di omi_it) per non richiedere rete in uscita all'avvio "
+                "locale; parte solo su trigger admin o scheduler. Endpoint non verificato "
+                "end-to-end da questo ambiente — vedi docs/INTEGRATIONS.md.",
+            ),
+            DataProvider(
                 code="portal_generic",
                 name="Portale annunci (da autorizzare)",
                 kind="portal",

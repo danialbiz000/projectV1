@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from app.api.deps import DbDep
 from app.api.v1.listings import descendant_area_ids
-from app.models import AdministrativeArea, MarketForecast, OmiZoneQuotation
+from app.models import AdministrativeArea, EconomicIndicator, MarketForecast, OmiZoneQuotation
 from app.schemas.common import DataContext
 from app.services import forecast as forecast_service
 from app.services import market as market_service
@@ -186,5 +186,49 @@ def omi_quotations(
             "OMI live verificato (vedi docs/INTEGRATIONS.md). Copertura limitata alle zone "
             "demo configurate.",
             is_demo_data=True,
+        ).model_dump(),
+    }
+
+
+@router.get("/economic-indicators")
+def economic_indicators(db: DbDep, country: str = Query(default="IT", max_length=2)) -> dict:
+    """Live macro indicators ingested from a real HTTP source (Eurostat
+    House Price Index, M4) — no per-area coverage, national level only, and
+    only as fresh as the last successful ingestion run (GET
+    /admin/ingestion/jobs shows whether it has actually succeeded in this
+    deployment). Unlike /market/omi-quotations, `is_demo_data` here is
+    False: if a row exists, its value came from a real API response, not a
+    fixture. See adapters/eurostat.py and docs/INTEGRATIONS.md."""
+    rows = db.scalars(
+        select(EconomicIndicator)
+        .where(EconomicIndicator.country_code == country.upper())
+        .order_by(EconomicIndicator.indicator_code, EconomicIndicator.period.desc())
+    ).all()
+    latest = rows[0] if rows else None
+    return {
+        "data": [
+            {
+                "country_code": r.country_code,
+                "indicator_code": r.indicator_code,
+                "indicator_name": r.indicator_name,
+                "period": r.period,
+                "value": r.value,
+                "unit": r.unit,
+            }
+            for r in rows
+        ],
+        "data_context": DataContext(
+            sources=["eurostat_hpi"],
+            period=latest.period if latest else None,
+            observations=len(rows),
+            updated_at=latest.ingested_at if latest else None,
+            quality=0.85 if rows else None,
+            aggregation_level="country",
+            methodology="Eurostat prc_hpi_q (House Price Index), chiamata HTTP live "
+            "all'API pubblica Eurostat, nessuna chiave richiesta.",
+            limitations="Nessun dato se l'ultima ingestion non è mai riuscita (nessun "
+            "fallback a valori sintetici, per design) — vedi GET /admin/ingestion/jobs. "
+            "Copertura nazionale, non per città/zona.",
+            is_demo_data=False,
         ).model_dump(),
     }

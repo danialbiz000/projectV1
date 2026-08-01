@@ -4,10 +4,12 @@ Piattaforma di market intelligence immobiliare per utenti privati: analisi di
 zona, monitoraggio nel tempo, dettaglio immobili con storico e comparabili,
 watchlist, notifiche e previsioni baseline con scenari.
 
-> ⚠️ **Tutti i dati sono sintetici (demo).** Nessuna fonte reale è integrata:
-> le fonti candidate e i prerequisiti legali/commerciali sono in
-> [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md). Ogni risposta analitica
-> dell'API dichiara `is_demo_data: true` nel blocco `data_context`.
+> ⚠️ **La maggior parte dei dati è sintetica (demo).** Un'eccezione:
+> `eurostat_hpi` è un adapter a dato **genuinamente live** (chiamata HTTP
+> reale, nessun fallback a valori finti) — vedi sotto. Ogni risposta
+> analitica dell'API dichiara `is_demo_data` nel blocco `data_context`; le
+> fonti candidate non ancora integrate e i prerequisiti legali/commerciali
+> sono in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
 **Stato: Milestone 4 completata** — backend (M1: API, modello dati, versionamento
 annunci, notifiche, forecast baseline, seed demo, test) + frontend Next.js (M2:
@@ -15,10 +17,11 @@ landing, auth, onboarding, dashboard di zona con grafici, ricerca, dettaglio
 immobile, watchlist, centro notifiche, dark/light) + mappa interattiva (M3:
 MapLibre GL con marker, clustering, heatmap €/m², disegno poligoni e ricerca
 per raggio) + ingestion asincrona (M4: job queue RQ/Redis + scheduler
-APScheduler, adapter open data OMI-shaped, deduplicazione cross-agenzia con
-confidence, snapshot annunci su object storage, digest notifiche). Prossima:
-confronti immobili/zone e valutazioni in Milestone 5
-(roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
+APScheduler, adapter open data OMI-shaped, **adapter Eurostat a dato live**
+(House Price Index, chiamata HTTP reale senza fallback sintetico),
+deduplicazione cross-agenzia con confidence, snapshot annunci su object
+storage, digest notifiche). Prossima: confronti immobili/zone e valutazioni
+in Milestone 5 (roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
 
 ## Documentazione
 
@@ -98,6 +101,9 @@ curl -s -X POST localhost:8000/api/v1/map/search -H 'Content-Type: application/j
   -d '{"radius":{"lat":45.4642,"lon":9.19,"radius_km":2},"limit":100}'
 # 4c. Quotazioni OMI per zona (struttura reale, valori dimostrativi — M4)
 curl -s "localhost:8000/api/v1/market/omi-quotations?area_id=<AREA_ID>"
+# 4d. Indicatore Eurostat live (House Price Index) — vuoto finché l'ingestion
+#     non è riuscita almeno una volta (nessun fallback a valori finti)
+curl -s "localhost:8000/api/v1/market/economic-indicators?country=IT"
 # 5. Simulare una variazione (admin) → nuova versione + notifica ai watcher
 curl -s -X POST localhost:8000/api/v1/admin/simulate/listing-update \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
@@ -105,6 +111,9 @@ curl -s -X POST localhost:8000/api/v1/admin/simulate/listing-update \
 # 6. Stato ingestion e trigger manuale (admin) — M4
 curl -s localhost:8000/api/v1/admin/ingestion/jobs -H "Authorization: Bearer $ADMIN_TOKEN"
 curl -s -X POST localhost:8000/api/v1/admin/ingestion/run/omi_it -H "Authorization: Bearer $ADMIN_TOKEN"
+# 6b. Trigger dell'adapter live: in un ambiente con internet reale popola
+#     economic-indicators; qui in sandbox fallisce onestamente (403 di rete)
+curl -s -X POST localhost:8000/api/v1/admin/ingestion/run/eurostat_hpi -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 ## Qualità
@@ -150,5 +159,10 @@ Nessun segreto nel repository: configurazione via `.env` (vedi `.env.example`).
 - **Ingestion (M4)**: l'adapter OMI legge da una fixture locale versionata,
   non da un endpoint live verificato (vedi `docs/INTEGRATIONS.md`) — la
   pipeline (coda, scheduler, dedup/upsert, tracciamento job) è reale, i
-  *valori* delle quotazioni sono dimostrativi. `SavedSearch`/`AlertRule` e
-  digest via email restano V2/M6.
+  *valori* delle quotazioni sono dimostrativi. L'adapter Eurostat
+  (`eurostat_hpi`) fa invece una chiamata HTTP reale senza alcun fallback:
+  in ambienti con rete in uscita bloccata (come questo sandbox — verificato,
+  403 anche verso host generici) l'ingestion fallisce onestamente e
+  `/market/economic-indicators` resta vuoto; in un ambiente con accesso a
+  internet normale dovrebbe popolarsi al primo trigger riuscito (admin o
+  scheduler). `SavedSearch`/`AlertRule` e digest via email restano V2/M6.

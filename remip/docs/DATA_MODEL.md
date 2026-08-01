@@ -16,6 +16,7 @@ erDiagram
     DataProvider ||--o{ PropertyListing : publishes
     DataProvider ||--o{ Agency : lists
     DataProvider ||--o{ OmiZoneQuotation : "quotes (M4)"
+    DataProvider ||--o{ EconomicIndicator : "publishes (M4)"
     DataProvider ||--o{ DataIngestionJob : "runs as (M4)"
     Agency ||--o{ PropertyListing : manages
     PhysicalProperty ||--o{ PropertyListing : advertised_by
@@ -49,6 +50,7 @@ erDiagram
 | **AuditLog** | id, user_id?, action, entity, entity_id, at, meta (json) | |
 | **DataIngestionJob** (M4) | id, provider_code, status (`running`/`success`/`failed`), trigger (`manual`/`scheduled`/`seed`), started_at, finished_at, records_fetched/created/updated, error_message | una riga per esecuzione di adapter, in coda o inline |
 | **OmiZoneQuotation** (M4) | id, area_id?, provider_id, comune, zone_code, zone_description, property_type, conservation_state, period (semestre), listing_type, price_sqm_min/max, currency, source_code, ingested_at | dato di zona (non per annuncio); `area_id` nullo se la zona OMI non è stata risolta contro la geografia interna |
+| **EconomicIndicator** (M4) | id, country_code, indicator_code, indicator_name, period, value, unit, source_code, ingested_at | **unica entità con dato genuinamente live**: valorizzata solo da una chiamata HTTP reale riuscita (Eurostat House Price Index) — nessuna riga se l'ingestion non è mai andata a buon fine, nessun valore sintetico di ripiego. Copertura Paese, non per città/zona |
 
 ## Entità pianificate (milestone successive)
 
@@ -56,7 +58,7 @@ erDiagram
 marker/cluster/heatmap di annunci), `SavedSearch`/`AlertRule` (M5),
 `DataQualityScore`/`SourceCitation` come tabelle dedicate (M5 — oggi qualità e
 fonte sono campi su provider/metriche/risposte `data_context`),
-`EconomicIndicator`/`GeographicIndicator` (M5), `Valuation`/`ComparableProperty`
+`GeographicIndicator` (M5), `Valuation`/`ComparableProperty`
 persistite (M5 — oggi i comparabili sono calcolati on-the-fly),
 `UserPreference`/`NotificationPreference` (M5), `RentalObservation` (M5 — oggi le
 locazioni sono `PropertyListing.listing_type="rent"`), `PropertyType`/

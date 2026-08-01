@@ -1,9 +1,12 @@
+from unittest.mock import patch
+
 import redis
 from sqlalchemy import select
 
-from app.db.base import SessionLocal
+from app.adapters.base import RawListing
+from app.db.base import SessionLocal, utcnow
 from app.jobs.ingestion import ADAPTER_REGISTRY, enqueue_or_run_ingestion, run_ingestion
-from app.models import DataIngestionJob, DataProvider, OmiZoneQuotation
+from app.models import DataIngestionJob, DataProvider, EconomicIndicator, OmiZoneQuotation
 
 
 def test_unknown_provider_fails_cleanly():
@@ -66,6 +69,55 @@ def test_rerunning_ingestion_updates_rather_than_duplicates():
 
         total_after = len(db.scalars(select(OmiZoneQuotation)).all())
         assert total_after == total_before  # no duplicate rows created
+
+
+def _fake_eurostat_records(value: float) -> list[RawListing]:
+    now = utcnow()
+    return [
+        RawListing(
+            source_code="eurostat_hpi",
+            external_id="eurostat-prc_hpi_q-IT-I15_Q-2025-Q2",
+            fetched_at=now,
+            source_updated_at=now,
+            payload={
+                "country_code": "IT",
+                "indicator_code": "house_price_index_i15_q",
+                "indicator_name": "House Price Index",
+                "period": "2025-Q2",
+                "value": value,
+                "unit": "index_2015q1_100",
+            },
+        )
+    ]
+
+
+@patch("app.adapters.eurostat.EurostatHpiAdapter.run")
+def test_eurostat_ingestion_upserts_economic_indicator(mock_run):
+    """Deterministic, network-independent test of the upsert logic: the
+    adapter's real HTTP call is mocked out here (see
+    tests/test_eurostat_adapter.py for the real, self-skipping live test)."""
+    mock_run.return_value = _fake_eurostat_records(119.8)
+    with SessionLocal() as db:
+        job = run_ingestion(db, "eurostat_hpi", trigger="manual", force=True)
+        assert job.status == "success"
+        assert job.records_created == 1
+        assert job.records_updated == 0
+        row = db.scalar(select(EconomicIndicator).where(EconomicIndicator.period == "2025-Q2"))
+        assert row is not None
+        assert row.value == 119.8
+        assert row.source_code == "eurostat_hpi"
+
+    mock_run.return_value = _fake_eurostat_records(121.0)
+    with SessionLocal() as db:
+        job2 = run_ingestion(db, "eurostat_hpi", trigger="manual", force=True)
+        assert job2.status == "success"
+        assert job2.records_created == 0
+        assert job2.records_updated == 1
+        rows = db.scalars(
+            select(EconomicIndicator).where(EconomicIndicator.period == "2025-Q2")
+        ).all()
+        assert len(rows) == 1  # updated in place, not duplicated
+        assert rows[0].value == 121.0
 
 
 def test_enqueue_falls_back_to_inline_when_redis_unreachable(monkeypatch):

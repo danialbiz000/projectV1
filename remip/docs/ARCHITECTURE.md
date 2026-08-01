@@ -26,6 +26,7 @@ flowchart LR
         BASE[BaseAdapter<br/>validate/normalize/dedup/retry/rate-limit]
         DEMO[DemoAdapter<br/>dati sintetici IT — seed-time]
         OMI[OmiAdapter<br/>M4 — struttura OMI reale, valori da fixture]
+        EURO[EurostatHpiAdapter<br/>M4 — chiamata HTTP reale, nessun fallback]
         PORTAL[Portal Adapter<br/>solo interfaccia — richiede accordo]
     end
     subgraph Async["Job queue (M4)"]
@@ -38,6 +39,9 @@ flowchart LR
         RD[(Redis<br/>cache + code)]
         S3[(S3/MinIO<br/>snapshot annunci — M4)]
     end
+    subgraph External["Internet (M4)"]
+        EUROSTAT[[Eurostat API pubblica<br/>nessuna chiave]]
+    end
     FE -->|HTTPS JSON| API
     MAP -->|HTTPS JSON| API
     API --> AUTH & GEO & MAPI & LST & MKT & FC & WL & NTF & ADM
@@ -45,9 +49,11 @@ flowchart LR
     SCHED -->|enqueue per provider abilitato| QUEUE
     QUEUE --> WORKER
     WORKER --> BASE
-    BASE --> DEMO & OMI & PORTAL
+    BASE --> DEMO & OMI & EURO & PORTAL
     DEMO -->|seed/update| LST
     OMI -->|upsert dedup| PG
+    EURO -->|HTTPS GET| EUROSTAT
+    EURO -->|upsert, o nessuna riga se il fetch fallisce| PG
     LST -->|snapshot versione| S3
     Backend --> PG
     Backend --> RD
@@ -91,7 +97,7 @@ Regole del monolite modulare:
 | Auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me` |
 | Geo | `GET /geo/countries`, `GET /geo/areas` (filtri country/level/parent/q), `GET /geo/areas/{id}` |
 | Listings | `GET /listings` (filtri, paginazione, sort), `GET /listings/{id}`, `GET /listings/{id}/history`, `GET /listings/{id}/comparables`, `GET /listings/{id}/versions/{n}/snapshot` (M4) |
-| Market | `GET /market/metrics` (serie storica per area), `GET /market/summary` (KPI + variazioni 1/3/6/12m,5y), `GET /market/forecast`, `GET /market/omi-quotations` (bande OMI per zona, M4) |
+| Market | `GET /market/metrics` (serie storica per area), `GET /market/summary` (KPI + variazioni 1/3/6/12m,5y), `GET /market/forecast`, `GET /market/omi-quotations` (bande OMI per zona, M4), `GET /market/economic-indicators` (indicatori live Eurostat, M4) |
 | Watchlist | CRUD `/watchlists`, `/watchlists/{id}/items` |
 | Notifications | `GET /notifications`, `GET /notifications/digest` (M4), `POST /notifications/{id}/read`, `POST /notifications/read-all` |
 | Sources | `GET /sources` (provider, ToS, qualità, is_demo) |
@@ -157,6 +163,34 @@ area interna per nome comune/zona → upsert dedup) è realistica e testata; sol
 i *valori* sono dimostrativi (`is_demo_data: true` in ogni risposta). Vedi
 `docs/INTEGRATIONS.md`.
 
+**Adapter Eurostat — dato genuinamente live**: `adapters/eurostat.py` fa una
+chiamata HTTP reale all'API pubblica di dissemination Eurostat (dataset
+`prc_hpi_q`, House Price Index trimestrale, nessuna chiave richiesta) per
+l'Italia. A differenza di OMI, **non c'è nessun fallback a valori sintetici**:
+se la richiesta fallisce, `BaseAdapter` esaurisce i retry con backoff
+esponenziale e solleva `AdapterError`, che `jobs/ingestion.py` trasforma in un
+`DataIngestionJob` con `status="failed"` e il messaggio d'errore reale — nessuna
+riga viene scritta. Il parser SDMX-JSON (`parse_sdmx_json`) è deliberatamente
+generico: deriva l'ordine delle dimensioni e i codici categoria dai campi
+`id`/`size`/`dimension` della risposta stessa anziché assumerne posizioni
+fisse, così resta corretto anche se i codici esatti di filtro/unità
+differiscono da quanto documentato. Non eseguito al bootstrap del seed (a
+differenza di OMI) per non richiedere rete in uscita all'avvio locale — parte
+solo su trigger admin o scheduler.
+
+Verificato in due modi complementari: (1) `tests/test_eurostat_adapter.py`
+testa il parser SDMX-JSON contro un campione costruito a mano e verificato
+matematicamente (deterministico, nessuna rete); (2) lo stesso file include un
+test che esegue la chiamata HTTP *reale* e usa `pytest.skip()` (non un fail)
+quando la rete non è raggiungibile — in questo sandbox (proxy che nega
+esplicitamente l'accesso a host esterni, verificato anche su `example.com`)
+il test si skippa con l'errore reale come motivo; in qualunque ambiente con
+accesso a internet vero (inclusa la CI di GitHub Actions) verifica per
+davvero la chiamata live. Provato manualmente end-to-end in questo ambiente:
+`POST /admin/ingestion/run/eurostat_hpi` produce onestamente un job
+`status="failed", error_message="403 Forbidden"` e
+`GET /market/economic-indicators` resta vuoto — nessun dato inventato.
+
 **Deduplicazione cross-agenzia**: `services/dedup.py` assegna un punteggio di
 confidenza (distanza geografica, similarità superficie/locali, sovrapposizione
 testuale dell'indirizzo) per decidere se un nuovo annuncio descrive un
@@ -181,7 +215,7 @@ fallback del job queue. Recuperabile via
 - **Sicurezza base**: isolamento utenti, accesso admin, token invalidi.
 - **E2E**: Playwright da M2 (frontend), incluse le interazioni mappa da M3.
 - **Geospaziali**: filtri raggio/poligono testati contro SQLite (portabili su Postgres, vedi sopra); PostGIS reale in compose non eseguito nella suite automatica.
-- **Ingestion (M4)**: adapter OMI (fetch/validate/normalize/determinismo), job (provider sconosciuto/disabilitato/force, upsert idempotente, persistenza `DataIngestionJob`), fallback coda→inline con Redis reale non raggiungibile (test dedicato, non un mock).
+- **Ingestion (M4)**: adapter OMI (fetch/validate/normalize/determinismo), adapter Eurostat (parser SDMX-JSON deterministico + un test a chiamata reale che si skippa se la rete non è raggiungibile, non un mock), job (provider sconosciuto/disabilitato/force, upsert idempotente per entrambi gli adapter, persistenza `DataIngestionJob`), fallback coda→inline con Redis reale non raggiungibile (test dedicato, non un mock).
 - **Storage (M4)**: percorso disco locale eseguito realmente; percorso S3 verificato contro un client boto3 mockato (nessun MinIO richiesto in CI).
 - CI (GitHub Actions): ruff → mypy → pytest su ogni push.
 

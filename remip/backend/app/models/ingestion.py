@@ -66,3 +66,29 @@ class OmiZoneQuotation(Base):
     currency: Mapped[str] = mapped_column(String(3), default="EUR")
     source_code: Mapped[str] = mapped_column(String(50), default="omi_it")
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EconomicIndicator(Base):
+    """A genuinely live macro indicator (M4): unlike OmiZoneQuotation, values
+    here come from a real HTTP call to a public statistical API — no
+    synthetic fallback. See adapters/eurostat.py for the (unverified from
+    this sandbox — see docs/INTEGRATIONS.md) live fetch, and
+    jobs/ingestion.py for why a failed fetch leaves no row rather than a
+    fabricated one."""
+
+    __tablename__ = "economic_indicators"
+    __table_args__ = (
+        UniqueConstraint(
+            "country_code", "indicator_code", "period", name="uq_economic_indicator_period"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    country_code: Mapped[str] = mapped_column(String(2), index=True)
+    indicator_code: Mapped[str] = mapped_column(String(50), index=True)
+    indicator_name: Mapped[str] = mapped_column(String(200))
+    period: Mapped[str] = mapped_column(String(10), index=True)  # e.g. "2025-Q3"
+    value: Mapped[float] = mapped_column(Float)
+    unit: Mapped[str] = mapped_column(String(50))
+    source_code: Mapped[str] = mapped_column(String(50), default="eurostat_hpi")
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
