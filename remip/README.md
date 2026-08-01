@@ -9,11 +9,13 @@ watchlist, notifiche e previsioni baseline con scenari.
 > [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md). Ogni risposta analitica
 > dell'API dichiara `is_demo_data: true` nel blocco `data_context`.
 
-**Stato: Milestone 2 completata** — backend (M1: API, modello dati, versionamento
+**Stato: Milestone 3 completata** — backend (M1: API, modello dati, versionamento
 annunci, notifiche, forecast baseline, seed demo, test) + frontend Next.js (M2:
 landing, auth, onboarding, dashboard di zona con grafici, ricerca, dettaglio
-immobile, watchlist, centro notifiche, dark/light, E2E Playwright).
-Mappa interattiva in Milestone 3 (roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
+immobile, watchlist, centro notifiche, dark/light) + mappa interattiva (M3:
+MapLibre GL con marker, clustering, heatmap €/m², disegno poligoni e ricerca
+per raggio, E2E Playwright). Prossima: ingestion asincrona reale in
+Milestone 4 (roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
 
 ## Documentazione
 
@@ -77,6 +79,9 @@ curl -s localhost:8000/api/v1/watchlists -H "Authorization: Bearer $TOKEN"
 curl -s localhost:8000/api/v1/notifications -H "Authorization: Bearer $TOKEN"
 # 4. Previsioni con scenari e trasparenza
 curl -s "localhost:8000/api/v1/market/forecast?area_id=<AREA_ID>"
+# 4b. Ricerca sulla mappa per raggio (2km) o poligono disegnato
+curl -s -X POST localhost:8000/api/v1/map/search -H 'Content-Type: application/json' \
+  -d '{"radius":{"lat":45.4642,"lon":9.19,"radius_km":2},"limit":100}'
 # 5. Simulare una variazione (admin) → nuova versione + notifica ai watcher
 curl -s -X POST localhost:8000/api/v1/admin/simulate/listing-update \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
@@ -105,10 +110,18 @@ migrabile), ruoli user/admin, audit log, validazione Pydantic, ORM
 parametrizzato, CORS esplicito, isolamento dati utente coperto da test.
 Nessun segreto nel repository: configurazione via `.env` (vedi `.env.example`).
 
-## Limitazioni note (M1)
+## Limitazioni note
 
 - Dati esclusivamente sintetici; le stime/previsioni sono dimostrative e non
   costituiscono consulenza finanziaria.
 - Schema creato con `create_all` (migrazioni Alembic da M2).
 - Notifiche solo in-app; email/push da M6. Rate limiting distribuito da M6.
-- Ricerca geografica per gerarchia amministrativa; poligoni/raggio con PostGIS in M3.
+- **Mappa (M3)**: i filtri per raggio/poligono girano in Python (portabili tra
+  SQLite e PostgreSQL) invece che con query PostGIS indicizzate — vedi
+  `docs/ARCHITECTURE.md`; l'estensione PostGIS è comunque abilitata e pronta
+  per M4+. Le tile di base (OpenStreetMap) e i font dei cluster (demo MapLibre)
+  sono servizi pubblici a basso volume, non adatti a traffico di produzione
+  senza un provider a licenza (vedi `docs/INTEGRATIONS.md`); richiedono
+  accesso di rete in uscita per il rendering della mappa. Nessun dato di
+  confine amministrativo reale (solo marker/cluster/heatmap di annunci).
+  Ricerca per indirizzo libero (geocoding) non ancora implementata.

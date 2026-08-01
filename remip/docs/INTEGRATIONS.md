@@ -11,11 +11,13 @@ da verificare con i provider: non sono state confermate.**
 | OMI — Agenzia delle Entrate (quotazioni immobiliari) | Open data | Candidata M4 | Verifica licenza riuso e granularità/ritardo pubblicazione |
 | ISTAT (popolazione, redditi, occupazione) | Open data | Candidata M4 | Verifica licenza (tip. CC-BY) e API/SDMX |
 | Eurostat / BCE (tassi, inflazione) | Open data | Candidata M4 | Verifica termini API |
-| OpenStreetMap / Overpass (POI, trasporti) | Open data | Candidata M3-M5 | Rispetto ODbL e rate limit; tile policy |
-| Geoboundaries / ISTAT confini amministrativi | Open data | Candidata M3 | Licenza confini |
+| OpenStreetMap tile raster (`tile.openstreetmap.org`) | Open data | **Attiva in demo, solo basso volume** | Basemap della mappa (M3). Uso pubblico soggetto alla [OSM Tile Usage Policy](https://operations.osmfoundation.org/policies/tiles/): non idoneo a traffico di produzione. Prima della scala reale serve un provider a licenza (es. MapTiler, Mapbox, Stadia) — vedi anche voce Overpass sotto |
+| MapLibre demo glyphs (`demotiles.maplibre.org`) | Servizio pubblico | **Attiva in demo** | Font per le etichette dei cluster sulla mappa (M3). Da sostituire con font self-hosted prima della produzione |
+| OpenStreetMap / Overpass (POI, trasporti) | Open data | Candidata M4-M5 | Rispetto ODbL e rate limit; layer opzionali (scuole, trasporti, servizi) non ancora implementati |
+| Geoboundaries / ISTAT confini amministrativi | Open data | Candidata M4 | Licenza confini; la mappa M3 mostra solo marker/cluster/heatmap di annunci, non poligoni di confine amministrativo reali |
 | Portali annunci (Immobiliare.it, Idealista, Casa.it, …) | Commerciale | **Solo interfaccia adapter** | Accordo commerciale/API autorizzata. Nessuno scraping: vietato da ToS e escluso by design |
 | Dati catastali | Pubblico con vincoli | Da valutare | Analisi legale accesso e riuso |
-| Provider geocoding (Nominatim/commerciale) | Misto | Candidata M3 | ToS Nominatim o contratto commerciale |
+| Provider geocoding (Nominatim/commerciale) | Misto | Candidata M4 | Ricerca per indirizzo libero non ancora implementata (M3 usa i centroidi delle aree già in DB); ToS Nominatim o contratto commerciale |
 | Email provider (notifiche) | Commerciale | Candidata M6 | Contratto + DPA GDPR |
 | Push provider | Commerciale | Candidata M6 | Contratto + DPA |
 

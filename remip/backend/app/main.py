@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import api_router
 from app.core.config import get_settings
-from app.db.base import Base, SessionLocal, engine
+from app.db.base import Base, SessionLocal, engine, ensure_postgis
 from app.db.seed import seed_database
 
 logging.basicConfig(level=logging.INFO)
@@ -17,6 +17,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ensure_postgis()
     # M1 runs schema creation directly; Alembic migrations arrive with M2+.
     Base.metadata.create_all(bind=engine)
     if settings.seed_on_startup:

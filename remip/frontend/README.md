@@ -1,7 +1,6 @@
-# REMIP Frontend (Milestone 2)
+# REMIP Frontend (Milestone 3)
 
-Next.js 14 (App Router) + React + TypeScript + Tailwind CSS + Recharts.
-La mappa interattiva (MapLibre GL) arriva con la Milestone 3.
+Next.js 14 (App Router) + React + TypeScript + Tailwind CSS + Recharts + MapLibre GL.
 
 ## Pagine
 
@@ -13,6 +12,7 @@ La mappa interattiva (MapLibre GL) arriva con la Milestone 3.
 | `/dashboard` | Dashboard di zona: selettore città/quartiere, KPI, variazioni multi-periodo, trend €/m², volumi, previsioni con scenari, blocco trasparenza fonti |
 | `/listings` | Ricerca con filtri (contratto, tipologia, prezzo, locali), ordinamento e paginazione |
 | `/listings/[id]` | Dettaglio: caratteristiche, stima a intervallo, storico prezzi, cronologia versioni con diff, comparabili, aggiunta a watchlist |
+| `/map` | Mappa interattiva: marker con popup, clustering, toggle heatmap €/m², disegno di un'area a mano libera e ricerca per raggio |
 | `/watchlist` | Elementi osservati (annunci e zone) |
 | `/notifications` | Centro notifiche con non lette, filtro e "segna come letta" |
 
@@ -39,3 +39,9 @@ npm run e2e         # Playwright: avvia backend (SQLite dedicato) + app buildata
 
 Per l'E2E in ambienti con Chromium preinstallato:
 `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium npm run e2e`.
+
+Nota: la pagina `/map` richiede accesso di rete in uscita per caricare le
+tile OpenStreetMap e i font dei cluster (demo MapLibre); in ambienti senza
+accesso a internet il basemap resta bianco ma marker, cluster, heatmap e
+disegno di poligoni/raggio restano pienamente funzionanti (non dipendono
+dalle tile — vedi `docs/ARCHITECTURE.md`).

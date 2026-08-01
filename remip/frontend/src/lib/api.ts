@@ -227,6 +227,39 @@ export interface NotificationOut {
   created_at: string;
 }
 
+export interface MapPoint {
+  id: string;
+  lat: number;
+  lon: number;
+  price: number;
+  currency: string;
+  price_per_sqm: number | null;
+  listing_type: string;
+  property_type: string;
+  size_sqm: number;
+  rooms: number;
+}
+
+export interface MapSearchRequest {
+  area_id?: string;
+  listing_type?: string;
+  status?: string;
+  property_type?: string;
+  min_price?: number;
+  max_price?: number;
+  bbox?: { min_lon: number; min_lat: number; max_lon: number; max_lat: number };
+  radius?: { lat: number; lon: number; radius_km: number };
+  polygon?: number[][];
+  limit?: number;
+}
+
+export interface MapSearchResponse {
+  items: MapPoint[];
+  total_matched: number;
+  truncated: boolean;
+  data_context: DataContext;
+}
+
 export interface Paginated<T> {
   items: T[];
   total: number;

@@ -6,29 +6,22 @@ on the fly and clearly bounded.
 """
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import PhysicalProperty, PropertyListing
+from app.services.geo import haversine_km
 
 SIZE_TOLERANCE = 0.35  # ±35%
 MAX_RESULTS = 8
 
 
-def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    # Equirectangular approximation: fine at neighborhood scale.
-    x = math.radians(lon2 - lon1) * math.cos(math.radians((lat1 + lat2) / 2))
-    y = math.radians(lat2 - lat1)
-    return math.hypot(x, y) * 6371.0
-
-
 def similarity_score(subject: PhysicalProperty, other: PhysicalProperty) -> float:
     size_diff = abs(other.size_sqm - subject.size_sqm) / max(subject.size_sqm, 1)
     rooms_diff = abs((other.rooms or 0) - (subject.rooms or 0))
-    dist = _distance_km(subject.lat, subject.lon, other.lat, other.lon)
+    dist = haversine_km(subject.lat, subject.lon, other.lat, other.lon)
     score = 1.0 - min(size_diff, 1.0) * 0.5 - min(rooms_diff / 4, 1.0) * 0.25
     score -= min(dist / 5.0, 1.0) * 0.25
     return round(max(score, 0.0), 3)

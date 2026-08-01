@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import get_settings
+
+logger = logging.getLogger("remip.db")
 
 
 class Base(DeclarativeBase):
@@ -36,6 +40,24 @@ def _make_engine():
 
 engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+def ensure_postgis() -> None:
+    """Enable the PostGIS extension when running on PostgreSQL.
+
+    M3's spatial filters (radius/polygon) run in Python for SQLite/Postgres
+    portability (see services/geo.py); this only readies the schema for
+    indexed PostGIS geometry columns (ST_DWithin/ST_Contains) once listing
+    volume justifies them (M4+). A missing CREATE EXTENSION privilege is
+    logged, not fatal — the platform still runs without it.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+    except DBAPIError:
+        logger.warning("Could not enable PostGIS extension (missing privilege?)", exc_info=True)
 
 
 def get_db() -> Generator[Session, None, None]:

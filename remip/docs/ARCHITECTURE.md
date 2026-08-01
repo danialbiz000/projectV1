@@ -8,11 +8,13 @@ Monolite modulare (vedi `PLAN.md` §6 per le alternative valutate e la motivazio
 flowchart LR
     subgraph Client
         FE[Next.js Frontend<br/>M2]
+        MAP[MapLibre GL<br/>marker/cluster/heatmap/draw — M3]
     end
     subgraph Backend["FastAPI (monolite modulare)"]
         API[API v1<br/>REST + OpenAPI]
         AUTH[Auth & Roles]
         GEO[Geo Module]
+        MAPI[Map Search<br/>bbox/raggio/poligono — M3]
         LST[Listings & Versioning]
         MKT[Market Analytics]
         FC[Forecast Baseline]
@@ -32,7 +34,8 @@ flowchart LR
         S3[(S3/MinIO<br/>snapshot — M4)]
     end
     FE -->|HTTPS JSON| API
-    API --> AUTH & GEO & LST & MKT & FC & WL & NTF & ADM
+    MAP -->|HTTPS JSON| API
+    API --> AUTH & GEO & MAPI & LST & MKT & FC & WL & NTF & ADM
     BASE --> DEMO & OMI & PORTAL
     DEMO -->|seed/update| LST
     Backend --> PG
@@ -82,11 +85,34 @@ Regole del monolite modulare:
 | Notifications | `GET /notifications`, `POST /notifications/{id}/read`, `POST /notifications/read-all` |
 | Sources | `GET /sources` (provider, ToS, qualità, is_demo) |
 | Admin | `GET /admin/stats`, `POST /admin/simulate/listing-update` (motore demo variazioni) |
+| Map | `POST /map/search` (marker per bbox/raggio/poligono), `GET /map/areas-geo` (centroidi per livello amministrativo) |
 | Health | `GET /health` |
 
 Convenzioni: paginazione `limit/offset` con `total`; errori JSON uniformi
 (`{"detail": ...}`); ogni risposta analitica include il blocco `data_context`
 (source, period, observations, updated_at, quality, limitations, is_demo_data).
+
+## Mappa e ricerca geospaziale (M3)
+
+**Filtri spaziali in Python, non in SQL PostGIS.** `POST /map/search` applica
+bounding-box, raggio e poligono disegnato a mano interamente in
+`services/geo.py` (haversine + ray-casting PNPOLY), con un pre-filtro SQL sulla
+bounding box per limitare i candidati prima del test esatto. Motivazione:
+questa logica deve funzionare identica su SQLite (dev/test locale, come da
+M1) e su PostgreSQL (compose) — query `ST_DWithin`/`ST_Contains` esisterebbero
+solo su Postgres, spezzando l'avvio locale "zero servizi esterni" descritto
+nel README. L'estensione PostGIS viene comunque abilitata all'avvio quando il
+dialetto è PostgreSQL (`db/base.py::ensure_postgis`), così lo schema è pronto
+per colonne geometry indicizzate quando il volume di annunci lo giustificherà
+(M4+): a quel punto la sostituzione è isolata a `services/geo.py`, senza
+toccare i router.
+
+**Rendering mappa**: MapLibre GL con marker, clustering (nativo, via
+supercluster integrato) e layer heatmap (nativo, pesato su `price_per_sqm`),
+poligono disegnato a mano e cerchio di ricerca per raggio renderizzati come
+overlay GeoJSON. Le tile di base sono raster OpenStreetMap pubbliche, a basso
+volume, solo per la demo — vedi `docs/INTEGRATIONS.md` per i vincoli di ToS e
+il provider da adottare prima di traffico in produzione.
 
 ## Strategia di testing
 
