@@ -1206,7 +1206,7 @@ async function secureFetch(url, options = {}) {
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401) {
     resetSession();
-    throw new Error('Sessione scaduta. Effettua di nuovo l accesso.');
+    throw new Error("Sessione scaduta. Effettua di nuovo l'accesso.");
   }
   return res;
 }

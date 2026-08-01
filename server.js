@@ -405,7 +405,7 @@ app.get('/api/alpaca/assets/:symbol', async (req, res) => {
 app.get('/api/alpaca/bars/:symbol', async (req, res) => {
   try {
     const sym = req.params.symbol;
-    const qs = new URLSearchParams({ timeframe: '1Day', limit: '30', feed: 'iex' });
+    const qs = dailyBarsParams(30, 30);
     const upstream = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(sym)}/bars?${qs}`);
     const bd = await upstream.json();
     // Normalise to multi-symbol format expected by frontend: { bars: { SYM: [...] } }
@@ -1013,18 +1013,6 @@ function saveAtState() {
   } catch (err) {
     console.error('[AutoTrader] Failed to persist state:', err.message);
   }
-}
-
-// ─── Telegram Notifications ───────────────────────────────────────────────────
-async function sendTelegram(text) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
-    });
-  } catch (_) {}
 }
 
 
