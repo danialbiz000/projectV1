@@ -61,3 +61,20 @@ class Notification(Base):
     dedup_key: Mapped[str] = mapped_column(String(200))
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NotificationPreference(Base):
+    """One row per user. Absence of a row means "all defaults" (instant,
+    nothing muted) — created lazily on first read/write, not at registration,
+    so most users never get a row until they actually change something."""
+
+    __tablename__ = "notification_preferences"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    frequency: Mapped[str] = mapped_column(String(20), default="instant")
+    # instant | daily_digest | weekly_digest
+    muted_types: Mapped[list] = mapped_column(JSON, default=list)  # notification "type" values
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

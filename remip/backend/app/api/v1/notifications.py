@@ -5,8 +5,12 @@ from sqlalchemy import func, select, update
 
 from app.api.deps import CurrentUser, DbDep
 from app.db.base import utcnow
-from app.models import Notification
-from app.schemas.listing import NotificationOut
+from app.models import Notification, NotificationPreference
+from app.schemas.listing import (
+    NotificationOut,
+    NotificationPreferenceIn,
+    NotificationPreferenceOut,
+)
 from app.services.notifications import EVENT_TITLES
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -95,3 +99,40 @@ def mark_all_read(user: CurrentUser, db: DbDep) -> dict:
     )
     db.commit()
     return {"detail": "ok"}
+
+
+@router.get("/preferences", response_model=NotificationPreferenceOut)
+def get_preferences(user: CurrentUser, db: DbDep) -> NotificationPreferenceOut:
+    pref = db.scalar(
+        select(NotificationPreference).where(NotificationPreference.user_id == user.id)
+    )
+    if pref is None:
+        return NotificationPreferenceOut(frequency="instant", muted_types=[], updated_at=None)
+    return NotificationPreferenceOut(
+        frequency=pref.frequency, muted_types=pref.muted_types, updated_at=pref.updated_at
+    )
+
+
+@router.put("/preferences", response_model=NotificationPreferenceOut)
+def update_preferences(
+    body: NotificationPreferenceIn, user: CurrentUser, db: DbDep
+) -> NotificationPreferenceOut:
+    unknown = sorted(set(body.muted_types) - set(EVENT_TITLES))
+    if unknown:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Unknown notification type(s): {unknown}. Valid: {sorted(EVENT_TITLES)}",
+        )
+    pref = db.scalar(
+        select(NotificationPreference).where(NotificationPreference.user_id == user.id)
+    )
+    if pref is None:
+        pref = NotificationPreference(user_id=user.id)
+        db.add(pref)
+    pref.frequency = body.frequency
+    pref.muted_types = body.muted_types
+    db.commit()
+    db.refresh(pref)
+    return NotificationPreferenceOut(
+        frequency=pref.frequency, muted_types=pref.muted_types, updated_at=pref.updated_at
+    )

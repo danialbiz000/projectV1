@@ -10,7 +10,8 @@ from app.models.listing import (
 )
 from app.models.market import MarketForecast, MarketMetric
 from app.models.user import AuditLog, User
-from app.models.watchlist import Notification, Watchlist, WatchlistItem
+from app.models.valuation import Valuation
+from app.models.watchlist import Notification, NotificationPreference, Watchlist, WatchlistItem
 
 __all__ = [
     "AdministrativeArea",
@@ -24,11 +25,13 @@ __all__ = [
     "MarketForecast",
     "MarketMetric",
     "Notification",
+    "NotificationPreference",
     "OmiZoneQuotation",
     "PhysicalProperty",
     "PriceObservation",
     "PropertyListing",
     "User",
+    "Valuation",
     "Watchlist",
     "WatchlistItem",
 ]

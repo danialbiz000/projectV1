@@ -9,6 +9,7 @@ from app.models import (
     AdministrativeArea,
     AuditLog,
     DataIngestionJob,
+    DataProvider,
     ListingVersion,
     Notification,
     PropertyListing,
@@ -115,3 +116,87 @@ def list_ingestion_jobs(admin: AdminUser, db: DbDep, limit: int = 20) -> list[di
         }
         for j in jobs
     ]
+
+
+@router.get("/users")
+def list_users(admin: AdminUser, db: DbDep, limit: int = 50, offset: int = 0) -> dict:
+    total = db.scalar(select(func.count()).select_from(User)) or 0
+    users = db.scalars(
+        select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+    ).all()
+    return {
+        "items": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "full_name": u.full_name,
+                "role": u.role,
+                "is_active": u.is_active,
+                "onboarding_completed": u.onboarding_completed,
+                "created_at": u.created_at.isoformat(),
+            }
+            for u in users
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.post("/users/{user_id}/deactivate")
+def deactivate_user(user_id: str, admin: AdminUser, db: DbDep) -> dict:
+    if user_id == admin.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot deactivate your own account")
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    target.is_active = False
+    db.add(
+        AuditLog(
+            user_id=admin.id, action="admin.deactivate_user", entity="user", entity_id=user_id
+        )
+    )
+    db.commit()
+    return {"detail": "User deactivated", "user_id": user_id}
+
+
+@router.post("/users/{user_id}/reactivate")
+def reactivate_user(user_id: str, admin: AdminUser, db: DbDep) -> dict:
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    target.is_active = True
+    db.add(
+        AuditLog(
+            user_id=admin.id, action="admin.reactivate_user", entity="user", entity_id=user_id
+        )
+    )
+    db.commit()
+    return {"detail": "User reactivated", "user_id": user_id}
+
+
+@router.post("/sources/{provider_code}/toggle")
+def toggle_source(provider_code: str, admin: AdminUser, db: DbDep, enabled: bool) -> dict:
+    """Flip a DataProvider's kill-switch. Mirrors the invariant enforced in
+    adapters/base.py::BaseAdapter.__init__: a source that isn't ToS-compliant
+    can never be enabled, from here or anywhere else."""
+    provider = db.scalar(select(DataProvider).where(DataProvider.code == provider_code))
+    if provider is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider not found")
+    if enabled and not provider.tos_compliant:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"'{provider_code}' is not ToS-compliant and cannot be enabled.",
+        )
+    provider.enabled = enabled
+    db.add(
+        AuditLog(
+            user_id=admin.id,
+            action="admin.toggle_source",
+            entity="data_provider",
+            entity_id=provider_code,
+            meta={"enabled": enabled},
+        )
+    )
+    db.commit()
+    return {"detail": "Provider updated", "provider_code": provider_code, "enabled": enabled}

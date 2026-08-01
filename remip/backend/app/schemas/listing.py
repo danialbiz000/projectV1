@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AreaOut(BaseModel):
@@ -40,6 +40,38 @@ class ListingSummary(BaseModel):
     days_on_market: int
     photos_count: int
     is_demo_data: bool = True
+
+
+class ListingCompareRow(ListingSummary):
+    deviation_from_area_pct: float | None
+    estimate: dict[str, Any] | None
+
+
+class ListingCompareRequest(BaseModel):
+    listing_ids: list[str] = Field(min_length=2, max_length=4)
+
+
+class AreaCompareRow(BaseModel):
+    area_id: str
+    area_name: str | None = None
+    area_level: str | None = None
+    available: bool
+    listing_type: str | None = None
+    period: str | None = None
+    avg_price: float | None = None
+    median_price: float | None = None
+    avg_price_sqm: float | None = None
+    median_price_sqm: float | None = None
+    active_listings: int | None = None
+    new_listings: int | None = None
+    removed_listings: int | None = None
+    avg_days_on_market: float | None = None
+    price_reduction_share: float | None = None
+    avg_discount_pct: float | None = None
+    rent_avg_sqm: float | None = None
+    gross_yield_pct: float | None = None
+    currency: str | None = None
+    changes_pct: dict[str, float | None] | None = None
 
 
 class VersionOut(BaseModel):
@@ -112,6 +144,22 @@ class WatchlistOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ValuationOut(BaseModel):
+    id: str
+    listing_id: str
+    computed_at: datetime
+    estimated_value: float
+    range_low: float
+    range_high: float
+    currency: str
+    method: str
+    n_comparables: int
+    confidence: float
+    assumptions: str
+
+    model_config = {"from_attributes": True}
+
+
 class NotificationOut(BaseModel):
     id: str
     type: str
@@ -122,6 +170,17 @@ class NotificationOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class NotificationPreferenceIn(BaseModel):
+    frequency: str = Field(pattern="^(instant|daily_digest|weekly_digest)$")
+    muted_types: list[str] = Field(default_factory=list)
+
+
+class NotificationPreferenceOut(BaseModel):
+    frequency: str
+    muted_types: list[str]
+    updated_at: datetime | None
 
 
 class SimulateUpdateRequest(BaseModel):

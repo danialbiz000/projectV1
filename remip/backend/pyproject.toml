@@ -33,6 +33,13 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Query()/Depends() in argument defaults is the documented DI
+# pattern, not a mutable-default bug; B008 only auto-exempts a narrow shape
+# (single simple literal default) so a *required* Query(..., min_length=…)
+# still trips it. This is ruff's own supported allowlist for that.
+extend-immutable-calls = ["fastapi.Query", "fastapi.Depends"]
+
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true

@@ -10,7 +10,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Notification, PropertyListing, Watchlist, WatchlistItem
+from app.models import (
+    Notification,
+    NotificationPreference,
+    PropertyListing,
+    Watchlist,
+    WatchlistItem,
+)
 
 EVENT_TITLES = {
     "price_drop": "Prezzo ridotto",
@@ -45,6 +51,13 @@ def watching_user_ids(db: Session, listing_id: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+def _is_muted(db: Session, user_id: str, event_type: str) -> bool:
+    pref = db.scalar(
+        select(NotificationPreference).where(NotificationPreference.user_id == user_id)
+    )
+    return pref is not None and event_type in pref.muted_types
+
+
 def notify_listing_event(
     db: Session,
     listing: PropertyListing,
@@ -55,6 +68,8 @@ def notify_listing_event(
     dedup_key = f"listing:{listing.id}:v{version_number}:{event_type}"
     created: list[Notification] = []
     for user_id in watching_user_ids(db, listing.id):
+        if _is_muted(db, user_id, event_type):
+            continue
         exists = db.scalar(
             select(Notification.id).where(
                 Notification.user_id == user_id, Notification.dedup_key == dedup_key

@@ -6,11 +6,13 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { DemoBadge } from "@/components/DemoBadge";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { getCompareIds } from "@/lib/compare";
 
 const links = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/listings", label: "Ricerca" },
   { href: "/map", label: "Mappa" },
+  { href: "/compare", label: "Confronta" },
   { href: "/watchlist", label: "Watchlist" },
   { href: "/notifications", label: "Notifiche" },
 ];
@@ -18,6 +20,7 @@ const links = [
 export function Navbar() {
   const { user, logout } = useAuth();
   const [unread, setUnread] = useState(0);
+  const [compareCount, setCompareCount] = useState(0);
 
   useEffect(() => {
     if (!user) return;
@@ -25,6 +28,17 @@ export function Navbar() {
       .then((data) => setUnread(data.unread))
       .catch(() => setUnread(0));
   }, [user]);
+
+  useEffect(() => {
+    const sync = () => setCompareCount(getCompareIds().length);
+    sync();
+    window.addEventListener("remip-compare-change", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("remip-compare-change", sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
 
   return (
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90">
@@ -51,8 +65,21 @@ export function Navbar() {
                       {unread}
                     </span>
                   )}
+                  {link.href === "/compare" && compareCount > 0 && (
+                    <span className="ml-1 rounded-full bg-brand-600 px-1.5 text-xs text-white">
+                      {compareCount}
+                    </span>
+                  )}
                 </Link>
               ))}
+              {user.role === "admin" && (
+                <Link
+                  href="/admin"
+                  className="rounded-lg px-2.5 py-1.5 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  Admin
+                </Link>
+              )}
               <span className="hidden text-xs text-slate-500 sm:inline">{user.email}</span>
               <button type="button" onClick={logout} className="btn-secondary">
                 Esci

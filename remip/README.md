@@ -13,7 +13,7 @@ watchlist, notifiche e previsioni baseline con scenari.
 > integrate e i prerequisiti legali/commerciali sono in
 > [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
-**Stato: Milestone 4 completata** — backend (M1: API, modello dati, versionamento
+**Stato: Milestone 5 completata** — backend (M1: API, modello dati, versionamento
 annunci, notifiche, forecast baseline, seed demo, test) + frontend Next.js (M2:
 landing, auth, onboarding, dashboard di zona con grafici, ricerca, dettaglio
 immobile, watchlist, centro notifiche, dark/light) + mappa interattiva (M3:
@@ -22,8 +22,13 @@ per raggio) + ingestion asincrona (M4: job queue RQ/Redis + scheduler
 APScheduler, adapter open data OMI-shaped, **adapter Eurostat a dato live**
 (House Price Index, chiamata HTTP reale senza fallback sintetico),
 deduplicazione cross-agenzia con confidence, snapshot annunci su object
-storage, digest notifiche). Prossima: confronti immobili/zone e valutazioni
-in Milestone 5 (roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
+storage, digest notifiche) + confronti, valutazioni e admin esteso (M5:
+valutazione persistita con intervallo (`/listings/{id}/valuations`), motore di
+spiegazione driver del trend (`/market/explanation`, correlazioni dichiarate
+non causalità), confronto annunci (`/compare`) e zone (dashboard), preferenze
+notifiche per tipo, pagina `/admin` — utenti, fonti dati, job di ingestion).
+Prossima: hardening e produzione in Milestone 6 (roadmap:
+[`docs/PLAN.md`](docs/PLAN.md)).
 
 ## Documentazione
 
@@ -116,6 +121,16 @@ curl -s -X POST localhost:8000/api/v1/admin/ingestion/run/omi_it -H "Authorizati
 # 6b. Trigger dell'adapter live: in un ambiente con internet reale popola
 #     economic-indicators; qui in sandbox fallisce onestamente (403 di rete)
 curl -s -X POST localhost:8000/api/v1/admin/ingestion/run/eurostat_hpi -H "Authorization: Bearer $ADMIN_TOKEN"
+# 7. Valutazione persistita, confronti e spiegazione del trend — M5
+curl -s -X POST localhost:8000/api/v1/listings/<LISTING_ID>/valuations -H "Authorization: Bearer $TOKEN"
+curl -s -X POST localhost:8000/api/v1/listings/compare -H 'Content-Type: application/json' \
+  -d '{"listing_ids":["<ID1>","<ID2>"]}'
+curl -s "localhost:8000/api/v1/market/compare-areas?area_ids=<AREA_ID1>&area_ids=<AREA_ID2>"
+curl -s "localhost:8000/api/v1/market/explanation?area_id=<AREA_ID>"
+# 8. Preferenze notifiche e amministrazione utenti/fonti — M5
+curl -s -X PUT localhost:8000/api/v1/notifications/preferences -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"frequency":"instant","muted_types":["photos_change"]}'
+curl -s localhost:8000/api/v1/admin/users -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 ## Qualità
@@ -170,3 +185,10 @@ Nessun segreto nel repository: configurazione via `.env` (vedi `.env.example`).
   (2026-08-01): 126 osservazioni ingerite, indice House Price Index IT
   2010→2026 corretto e incrociato con la variazione annua dichiarata.
   `SavedSearch`/`AlertRule` e digest via email restano V2/M6.
+- **Confronti e valutazioni (M5)**: `NotificationPreference.frequency`
+  (`daily_digest`/`weekly_digest`) è persistita e restituita dall'API ma non
+  ancora applicata da un job di invio raggruppato — solo `muted_types` è già
+  rispettato in tempo reale da `services/notifications.py` (il digest via
+  email/push resta M6). La valutazione persistita richiede almeno 3
+  comparabili nella stessa area — sotto soglia l'endpoint risponde 422
+  invece di restituire un numero non fondato.

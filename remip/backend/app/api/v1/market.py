@@ -7,6 +7,8 @@ from app.api.deps import DbDep
 from app.api.v1.listings import descendant_area_ids
 from app.models import AdministrativeArea, EconomicIndicator, MarketForecast, OmiZoneQuotation
 from app.schemas.common import DataContext
+from app.schemas.listing import AreaCompareRow
+from app.services import explanation as explanation_service
 from app.services import forecast as forecast_service
 from app.services import market as market_service
 
@@ -230,5 +232,58 @@ def economic_indicators(db: DbDep, country: str = Query(default="IT", max_length
             "fallback a valori sintetici, per design) — vedi GET /admin/ingestion/jobs. "
             "Copertura nazionale, non per città/zona.",
             is_demo_data=False,
+        ).model_dump(),
+    }
+
+
+@router.get("/compare-areas", response_model=list[AreaCompareRow])
+def compare_areas(
+    db: DbDep,
+    area_ids: list[str] = Query(..., min_length=2, max_length=4),
+    listing_type: str = Query(default="sale", pattern="^(sale|rent)$"),
+) -> list[AreaCompareRow]:
+    """Side-by-side KPIs for 2-4 areas — same figures as /market/summary for
+    a single area, so a comparison view can be built from data already
+    proven correct there."""
+    if len(set(area_ids)) != len(area_ids):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Duplicate area_ids")
+    rows: list[AreaCompareRow] = []
+    for area_id in area_ids:
+        area = _area_or_404(db, area_id)
+        rows.append(AreaCompareRow(**market_service.summarize(db, area, listing_type)))
+    return rows
+
+
+@router.get("/explanation")
+def market_explanation(
+    db: DbDep,
+    area_id: str,
+    listing_type: str = Query(default="sale", pattern="^(sale|rent)$"),
+) -> dict:
+    """Why the market looks like it's rising/falling/flat (M5) — correlational
+    drivers read off the observed metric series, never invented causality.
+    See services/explanation.py."""
+    area = _area_or_404(db, area_id)
+    series = market_service.get_series(db, area_id, listing_type)
+    latest_hpi = db.scalar(
+        select(EconomicIndicator)
+        .where(
+            EconomicIndicator.country_code == "IT",
+            EconomicIndicator.indicator_code == "house_price_index_rch_a",
+        )
+        .order_by(EconomicIndicator.period.desc())
+        .limit(1)
+    )
+    result = explanation_service.explain_trend(series, latest_hpi)
+    return {
+        "data": result,
+        "data_context": _context(
+            series,
+            area,
+            "Driver correlazionali dagli ultimi "
+            f"{explanation_service.MIN_MONTHS} mesi della serie MarketMetric dell'area; "
+            "nessuna relazione causale è affermata (vedi 'alternative_explanations').",
+            "Dati sintetici demo per l'area; il contesto nazionale (se presente) proviene "
+            "da una fonte live separata — vedi 'national_context'.",
         ).model_dump(),
     }

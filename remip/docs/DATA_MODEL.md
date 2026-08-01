@@ -3,7 +3,7 @@
 Principi: UUID stabili, timestamp UTC (`*_at`), valuta ISO 4217 esplicita su ogni
 importo, separazione **immobile fisico ≠ annuncio ≠ versione ≠ fonte ≠ agenzia**.
 
-## ER (entità implementate, Milestone 1-4)
+## ER (entità implementate, Milestone 1-5)
 
 ```mermaid
 erDiagram
@@ -22,11 +22,13 @@ erDiagram
     PhysicalProperty ||--o{ PropertyListing : advertised_by
     PropertyListing ||--o{ ListingVersion : versioned_as
     PropertyListing ||--o{ PriceObservation : observed
+    PropertyListing ||--o{ Valuation : "valued as (M5)"
     User ||--o{ Watchlist : owns
     Watchlist ||--o{ WatchlistItem : contains
     WatchlistItem }o--|| PropertyListing : tracks
     WatchlistItem }o--|| AdministrativeArea : tracks
     User ||--o{ Notification : receives
+    User ||--o| NotificationPreference : "configures (M5)"
     User ||--o{ AuditLog : generates
 ```
 
@@ -51,15 +53,17 @@ erDiagram
 | **DataIngestionJob** (M4) | id, provider_code, status (`running`/`success`/`failed`), trigger (`manual`/`scheduled`/`seed`), started_at, finished_at, records_fetched/created/updated, error_message | una riga per esecuzione di adapter, in coda o inline |
 | **OmiZoneQuotation** (M4) | id, area_id?, provider_id, comune, zone_code, zone_description, property_type, conservation_state, period (semestre), listing_type, price_sqm_min/max, currency, source_code, ingested_at | dato di zona (non per annuncio); `area_id` nullo se la zona OMI non è stata risolta contro la geografia interna |
 | **EconomicIndicator** (M4) | id, country_code, indicator_code, indicator_name, period, value, unit, source_code, ingested_at | **unica entità con dato genuinamente live**: valorizzata solo da una chiamata HTTP reale riuscita (Eurostat House Price Index) — nessuna riga se l'ingestion non è mai andata a buon fine, nessun valore sintetico di ripiego. Copertura Paese, non per città/zona |
+| **Valuation** (M5) | id, listing_id, computed_at, estimated_value, range_low/high, currency, method, n_comparables, confidence (0-1), assumptions | snapshot puntuale, scritto solo su azione esplicita dell'utente (`POST /listings/{id}/valuations`), mai su una semplice visualizzazione della pagina; assente se i comparabili sono <3 (nessun valore inventato, vedi `services/comparables.py`) |
+| **NotificationPreference** (M5) | id, user_id (unique), frequency (`instant`/`daily_digest`/`weekly_digest`), muted_types (json), updated_at | una riga per utente; l'assenza di riga equivale ai default (`instant`, nessun tipo silenziato); `frequency` è persistita ma solo `muted_types` è già applicato dal motore notifiche (digest batching è M6, vedi nota in `services/notifications.py`) |
 
 ## Entità pianificate (milestone successive)
 
-`GeographicBoundary` (geometrie PostGIS reali — M5+, oggi la mappa mostra solo
-marker/cluster/heatmap di annunci), `SavedSearch`/`AlertRule` (M5),
-`DataQualityScore`/`SourceCitation` come tabelle dedicate (M5 — oggi qualità e
+`GeographicBoundary` (geometrie PostGIS reali — M6+, oggi la mappa mostra solo
+marker/cluster/heatmap di annunci), `SavedSearch`/`AlertRule` (M6),
+`DataQualityScore`/`SourceCitation` come tabelle dedicate (M6 — oggi qualità e
 fonte sono campi su provider/metriche/risposte `data_context`),
-`GeographicIndicator` (M5), `Valuation`/`ComparableProperty`
-persistite (M5 — oggi i comparabili sono calcolati on-the-fly),
-`UserPreference`/`NotificationPreference` (M5), `RentalObservation` (M5 — oggi le
-locazioni sono `PropertyListing.listing_type="rent"`), `PropertyType`/
-`PropertyFeature` normalizzate (M5 — oggi enum + json documentati).
+`GeographicIndicator` (M6), `ComparableProperty` persistita (M6 — oggi i
+comparabili restano calcolati on-the-fly, solo la `Valuation` risultante viene
+salvata), `RentalObservation` (M6 — oggi le locazioni sono
+`PropertyListing.listing_type="rent"`), `PropertyType`/`PropertyFeature`
+normalizzate (M6 — oggi enum + json documentati).

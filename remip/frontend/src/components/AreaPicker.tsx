@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { api, type Area } from "@/lib/api";
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
 
 /** City + optional neighborhood selector; emits the most specific area chosen. */
 export function AreaPicker({ onChange }: Props) {
+  const cityFieldId = useId();
+  const neighborhoodFieldId = useId();
   const [cities, setCities] = useState<Area[]>([]);
   const [neighborhoods, setNeighborhoods] = useState<Area[]>([]);
   const [cityId, setCityId] = useState<string>("");
@@ -42,11 +44,11 @@ export function AreaPicker({ onChange }: Props) {
   return (
     <div className="flex flex-wrap gap-3">
       <div className="min-w-40 flex-1">
-        <label className="label" htmlFor="city">
+        <label className="label" htmlFor={cityFieldId}>
           Città
         </label>
         <select
-          id="city"
+          id={cityFieldId}
           className="input"
           value={cityId}
           onChange={(e) => setCityId(e.target.value)}
@@ -59,11 +61,11 @@ export function AreaPicker({ onChange }: Props) {
         </select>
       </div>
       <div className="min-w-40 flex-1">
-        <label className="label" htmlFor="neighborhood">
+        <label className="label" htmlFor={neighborhoodFieldId}>
           Quartiere (opzionale)
         </label>
         <select
-          id="neighborhood"
+          id={neighborhoodFieldId}
           className="input"
           value={neighborhoodId}
           onChange={(e) => setNeighborhoodId(e.target.value)}

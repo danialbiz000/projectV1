@@ -122,8 +122,27 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 | **M2** ✅ | Frontend Next.js: landing, auth, onboarding, dashboard zona, lista+dettaglio immobile, watchlist, centro notifiche, dark/light, E2E Playwright | L | Criteri di accettazione UI del brief |
 | **M3** ✅ | Mappa interattiva (MapLibre): marker, clustering, heatmap €/m², disegno poligoni, ricerca per raggio, estensione PostGIS abilitata | M | Ricerca per poligono/raggio funzionante |
 | **M4** ✅ | Ingestion asincrona reale: job queue (RQ+Redis) + scheduler (APScheduler), adapter open data OMI-shaped, deduplicazione cross-agenzia con confidence, snapshot su object storage (MinIO/S3), digest notifiche | L | Vedi nota sotto |
-| M5 | Confronti (immobili/zone), valutazione automatica con intervallo, motore di spiegazione driver, preferenze notifiche, admin esteso | M | |
+| **M5** ✅ | Confronti (immobili/zone), valutazione automatica con intervallo, motore di spiegazione driver, preferenze notifiche, admin esteso | M | Vedi nota sotto |
 | M6 | Hardening: email verification, reset password, OAuth, rate limiting distribuito, export/cancellazione dati (GDPR), monitoring, backup, deploy cloud | M | Production-ready |
+
+> **Nota sul criterio di uscita M5**: backend — entità `Valuation` (stima
+> puntuale persistita come azione esplicita dell'utente, non su ogni
+> visualizzazione), motore di spiegazione driver (`services/explanation.py`,
+> correlazioni lette dalla serie `MarketMetric` osservata, mai causalità
+> inventata; fattori non misurati elencati esplicitamente in
+> `uncertain_elements`; contesto nazionale Eurostat mostrato separatamente,
+> mai sommato ai driver locali), endpoint di confronto annunci (2-4,
+> `POST /listings/compare`) e aree (2-4, `GET /market/compare-areas`),
+> `NotificationPreference` (frequenza + tipi silenziati, rispettata da
+> `services/notifications.py`), admin esteso (elenco/disattivazione utenti,
+> toggle fonte dati che rispetta lo stesso invariante ToS del kill-switch in
+> `adapters/base.py`). Frontend — pagina `/compare` (selezione annunci
+> persistita in `localStorage`, max 4), sezione "Confronta con altre zone" e
+> pannello driver nella dashboard di zona, preferenze notifiche nel centro
+> notifiche, pagina `/admin` (la pagina 18 richiesta dal brief, "Pannello
+> amministratore essenziale", non ancora costruita prima di questa
+> milestone) con guardia sul ruolo utente. 121 test backend + 12 E2E
+> Playwright verdi, ruff/mypy/eslint/tsc/build puliti.
 
 > **Nota sul criterio di uscita M4** (correzione rispetto alla stesura iniziale): il
 > criterio originale — "un adapter open data reale in produzione" — presupponeva di

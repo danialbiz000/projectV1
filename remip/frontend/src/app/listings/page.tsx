@@ -11,6 +11,7 @@ import {
   type Paginated,
 } from "@/lib/api";
 import { AreaPicker } from "@/components/AreaPicker";
+import { isInCompare, toggleCompare, MAX_COMPARE } from "@/lib/compare";
 
 const PAGE_SIZE = 12;
 
@@ -23,27 +24,41 @@ const propertyTypes = [
 ];
 
 function ListingCard({ listing }: { listing: ListingSummary }) {
+  const [inCompare, setInCompare] = useState(false);
+  useEffect(() => setInCompare(isInCompare(listing.id)), [listing.id]);
+
   return (
-    <Link
-      href={`/listings/${listing.id}`}
-      className="card block transition hover:border-brand-500"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <h3 className="font-semibold">{listing.title}</h3>
-        <span className="whitespace-nowrap text-sm font-semibold text-brand-600">
-          {formatPrice(listing.current_price, listing.currency)}
-          {listing.listing_type === "rent" && "/mese"}
-        </span>
-      </div>
-      <p className="mt-1 text-xs text-slate-500">
-        {listing.area_name} · {listing.size_sqm} m² · {listing.rooms} locali
-        {listing.energy_class && ` · classe ${listing.energy_class}`}
-        {listing.price_per_sqm && ` · ${listing.price_per_sqm.toLocaleString("it-IT")} €/m²`}
-      </p>
-      <p className="mt-1 text-xs text-slate-500">
-        {listing.days_on_market} giorni sul mercato · {listing.photos_count} foto
-      </p>
-    </Link>
+    <div className="card transition hover:border-brand-500">
+      <Link href={`/listings/${listing.id}`} className="block">
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="font-semibold">{listing.title}</h3>
+          <span className="whitespace-nowrap text-sm font-semibold text-brand-600">
+            {formatPrice(listing.current_price, listing.currency)}
+            {listing.listing_type === "rent" && "/mese"}
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          {listing.area_name} · {listing.size_sqm} m² · {listing.rooms} locali
+          {listing.energy_class && ` · classe ${listing.energy_class}`}
+          {listing.price_per_sqm && ` · ${listing.price_per_sqm.toLocaleString("it-IT")} €/m²`}
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          {listing.days_on_market} giorni sul mercato · {listing.photos_count} foto
+        </p>
+      </Link>
+      <button
+        type="button"
+        className={`mt-2 rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+          inCompare
+            ? "border-brand-600 bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300"
+            : "border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+        }`}
+        aria-pressed={inCompare}
+        onClick={() => setInCompare(toggleCompare(listing.id).includes(listing.id))}
+      >
+        {inCompare ? "✓ In confronto" : `+ Confronta (max ${MAX_COMPARE})`}
+      </button>
+    </div>
   );
 }
 

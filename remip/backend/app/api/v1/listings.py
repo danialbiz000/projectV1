@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import DbDep
+from app.api.deps import CurrentUser, DbDep
 from app.models import (
     AdministrativeArea,
     ListingVersion,
@@ -15,8 +16,17 @@ from app.models import (
     PhysicalProperty,
     PriceObservation,
     PropertyListing,
+    Valuation,
 )
-from app.schemas.listing import ListingDetail, ListingSummary, PricePoint, VersionOut
+from app.schemas.listing import (
+    ListingCompareRequest,
+    ListingCompareRow,
+    ListingDetail,
+    ListingSummary,
+    PricePoint,
+    ValuationOut,
+    VersionOut,
+)
 from app.services.comparables import estimate_value, find_comparables
 from app.services.storage import get_snapshot
 
@@ -141,18 +151,10 @@ def search_listings(
     }
 
 
-@router.get("/{listing_id}", response_model=ListingDetail)
-def get_listing(listing_id: str, db: DbDep) -> ListingDetail:
-    listing = db.get(PropertyListing, listing_id)
-    if listing is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found")
+def _comparables_deviation_and_estimate(
+    db: Session, listing: PropertyListing
+) -> tuple[list[dict[str, Any]], float | None, dict[str, Any] | None]:
     prop = listing.property
-    area = db.get(AdministrativeArea, prop.area_id)
-    observations = db.scalars(
-        select(PriceObservation)
-        .where(PriceObservation.listing_id == listing.id)
-        .order_by(PriceObservation.observed_at)
-    ).all()
     comparables = find_comparables(db, listing)
     estimate = estimate_value(comparables, prop.size_sqm)
 
@@ -168,6 +170,22 @@ def get_listing(listing_id: str, db: DbDep) -> ListingDetail:
         deviation = round(
             (listing_sqm - latest_metric.avg_price_sqm) / latest_metric.avg_price_sqm * 100, 1
         )
+    return comparables, deviation, estimate
+
+
+@router.get("/{listing_id}", response_model=ListingDetail)
+def get_listing(listing_id: str, db: DbDep) -> ListingDetail:
+    listing = db.get(PropertyListing, listing_id)
+    if listing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found")
+    prop = listing.property
+    area = db.get(AdministrativeArea, prop.area_id)
+    observations = db.scalars(
+        select(PriceObservation)
+        .where(PriceObservation.listing_id == listing.id)
+        .order_by(PriceObservation.observed_at)
+    ).all()
+    comparables, deviation, estimate = _comparables_deviation_and_estimate(db, listing)
 
     other_listings = db.scalars(
         select(PropertyListing).where(
@@ -237,3 +255,73 @@ def get_listing_version_snapshot(listing_id: str, version_number: int, db: DbDep
     if data is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Snapshot not found in storage")
     return {"storage_key": version.snapshot_key, "content": json.loads(data)}
+
+
+@router.post(
+    "/{listing_id}/valuations", response_model=ValuationOut, status_code=status.HTTP_201_CREATED
+)
+def create_valuation(listing_id: str, user: CurrentUser, db: DbDep) -> Valuation:
+    """Persists a point-in-time valuation snapshot (M5) — a deliberate
+    action, not a side-effect of viewing the listing (see models/valuation.py
+    for why). Requires auth so anonymous traffic can't spam snapshots;
+    doesn't require admin, any signed-in user can request one."""
+    listing = db.get(PropertyListing, listing_id)
+    if listing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found")
+    comparables = find_comparables(db, listing)
+    estimate = estimate_value(comparables, listing.property.size_sqm)
+    if estimate is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Not enough comparables in this area to compute a valuation (need at least 3).",
+        )
+    valuation = Valuation(
+        listing_id=listing.id,
+        estimated_value=estimate["estimated_value"],
+        range_low=estimate["range_low"],
+        range_high=estimate["range_high"],
+        currency=listing.currency,
+        method=estimate["method"],
+        n_comparables=estimate["n_comparables"],
+        confidence=estimate["confidence"],
+        assumptions=estimate["assumptions"],
+    )
+    db.add(valuation)
+    db.commit()
+    return valuation
+
+
+@router.get("/{listing_id}/valuations", response_model=list[ValuationOut])
+def list_valuations(listing_id: str, db: DbDep) -> list[Valuation]:
+    if db.get(PropertyListing, listing_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found")
+    return list(
+        db.scalars(
+            select(Valuation)
+            .where(Valuation.listing_id == listing_id)
+            .order_by(Valuation.computed_at.desc())
+        )
+    )
+
+
+@router.post("/compare", response_model=list[ListingCompareRow])
+def compare_listings(body: ListingCompareRequest, db: DbDep) -> list[ListingCompareRow]:
+    """Side-by-side comparison (2-4 listings) — each row is the same shape
+    returned in search results, plus the zone-deviation and range estimate
+    shown on the detail page, so the UI doesn't need a second round trip."""
+    if len(set(body.listing_ids)) != len(body.listing_ids):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Duplicate listing_ids")
+    rows: list[ListingCompareRow] = []
+    for listing_id in body.listing_ids:
+        listing = db.get(PropertyListing, listing_id)
+        if listing is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Listing {listing_id} not found")
+        area = db.get(AdministrativeArea, listing.property.area_id)
+        _, deviation, estimate = _comparables_deviation_and_estimate(db, listing)
+        base = _summary(listing, area.name if area else "")
+        rows.append(
+            ListingCompareRow(
+                **base.model_dump(), deviation_from_area_pct=deviation, estimate=estimate
+            )
+        )
+    return rows

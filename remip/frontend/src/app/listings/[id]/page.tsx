@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Line,
   LineChart,
@@ -17,9 +17,11 @@ import {
   formatPct,
   formatPrice,
   type ListingDetail,
+  type ValuationOut,
   type WatchlistOut,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { isInCompare, toggleCompare, MAX_COMPARE } from "@/lib/compare";
 
 const featureLabels: Record<string, string> = {
   elevator: "Ascensore",
@@ -45,13 +47,37 @@ export default function ListingDetailPage() {
   const [detail, setDetail] = useState<ListingDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [watchMessage, setWatchMessage] = useState<string | null>(null);
+  const [inCompare, setInCompare] = useState(false);
+  const [valuations, setValuations] = useState<ValuationOut[]>([]);
+  const [valuationMessage, setValuationMessage] = useState<string | null>(null);
+
+  const loadValuations = useCallback(() => {
+    if (!params?.id) return;
+    api<ValuationOut[]>(`/api/v1/listings/${params.id}/valuations`, { auth: false })
+      .then(setValuations)
+      .catch(() => setValuations([]));
+  }, [params?.id]);
 
   useEffect(() => {
     if (!params?.id) return;
+    setInCompare(isInCompare(params.id));
     api<ListingDetail>(`/api/v1/listings/${params.id}`, { auth: false })
       .then(setDetail)
       .catch(() => setError("Annuncio non trovato"));
-  }, [params?.id]);
+    loadValuations();
+  }, [params?.id, loadValuations]);
+
+  const requestValuation = async () => {
+    if (!params?.id) return;
+    setValuationMessage(null);
+    try {
+      await api<ValuationOut>(`/api/v1/listings/${params.id}/valuations`, { method: "POST" });
+      setValuationMessage("Valutazione salvata ✓");
+      loadValuations();
+    } catch (err) {
+      setValuationMessage(err instanceof Error ? err.message : "Errore: riprova");
+    }
+  };
 
   const addToWatchlist = async () => {
     if (!detail) return;
@@ -124,6 +150,14 @@ export default function ListingDetailPage() {
           </Link>
         )}
         {watchMessage && <p className="self-center text-sm text-slate-500">{watchMessage}</p>}
+        <button
+          type="button"
+          className="btn-secondary"
+          aria-pressed={inCompare}
+          onClick={() => setInCompare(toggleCompare(detail.id).includes(detail.id))}
+        >
+          {inCompare ? "✓ In confronto" : `+ Aggiungi al confronto (max ${MAX_COMPARE})`}
+        </button>
       </div>
 
       <section className="grid gap-4 lg:grid-cols-3">
@@ -197,6 +231,27 @@ export default function ListingDetailPage() {
               Comparabili insufficienti per una stima affidabile: nessun valore viene mostrato
               piuttosto che un numero non fondato.
             </p>
+          )}
+          {user && (
+            <div className="mt-3 border-t border-slate-200 pt-3 dark:border-slate-800">
+              <button type="button" className="btn-secondary" onClick={requestValuation}>
+                Salva valutazione ora
+              </button>
+              {valuationMessage && (
+                <p className="mt-1 text-xs text-slate-500">{valuationMessage}</p>
+              )}
+              {valuations.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs text-slate-500">
+                  {valuations.slice(0, 5).map((v) => (
+                    <li key={v.id}>
+                      {new Date(v.computed_at).toLocaleString("it-IT")}:{" "}
+                      {formatPrice(v.estimated_value, v.currency)} ({formatPrice(v.range_low, v.currency)}–
+                      {formatPrice(v.range_high, v.currency)})
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       </section>

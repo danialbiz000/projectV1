@@ -2,7 +2,12 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { api, type NotificationDigest, type NotificationOut } from "@/lib/api";
+import {
+  api,
+  type NotificationDigest,
+  type NotificationOut,
+  type NotificationPreferenceOut,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
 interface NotificationsResponse {
@@ -17,8 +22,110 @@ const typeIcons: Record<string, string> = {
   listing_removed: "🚫",
   listing_relisted: "🔁",
   possible_sale: "🤝",
+  status_change: "🔄",
   photos_change: "📷",
+  listing_update: "✏️",
 };
+
+const typeLabels: Record<string, string> = {
+  price_drop: "Prezzo ridotto",
+  price_increase: "Prezzo aumentato",
+  listing_removed: "Annuncio rimosso",
+  listing_relisted: "Annuncio ripubblicato",
+  possible_sale: "Possibile vendita",
+  status_change: "Stato annuncio cambiato",
+  photos_change: "Fotografie aggiornate",
+  listing_update: "Annuncio aggiornato",
+};
+
+function PreferencesPanel() {
+  const [prefs, setPrefs] = useState<NotificationPreferenceOut | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const reload = useCallback(() => {
+    api<NotificationPreferenceOut>("/api/v1/notifications/preferences")
+      .then(setPrefs)
+      .catch(() => setPrefs(null));
+  }, []);
+
+  useEffect(reload, [reload]);
+
+  const save = async (next: NotificationPreferenceOut) => {
+    setPrefs(next);
+    setSaving(true);
+    setSaved(false);
+    try {
+      const updated = await api<NotificationPreferenceOut>("/api/v1/notifications/preferences", {
+        method: "PUT",
+        body: { frequency: next.frequency, muted_types: next.muted_types },
+      });
+      setPrefs(updated);
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleMuted = (type: string) => {
+    if (!prefs) return;
+    const muted = prefs.muted_types.includes(type)
+      ? prefs.muted_types.filter((t) => t !== type)
+      : [...prefs.muted_types, type];
+    void save({ ...prefs, muted_types: muted });
+  };
+
+  if (!prefs) return null;
+
+  return (
+    <details className="card" open>
+      <summary className="cursor-pointer font-semibold">Preferenze notifiche</summary>
+      <div className="mt-3 space-y-3">
+        <div>
+          <label className="label" htmlFor="frequency">
+            Frequenza
+          </label>
+          <select
+            id="frequency"
+            className="input max-w-xs"
+            value={prefs.frequency}
+            onChange={(e) => void save({ ...prefs, frequency: e.target.value })}
+          >
+            <option value="instant">Immediata</option>
+            <option value="daily_digest">Riepilogo giornaliero</option>
+            <option value="weekly_digest">Riepilogo settimanale</option>
+          </select>
+        </div>
+        <div>
+          <p className="label">Tipi silenziati</p>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(typeLabels).map(([type, label]) => {
+              const muted = prefs.muted_types.includes(type);
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  aria-pressed={muted}
+                  className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                    muted
+                      ? "bg-slate-300 text-slate-700 line-through dark:bg-slate-700 dark:text-slate-300"
+                      : "bg-slate-100 dark:bg-slate-800"
+                  }`}
+                  onClick={() => toggleMuted(type)}
+                >
+                  {typeIcons[type] ?? "🔔"} {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <p className="text-xs text-slate-500">
+          {saving ? "Salvataggio…" : saved ? "Preferenze salvate ✓" : ""}
+        </p>
+      </div>
+    </details>
+  );
+}
 
 export default function NotificationsPage() {
   const { user, loading } = useAuth();
@@ -85,6 +192,8 @@ export default function NotificationsPage() {
           </button>
         </div>
       </div>
+
+      <PreferencesPanel />
 
       {digest && digest.unread_total > 0 && (
         <div className="card" aria-label="Riepilogo notifiche non lette">
