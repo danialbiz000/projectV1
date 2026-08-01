@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { api, type NotificationOut } from "@/lib/api";
+import { api, type NotificationDigest, type NotificationOut } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
 interface NotificationsResponse {
@@ -23,12 +23,16 @@ const typeIcons: Record<string, string> = {
 export default function NotificationsPage() {
   const { user, loading } = useAuth();
   const [data, setData] = useState<NotificationsResponse | null>(null);
+  const [digest, setDigest] = useState<NotificationDigest | null>(null);
   const [unreadOnly, setUnreadOnly] = useState(false);
 
   const reload = useCallback(() => {
     api<NotificationsResponse>(`/api/v1/notifications?unread_only=${unreadOnly}`)
       .then(setData)
       .catch(() => setData(null));
+    api<NotificationDigest>("/api/v1/notifications/digest")
+      .then(setDigest)
+      .catch(() => setDigest(null));
   }, [unreadOnly]);
 
   useEffect(() => {
@@ -81,6 +85,24 @@ export default function NotificationsPage() {
           </button>
         </div>
       </div>
+
+      {digest && digest.unread_total > 0 && (
+        <div className="card" aria-label="Riepilogo notifiche non lette">
+          <h2 className="mb-2 text-sm font-semibold">
+            In sintesi: {digest.unread_total} notifiche non lette
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {digest.by_type.map((t) => (
+              <span
+                key={t.type}
+                className="rounded-full bg-slate-100 px-2.5 py-1 text-xs dark:bg-slate-800"
+              >
+                {typeIcons[t.type] ?? "🔔"} {t.label}: {t.count}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {data && data.items.length === 0 && (
         <div className="card text-center text-sm text-slate-500">

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.adapters.demo import CITIES, METRIC_MONTHS, DemoAdapter
 from app.core.security import hash_password
 from app.db.base import utcnow
+from app.jobs.ingestion import run_ingestion
 from app.models import (
     AdministrativeArea,
     Agency,
@@ -31,6 +32,7 @@ from app.models import (
 )
 from app.services import forecast as forecast_service
 from app.services import market as market_service
+from app.services.dedup import find_duplicate_property
 from app.services.versioning import apply_listing_update, create_initial_version
 
 logger = logging.getLogger("remip.seed")
@@ -38,6 +40,11 @@ logger = logging.getLogger("remip.seed")
 DEMO_USER_EMAIL = "demo@example.com"
 DEMO_ADMIN_EMAIL = "admin@example.com"
 DEMO_PASSWORD = "demo1234"  # demo-only credentials, documented in README
+
+# Agencies used only to republish a subset of listings, to exercise
+# cross-agency duplicate detection (services/dedup.py) end-to-end.
+DUPLICATE_AGENCY_NAMES = ["Demo Multi-Agenzia SRL", "Rilistato Demo Immobiliare"]
+DUPLICATE_SHARE = 0.15
 
 
 def _slug(name: str) -> str:
@@ -47,6 +54,72 @@ def _slug(name: str) -> str:
 def _month_start(d: date, months_back: int) -> date:
     total = d.year * 12 + (d.month - 1) - months_back
     return date(total // 12, total % 12 + 1, 1)
+
+
+def _seed_duplicate_listings(
+    db: Session,
+    listings: list[PropertyListing],
+    provider: DataProvider,
+    agencies: dict[str, Agency],
+    rng: random.Random,
+) -> list[PropertyListing]:
+    """Republish a subset of listings under a different agency, close enough
+    to the original coordinates to be picked up by services/dedup.py — so the
+    demo dataset genuinely exercises cross-agency duplicate detection instead
+    of only declaring the feature exists."""
+    active = [li for li in listings if li.status == "active"]
+    sample_size = max(1, int(len(active) * DUPLICATE_SHARE))
+    chosen = rng.sample(active, min(sample_size, len(active)))
+
+    duplicates: list[PropertyListing] = []
+    for i, original in enumerate(chosen):
+        prop = original.property
+        agency_name = DUPLICATE_AGENCY_NAMES[i % len(DUPLICATE_AGENCY_NAMES)]
+        if agency_name not in agencies:
+            agencies[agency_name] = Agency(name=agency_name, provider_id=provider.id)
+            db.add(agencies[agency_name])
+            db.flush()
+
+        # Small jitter, well inside dedup.CANDIDATE_RADIUS_KM (~300m) so the
+        # match is reliable without risking accidental collisions elsewhere.
+        jitter_lat = prop.lat + rng.uniform(-0.0005, 0.0005)
+        jitter_lon = prop.lon + rng.uniform(-0.0005, 0.0005)
+        match = find_duplicate_property(
+            db,
+            area_id=prop.area_id,
+            property_type=prop.property_type,
+            lat=jitter_lat,
+            lon=jitter_lon,
+            size_sqm=prop.size_sqm,
+            rooms=prop.rooms,
+            address_text=prop.address_text,
+        )
+        target_property, confidence = (match.property, match.confidence) if match else (prop, 1.0)
+
+        price_variation = rng.uniform(-0.04, 0.04)
+        published = utcnow() - timedelta(days=rng.randint(1, 60))
+        duplicate = PropertyListing(
+            property_id=target_property.id,
+            provider_id=provider.id,
+            agency_id=agencies[agency_name].id,
+            source_external_id=f"DEMO-DUP-{i:04d}",
+            listing_type=original.listing_type,
+            status="active",
+            title=original.title,
+            description=f"[DATI DEMO] Ripubblicato da {agency_name}. {original.description}",
+            current_price=round(original.current_price * (1 + price_variation), -2),
+            currency=original.currency,
+            photos_count=max(1, original.photos_count - rng.randint(0, 3)),
+            published_at=published,
+            first_seen_at=published,
+            last_seen_at=utcnow(),
+            dedup_confidence=confidence,
+        )
+        db.add(duplicate)
+        db.flush()
+        create_initial_version(db, duplicate)
+        duplicates.append(duplicate)
+    return duplicates
 
 
 def seed_database(db: Session, listings_per_neighborhood: int = 12, seed: int = 42) -> None:
@@ -82,13 +155,14 @@ def seed_database(db: Session, listings_per_neighborhood: int = 12, seed: int = 
             provider,
             DataProvider(
                 code="omi_it",
-                name="OMI - Agenzia delle Entrate (quotazioni)",
+                name="OMI - Agenzia delle Entrate (quotazioni, struttura dimostrativa)",
                 kind="open_data",
                 tos_compliant=True,
-                enabled=False,
-                is_demo=False,
-                quality_score=0.0,
-                notes="Adapter previsto in M4. Licenza e granularità da verificare.",
+                enabled=True,
+                is_demo=True,
+                quality_score=0.4,
+                notes="Adapter attivo (M4) con struttura OMI realistica; valori da fixture "
+                "locale versionata, non da endpoint live verificato. Vedi docs/INTEGRATIONS.md.",
             ),
             DataProvider(
                 code="portal_generic",
@@ -159,6 +233,11 @@ def seed_database(db: Session, listings_per_neighborhood: int = 12, seed: int = 
             db.add(n_area)
     db.flush()
 
+    # Bootstrap OMI zone quotations inline so a fresh install has data
+    # without requiring the separate worker/scheduler processes (M4);
+    # docker-compose's scheduler re-runs this periodically for real.
+    run_ingestion(db, "omi_it", trigger="seed")
+
     adapter = DemoAdapter(seed=seed, listings_per_neighborhood=listings_per_neighborhood)
     listings: list[PropertyListing] = []
     for raw in adapter.run():
@@ -207,6 +286,8 @@ def seed_database(db: Session, listings_per_neighborhood: int = 12, seed: int = 
         db.flush()
         create_initial_version(db, listing)
         listings.append(listing)
+
+    listings.extend(_seed_duplicate_listings(db, listings, provider, agencies, rng))
 
     # Version history: ~30% got a price cut, some were removed or relisted.
     for listing in listings:

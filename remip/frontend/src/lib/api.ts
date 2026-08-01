@@ -137,6 +137,14 @@ export interface ListingDetail extends ListingSummary {
     assumptions: string;
   } | null;
   deviation_from_area_pct: number | null;
+  duplicate_listings: {
+    listing_id: string;
+    agency_name: string | null;
+    price: number;
+    currency: string;
+    status: string;
+    dedup_confidence: number;
+  }[];
 }
 
 export interface DataContext {
@@ -258,6 +266,13 @@ export interface MapSearchResponse {
   total_matched: number;
   truncated: boolean;
   data_context: DataContext;
+}
+
+export interface NotificationDigest {
+  unread_total: number;
+  by_type: { type: string; label: string; count: number }[];
+  by_listing: { listing_id: string; count: number; latest_title: string }[];
+  generated_at: string;
 }
 
 export interface Paginated<T> {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import DbDep
 from app.models import (
     AdministrativeArea,
+    ListingVersion,
     MarketMetric,
     PhysicalProperty,
     PriceObservation,
@@ -16,6 +18,7 @@ from app.models import (
 )
 from app.schemas.listing import ListingDetail, ListingSummary, PricePoint, VersionOut
 from app.services.comparables import estimate_value, find_comparables
+from app.services.storage import get_snapshot
 
 router = APIRouter(prefix="/listings", tags=["listings"])
 
@@ -43,6 +46,17 @@ def _days_on_market(listing: PropertyListing) -> int:
     if published.tzinfo is None:
         published = published.replace(tzinfo=UTC)
     return max((datetime.now(UTC) - published).days, 0)
+
+
+def _version_out(v: ListingVersion) -> VersionOut:
+    return VersionOut(
+        version_number=v.version_number,
+        captured_at=v.captured_at,
+        price=v.price,
+        status=v.status,
+        diff=v.diff,
+        has_snapshot=bool(v.snapshot_key),
+    )
 
 
 def _summary(listing: PropertyListing, area_name: str) -> ListingSummary:
@@ -155,6 +169,24 @@ def get_listing(listing_id: str, db: DbDep) -> ListingDetail:
             (listing_sqm - latest_metric.avg_price_sqm) / latest_metric.avg_price_sqm * 100, 1
         )
 
+    other_listings = db.scalars(
+        select(PropertyListing).where(
+            PropertyListing.property_id == listing.property_id,
+            PropertyListing.id != listing.id,
+        )
+    ).all()
+    duplicate_listings = [
+        {
+            "listing_id": other.id,
+            "agency_name": other.agency.name if other.agency else None,
+            "price": other.current_price,
+            "currency": other.currency,
+            "status": other.status,
+            "dedup_confidence": other.dedup_confidence,
+        }
+        for other in other_listings
+    ]
+
     base = _summary(listing, area.name if area else "")
     return ListingDetail(
         **base.model_dump(),
@@ -174,10 +206,11 @@ def get_listing(listing_id: str, db: DbDep) -> ListingDetail:
             PricePoint(observed_at=o.observed_at, price=o.price, currency=o.currency)
             for o in observations
         ],
-        versions=[VersionOut.model_validate(v) for v in listing.versions],
+        versions=[_version_out(v) for v in listing.versions],
         comparables=comparables,
         estimate=estimate,
         deviation_from_area_pct=deviation,
+        duplicate_listings=duplicate_listings,
     )
 
 
@@ -186,4 +219,21 @@ def get_listing_history(listing_id: str, db: DbDep) -> list[VersionOut]:
     listing = db.get(PropertyListing, listing_id)
     if listing is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found")
-    return [VersionOut.model_validate(v) for v in listing.versions]
+    return [_version_out(v) for v in listing.versions]
+
+
+@router.get("/{listing_id}/versions/{version_number}/snapshot")
+def get_listing_version_snapshot(listing_id: str, version_number: int, db: DbDep) -> dict:
+    """Raw immutable snapshot as stored in object storage at capture time
+    (see services/storage.py) — provenance/audit trail, not a live view."""
+    version = db.scalar(
+        select(ListingVersion).where(
+            ListingVersion.listing_id == listing_id, ListingVersion.version_number == version_number
+        )
+    )
+    if version is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Version not found")
+    data = get_snapshot(version.snapshot_key)
+    if data is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Snapshot not found in storage")
+    return {"storage_key": version.snapshot_key, "content": json.loads(data)}

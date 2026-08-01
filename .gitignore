@@ -10,6 +10,7 @@ __pycache__/
 # REMIP
 remip/backend/*.db
 remip/backend/.venv/
+remip/backend/data/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -20,3 +21,4 @@ remip/frontend/playwright-report/
 remip/frontend/next-env.d.ts
 remip/frontend/tsconfig.tsbuildinfo
 .env.local
+dump.rdb

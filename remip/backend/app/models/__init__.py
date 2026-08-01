@@ -1,4 +1,5 @@
 from app.models.geo import AdministrativeArea, Country
+from app.models.ingestion import DataIngestionJob, OmiZoneQuotation
 from app.models.listing import (
     Agency,
     DataProvider,
@@ -16,11 +17,13 @@ __all__ = [
     "Agency",
     "AuditLog",
     "Country",
+    "DataIngestionJob",
     "DataProvider",
     "ListingVersion",
     "MarketForecast",
     "MarketMetric",
     "Notification",
+    "OmiZoneQuotation",
     "PhysicalProperty",
     "PriceObservation",
     "PropertyListing",

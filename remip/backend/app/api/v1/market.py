@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.api.deps import DbDep
-from app.models import AdministrativeArea, MarketForecast
+from app.api.v1.listings import descendant_area_ids
+from app.models import AdministrativeArea, MarketForecast, OmiZoneQuotation
 from app.schemas.common import DataContext
 from app.services import forecast as forecast_service
 from app.services import market as market_service
@@ -132,5 +133,58 @@ def market_forecast(
             "Orizzonti 5-10 anni: scenari strutturali (non statistici).",
             "Previsioni baseline dimostrative su dati demo: non costituiscono consulenza "
             "finanziaria. Accuratezza storica non ancora disponibile (modello baseline-0.1).",
+        ).model_dump(),
+    }
+
+
+@router.get("/omi-quotations")
+def omi_quotations(
+    db: DbDep,
+    area_id: str,
+    listing_type: str = Query(default="sale", pattern="^(sale|rent)$"),
+) -> dict:
+    """Zone-level price bands ingested from the OMI-shaped adapter (M4),
+    independent of the per-listing MarketMetric pipeline — a cross-check
+    figure, not a replacement. See adapters/omi.py for why the values are
+    illustrative rather than a verified live feed."""
+    _area_or_404(db, area_id)
+    rows = db.scalars(
+        select(OmiZoneQuotation)
+        .where(
+            OmiZoneQuotation.area_id.in_(descendant_area_ids(db, area_id)),
+            OmiZoneQuotation.listing_type == listing_type,
+        )
+        .order_by(OmiZoneQuotation.period.desc(), OmiZoneQuotation.zone_description)
+    ).all()
+    latest = rows[0] if rows else None
+    return {
+        "data": [
+            {
+                "area_id": r.area_id,
+                "comune": r.comune,
+                "zone_code": r.zone_code,
+                "zone_description": r.zone_description,
+                "property_type": r.property_type,
+                "conservation_state": r.conservation_state,
+                "period": r.period,
+                "price_sqm_min": r.price_sqm_min,
+                "price_sqm_max": r.price_sqm_max,
+                "currency": r.currency,
+            }
+            for r in rows
+        ],
+        "data_context": DataContext(
+            sources=["omi_it"],
+            period=latest.period if latest else None,
+            observations=len(rows),
+            updated_at=latest.ingested_at if latest else None,
+            quality=0.4,
+            aggregation_level="zona OMI",
+            methodology="Range compravendite/locazioni €/m² per zona OMI, tipologia e stato "
+            "conservativo, da adapter dedicato (docs/ARCHITECTURE.md).",
+            limitations="Valori illustrativi da fixture locale versionata, non da endpoint "
+            "OMI live verificato (vedi docs/INTEGRATIONS.md). Copertura limitata alle zone "
+            "demo configurate.",
+            is_demo_data=True,
         ).model_dump(),
     }

@@ -3,7 +3,7 @@
 Principi: UUID stabili, timestamp UTC (`*_at`), valuta ISO 4217 esplicita su ogni
 importo, separazione **immobile fisico ≠ annuncio ≠ versione ≠ fonte ≠ agenzia**.
 
-## ER (entità implementate in Milestone 1)
+## ER (entità implementate, Milestone 1-4)
 
 ```mermaid
 erDiagram
@@ -12,8 +12,11 @@ erDiagram
     AdministrativeArea ||--o{ PhysicalProperty : locates
     AdministrativeArea ||--o{ MarketMetric : aggregates
     AdministrativeArea ||--o{ MarketForecast : projects
+    AdministrativeArea ||--o{ OmiZoneQuotation : "resolved to (M4)"
     DataProvider ||--o{ PropertyListing : publishes
     DataProvider ||--o{ Agency : lists
+    DataProvider ||--o{ OmiZoneQuotation : "quotes (M4)"
+    DataProvider ||--o{ DataIngestionJob : "runs as (M4)"
     Agency ||--o{ PropertyListing : manages
     PhysicalProperty ||--o{ PropertyListing : advertised_by
     PropertyListing ||--o{ ListingVersion : versioned_as
@@ -36,21 +39,25 @@ erDiagram
 | **DataProvider** | id, code, name, kind (`demo`/`open_data`/`commercial`/`portal`), tos_compliant, enabled, is_demo, quality_score, notes | kill-switch per fonte |
 | **Agency** | id, name, provider_id | |
 | **PhysicalProperty** | id, area_id, address_text, lat, lon, property_type, size_sqm, rooms, bathrooms, floor, year_built, energy_class, features (json) | l'immobile fisico, indipendente dagli annunci |
-| **PropertyListing** | id, property_id, provider_id, agency_id, source_external_id, listing_type (`sale`/`rent`), status (`active`/`removed`/`sold`/`relisted`), current_price, currency, first_seen_at, last_seen_at, published_at, dedup_confidence | un annuncio per fonte; duplicati inter-fonte → stesso property_id con confidence |
-| **ListingVersion** | id, listing_id, version_number, captured_at, price, title, description, photos_count, size_sqm, rooms, energy_class, status, diff (json) | snapshot completo + diff vs versione precedente |
+| **PropertyListing** | id, property_id, provider_id, agency_id, source_external_id, listing_type (`sale`/`rent`), status (`active`/`removed`/`sold`/`relisted`), current_price, currency, first_seen_at, last_seen_at, published_at, dedup_confidence | un annuncio per fonte/agenzia; duplicati cross-agenzia → stesso property_id, confidence da `services/dedup.py` (M4) |
+| **ListingVersion** | id, listing_id, version_number, captured_at, price, title, description, photos_count, size_sqm, rooms, energy_class, status, diff (json), snapshot_key | snapshot completo + diff vs versione precedente; `snapshot_key` punta al payload immutabile su object storage (`s3://...` o `file://...`, M4) |
 | **PriceObservation** | id, listing_id, observed_at, price, currency, source_code | serie prezzi per analisi |
 | **MarketMetric** | id, area_id, period (primo giorno del mese), listing_type, avg_price, median_price, avg_price_sqm, median_price_sqm, active_listings, new_listings, removed_listings, avg_days_on_market, price_reduction_share, avg_discount_pct, rent_avg_sqm, gross_yield_pct, sample_size, data_quality (0-1), currency | aggregato mensile per area |
 | **MarketForecast** | id, area_id, horizon_months, computed_at, base/low/high_change_pct, confidence (0-1), method, model_version, drivers (json), limitations | 3/6/12 = statistico; 60/120 = scenario strutturale |
 | **Watchlist** / **WatchlistItem** | item: kind (`listing`/`area`), listing_id?, area_id?, note, initial_price, thresholds (json), notify (bool), created_at, last_checked_at | |
 | **Notification** | id, user_id, type, title, body, payload (json), dedup_key (unique per user), is_read, created_at | dedup_key previene duplicati |
 | **AuditLog** | id, user_id?, action, entity, entity_id, at, meta (json) | |
+| **DataIngestionJob** (M4) | id, provider_code, status (`running`/`success`/`failed`), trigger (`manual`/`scheduled`/`seed`), started_at, finished_at, records_fetched/created/updated, error_message | una riga per esecuzione di adapter, in coda o inline |
+| **OmiZoneQuotation** (M4) | id, area_id?, provider_id, comune, zone_code, zone_description, property_type, conservation_state, period (semestre), listing_type, price_sqm_min/max, currency, source_code, ingested_at | dato di zona (non per annuncio); `area_id` nullo se la zona OMI non è stata risolta contro la geografia interna |
 
 ## Entità pianificate (milestone successive)
 
-`GeographicBoundary` (M3, geometrie PostGIS), `SavedSearch`/`AlertRule` (M4),
-`DataIngestionJob`/`DataQualityScore`/`SourceCitation` come tabelle dedicate (M4 —
-in M1 qualità e fonte sono campi su provider/metriche), `EconomicIndicator`/
-`GeographicIndicator` (M4), `Valuation`/`ComparableProperty` persistite (M5 — in M1
-i comparabili sono calcolati on-the-fly), `UserPreference`/`NotificationPreference`
-(M5), `RentalObservation` (M4), `PropertyType`/`PropertyFeature` normalizzate (M4 —
-in M1 enum + json documentati).
+`GeographicBoundary` (geometrie PostGIS reali — M5+, oggi la mappa mostra solo
+marker/cluster/heatmap di annunci), `SavedSearch`/`AlertRule` (M5),
+`DataQualityScore`/`SourceCitation` come tabelle dedicate (M5 — oggi qualità e
+fonte sono campi su provider/metriche/risposte `data_context`),
+`EconomicIndicator`/`GeographicIndicator` (M5), `Valuation`/`ComparableProperty`
+persistite (M5 — oggi i comparabili sono calcolati on-the-fly),
+`UserPreference`/`NotificationPreference` (M5), `RentalObservation` (M5 — oggi le
+locazioni sono `PropertyListing.listing_type="rent"`), `PropertyType`/
+`PropertyFeature` normalizzate (M5 — oggi enum + json documentati).

@@ -20,18 +20,65 @@ services:
     ports:
       - "6379:6379"
 
+  # S3-compatible object storage for listing-version snapshots (M4). Backend
+  # falls back to local disk when unset, so this is optional in plain
+  # `uvicorn` dev but always on via Compose.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: remip
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-remip_dev_password}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
   backend:
     build: ./backend
-    environment:
+    environment: &backend_env
       REMIP_DATABASE_URL: postgresql+psycopg2://remip:${POSTGRES_PASSWORD:-remip_dev_password}@db:5432/remip
       REMIP_SECRET_KEY: ${REMIP_SECRET_KEY:?set REMIP_SECRET_KEY in .env}
       REMIP_ENVIRONMENT: development
       REMIP_SEED_ON_STARTUP: "true"
+      REMIP_REDIS_URL: redis://redis:6379/0
+      REMIP_S3_ENDPOINT_URL: http://minio:9000
+      REMIP_S3_BUCKET: remip-snapshots
+      REMIP_S3_ACCESS_KEY: remip
+      REMIP_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-remip_dev_password}
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+      minio:
+        condition: service_started
+
+  # Consumes ingestion jobs enqueued by the scheduler (or an admin manual
+  # trigger). See docs/ARCHITECTURE.md for the job-queue design.
+  worker:
+    build: ./backend
+    command: python -m app.worker
+    environment: *backend_env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # Periodically enqueues ingestion jobs for every enabled DataProvider that
+  # has a registered adapter (today: omi_it). Runs once immediately on
+  # startup, then every REMIP_INGESTION_INTERVAL_MINUTES (default 360).
+  scheduler:
+    build: ./backend
+    command: python -m app.scheduler
+    environment: *backend_env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   frontend:
     build:
@@ -46,3 +93,4 @@ services:
 
 volumes:
   pgdata:
+  miniodata:

@@ -1,4 +1,4 @@
-# REMIP Frontend (Milestone 3)
+# REMIP Frontend (Milestone 4)
 
 Next.js 14 (App Router) + React + TypeScript + Tailwind CSS + Recharts + MapLibre GL.
 
@@ -11,10 +11,10 @@ Next.js 14 (App Router) + React + TypeScript + Tailwind CSS + Recharts + MapLibr
 | `/onboarding` | Scelta dell'obiettivo (compra/vendi/affitta/investi/monitora) |
 | `/dashboard` | Dashboard di zona: selettore città/quartiere, KPI, variazioni multi-periodo, trend €/m², volumi, previsioni con scenari, blocco trasparenza fonti |
 | `/listings` | Ricerca con filtri (contratto, tipologia, prezzo, locali), ordinamento e paginazione |
-| `/listings/[id]` | Dettaglio: caratteristiche, stima a intervallo, storico prezzi, cronologia versioni con diff, comparabili, aggiunta a watchlist |
+| `/listings/[id]` | Dettaglio: caratteristiche, stima a intervallo, storico prezzi, cronologia versioni con diff, comparabili, altri annunci per lo stesso immobile (dedup cross-agenzia, M4), aggiunta a watchlist |
 | `/map` | Mappa interattiva: marker con popup, clustering, toggle heatmap €/m², disegno di un'area a mano libera e ricerca per raggio |
 | `/watchlist` | Elementi osservati (annunci e zone) |
-| `/notifications` | Centro notifiche con non lette, filtro e "segna come letta" |
+| `/notifications` | Centro notifiche con non lette, riepilogo digest per tipo (M4), filtro e "segna come letta" |
 
 Dark/light mode (toggle + `prefers-color-scheme`), layout responsive mobile-first,
 form etichettati e ruoli ARIA per l'accessibilità. Il badge "Dati demo" è sempre

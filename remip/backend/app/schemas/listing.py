@@ -48,6 +48,7 @@ class VersionOut(BaseModel):
     price: float
     status: str
     diff: dict[str, Any]
+    has_snapshot: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -76,6 +77,7 @@ class ListingDetail(ListingSummary):
     comparables: list[dict[str, Any]]
     estimate: dict[str, Any] | None
     deviation_from_area_pct: float | None
+    duplicate_listings: list[dict[str, Any]]
 
 
 class WatchlistItemIn(BaseModel):

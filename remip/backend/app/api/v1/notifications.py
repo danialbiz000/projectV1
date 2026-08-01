@@ -4,8 +4,10 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select, update
 
 from app.api.deps import CurrentUser, DbDep
+from app.db.base import utcnow
 from app.models import Notification
 from app.schemas.listing import NotificationOut
+from app.services.notifications import EVENT_TITLES
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -39,6 +41,38 @@ def list_notifications(
         "unread": unread,
         "limit": limit,
         "offset": offset,
+    }
+
+
+@router.get("/digest")
+def notification_digest(user: CurrentUser, db: DbDep) -> dict:
+    """Grouped summary of unread notifications: by event type and by
+    listing, so a user (or a future email digest — see docs/PLAN.md M6) sees
+    the shape of what changed without scrolling a flat list. In-app only for
+    now; batched email/push digests are M6 scope."""
+    unread = db.scalars(
+        select(Notification).where(Notification.user_id == user.id, Notification.is_read.is_(False))
+    ).all()
+
+    by_type: dict[str, int] = {}
+    by_listing: dict[str, dict] = {}
+    for n in unread:
+        by_type[n.type] = by_type.get(n.type, 0) + 1
+        listing_id = n.payload.get("listing_id") if isinstance(n.payload, dict) else None
+        if listing_id:
+            entry = by_listing.setdefault(
+                listing_id, {"listing_id": listing_id, "count": 0, "latest_title": n.title}
+            )
+            entry["count"] += 1
+
+    return {
+        "unread_total": len(unread),
+        "by_type": [
+            {"type": t, "label": EVENT_TITLES.get(t, "Aggiornamento"), "count": c}
+            for t, c in sorted(by_type.items(), key=lambda kv: -kv[1])
+        ],
+        "by_listing": sorted(by_listing.values(), key=lambda e: -e["count"]),
+        "generated_at": utcnow().isoformat(),
     }
 
 

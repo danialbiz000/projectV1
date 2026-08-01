@@ -245,6 +245,32 @@ export default function ListingDetailPage() {
         </ol>
       </section>
 
+      {detail.duplicate_listings.length > 0 && (
+        <section className="card" aria-label="Altri annunci per questo immobile">
+          <h2 className="mb-2 font-semibold">Altri annunci per questo immobile</h2>
+          <p className="mb-2 text-xs text-slate-500">
+            Stesso immobile fisico pubblicato da agenzie diverse (rilevato dal sistema di
+            deduplicazione, non dichiarato dalle agenzie).
+          </p>
+          <ul className="space-y-2">
+            {detail.duplicate_listings.map((d) => (
+              <li key={d.listing_id} className="flex items-center justify-between text-sm">
+                <Link
+                  href={`/listings/${d.listing_id}`}
+                  className="text-brand-600 hover:underline"
+                >
+                  {d.agency_name ?? "Agenzia sconosciuta"}
+                </Link>
+                <span className="text-slate-500">
+                  {formatPrice(d.price, d.currency)} · {d.status} · confidenza corrispondenza{" "}
+                  {Math.round(d.dedup_confidence * 100)}%
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {detail.comparables.length > 0 && (
         <section aria-label="Immobili comparabili">
           <h2 className="mb-2 font-semibold">Immobili comparabili</h2>

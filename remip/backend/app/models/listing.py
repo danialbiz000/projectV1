@@ -118,6 +118,8 @@ class ListingVersion(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     # Field-by-field diff vs the previous version: {field: {"old": x, "new": y}}
     diff: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Immutable raw snapshot in object storage (s3://... or file://...), M4.
+    snapshot_key: Mapped[str] = mapped_column(String(300), default="")
 
     listing: Mapped[PropertyListing] = relationship(back_populates="versions")
 

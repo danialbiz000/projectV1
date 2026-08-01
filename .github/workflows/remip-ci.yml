@@ -16,6 +16,19 @@ jobs:
     defaults:
       run:
         working-directory: remip/backend
+    services:
+      # Real queue for the ingestion job-queue path (M4); tests also verify
+      # the Redis-unreachable inline fallback explicitly, so this service is
+      # about exercising the "happy path" rather than being load-bearing.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +42,8 @@ jobs:
         run: mypy app
       - name: Tests (pytest)
         run: pytest -q
+        env:
+          REMIP_REDIS_URL: redis://localhost:6379/0
 
   frontend:
     runs-on: ubuntu-latest

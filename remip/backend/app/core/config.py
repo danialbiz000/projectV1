@@ -18,6 +18,22 @@ class Settings(BaseSettings):
     demo_mode: bool = True
     seed_on_startup: bool = True
 
+    # Job queue (M4). Ingestion still works with no Redis at all: the admin
+    # trigger and seed-time bootstrap call run_ingestion() inline when the
+    # queue is unreachable — see jobs/ingestion.py.
+    redis_url: str = "redis://localhost:6379/0"
+    ingestion_queue_name: str = "remip-ingestion"
+    ingestion_interval_minutes: int = 360
+
+    # Object storage for listing-version snapshots (M4). Falls back to local
+    # disk under `snapshot_local_dir` when unset, so this never blocks the
+    # zero-external-services dev flow described in the README.
+    s3_endpoint_url: str | None = None
+    s3_bucket: str = "remip-snapshots"
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
+    snapshot_local_dir: str = "./data/snapshots"
+
 
 @lru_cache
 def get_settings() -> Settings:

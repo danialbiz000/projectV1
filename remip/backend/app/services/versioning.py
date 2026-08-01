@@ -3,6 +3,7 @@ field-level diff, a PriceObservation when the price moved, and notification
 events for watching users."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.db.base import utcnow
 from app.models import ListingVersion, PriceObservation, PropertyListing
 from app.services.notifications import notify_listing_event
+from app.services.storage import save_snapshot
 
 TRACKED_FIELDS = (
     "price",
@@ -37,6 +39,14 @@ def _listing_snapshot(listing: PropertyListing) -> dict[str, Any]:
     }
 
 
+def _store_snapshot(listing_id: str, version_number: int, snapshot: dict[str, Any]) -> str:
+    key = f"listings/{listing_id}/v{version_number}.json"
+    body = json.dumps(
+        {"listing_id": listing_id, "version_number": version_number, **snapshot}, default=str
+    ).encode()
+    return save_snapshot(key, body)
+
+
 def create_initial_version(db: Session, listing: PropertyListing) -> ListingVersion:
     snap = _listing_snapshot(listing)
     version = ListingVersion(
@@ -44,6 +54,7 @@ def create_initial_version(db: Session, listing: PropertyListing) -> ListingVers
         version_number=1,
         captured_at=listing.first_seen_at,
         diff={},
+        snapshot_key=_store_snapshot(listing.id, 1, snap),
         **snap,
     )
     db.add(version)
@@ -128,12 +139,15 @@ def apply_listing_update(
         .order_by(ListingVersion.version_number.desc())
         .limit(1)
     )
+    version_number = (last_number or 0) + 1
+    new_snapshot = _listing_snapshot(listing)
     version = ListingVersion(
         listing_id=listing.id,
-        version_number=(last_number or 0) + 1,
+        version_number=version_number,
         captured_at=now,
         diff=diff,
-        **_listing_snapshot(listing),
+        snapshot_key=_store_snapshot(listing.id, version_number, new_snapshot),
+        **new_snapshot,
     )
     db.add(version)
     db.flush()

@@ -1,3 +1,6 @@
+from tests.conftest import login
+
+
 def _watched_listing_id(client, user_headers) -> str:
     watchlists = client.get("/api/v1/watchlists", headers=user_headers).json()
     items = [item for w in watchlists for item in w["items"] if item["kind"] == "listing"]
@@ -75,6 +78,42 @@ def test_simulate_requires_admin(client, user_headers):
         headers=user_headers,
     )
     assert response.status_code == 403
+
+
+def test_notification_digest_groups_by_type_and_listing(client, user_headers, admin_headers):
+    listing_id = _watched_listing_id(client, user_headers)
+    before = client.get(f"/api/v1/listings/{listing_id}").json()
+    client.post(
+        "/api/v1/admin/simulate/listing-update",
+        json={
+            "listing_id": listing_id,
+            "changes": {"price": round(before["current_price"] * 0.9)},
+        },
+        headers=admin_headers,
+    )
+
+    digest = client.get("/api/v1/notifications/digest", headers=user_headers).json()
+    assert digest["unread_total"] > 0
+    assert any(t["type"] == "price_drop" and t["count"] >= 1 for t in digest["by_type"])
+    assert any(entry["listing_id"] == listing_id for entry in digest["by_listing"])
+    assert digest["generated_at"]
+
+
+def test_notification_digest_empty_for_user_with_no_notifications(client):
+    email = "digest.empty@example.com"
+    client.post("/api/v1/auth/register", json={"email": email, "password": "password123"})
+    headers = login(client, email, "password123")
+    digest = client.get("/api/v1/notifications/digest", headers=headers).json()
+    assert digest == {
+        "unread_total": 0,
+        "by_type": [],
+        "by_listing": [],
+        "generated_at": digest["generated_at"],
+    }
+
+
+def test_notification_digest_requires_auth(client):
+    assert client.get("/api/v1/notifications/digest").status_code == 401
 
 
 def test_mark_notifications_read(client, user_headers):

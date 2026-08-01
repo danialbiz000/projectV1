@@ -121,9 +121,22 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 | **M1** ✅ | Fondamenta backend: modello dati core, auth JWT, API v1 (geo, listings, market, forecast baseline, watchlist, notifiche in-app, sources, admin), versionamento annunci, adapter demo + seed sintetico Italia, Docker Compose, test, lint, type-check, docs | M | §14 del piano |
 | **M2** ✅ | Frontend Next.js: landing, auth, onboarding, dashboard zona, lista+dettaglio immobile, watchlist, centro notifiche, dark/light, E2E Playwright | L | Criteri di accettazione UI del brief |
 | **M3** ✅ | Mappa interattiva (MapLibre): marker, clustering, heatmap €/m², disegno poligoni, ricerca per raggio, estensione PostGIS abilitata | M | Ricerca per poligono/raggio funzionante |
-| M4 | Ingestion asincrona reale: job queue + scheduler, adapter open data (OMI/ISTAT), deduplicazione con confidence, MinIO snapshot, digest notifiche | L | Un adapter open data reale in produzione |
+| **M4** ✅ | Ingestion asincrona reale: job queue (RQ+Redis) + scheduler (APScheduler), adapter open data OMI-shaped, deduplicazione cross-agenzia con confidence, snapshot su object storage (MinIO/S3), digest notifiche | L | Vedi nota sotto |
 | M5 | Confronti (immobili/zone), valutazione automatica con intervallo, motore di spiegazione driver, preferenze notifiche, admin esteso | M | |
 | M6 | Hardening: email verification, reset password, OAuth, rate limiting distribuito, export/cancellazione dati (GDPR), monitoring, backup, deploy cloud | M | Production-ready |
+
+> **Nota sul criterio di uscita M4** (correzione rispetto alla stesura iniziale): il
+> criterio originale — "un adapter open data reale in produzione" — presupponeva di
+> poter verificare un endpoint live OMI/ISTAT. Non è stato possibile farlo in modo
+> verificabile (accesso di rete esterno non disponibile in questo ambiente; OMI
+> distribuisce comunque CSV/Excel semestrali, non una API REST convenzionale). È
+> stata quindi costruita l'infrastruttura reale (coda, scheduler, upsert con
+> dedup, job tracciati) con un adapter la cui **struttura** rispecchia fedelmente
+> le quotazioni OMI reali, ma i cui **valori** provengono da una fixture locale
+> versionata, dichiarati come dimostrativi (`is_demo_data: true`) in ogni risposta
+> API. Sostituire la fixture con un fetch live, una volta verificata licenza e
+> formato reale, non richiede modifiche al resto della pipeline. Vedi
+> `docs/ARCHITECTURE.md` e `docs/INTEGRATIONS.md`.
 
 ## 10. Struttura del repository
 
