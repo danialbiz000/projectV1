@@ -26,6 +26,7 @@ class UserOut(BaseModel):
     email: EmailStr
     full_name: str
     role: str
+    email_verified: bool
     onboarding_completed: bool
     created_at: datetime
 
@@ -35,3 +36,26 @@ class UserOut(BaseModel):
 class OnboardingRequest(BaseModel):
     goal: str = Field(default="", max_length=50)  # buy | sell | rent | invest | monitor
     preferred_country: str = Field(default="IT", max_length=2)
+
+
+class MessageResponse(BaseModel):
+    detail: str
+    # Only populated when the server runs with demo_mode=True (see
+    # core/config.py) — a deliberate dev/demo convenience so the flow is
+    # testable end-to-end without a real mailbox. A production deployment
+    # must set REMIP_DEMO_MODE=false, at which point this is always null and
+    # the token only ever reaches the user via the configured email adapter.
+    dev_token: str | None = None
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str

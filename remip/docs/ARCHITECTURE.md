@@ -94,16 +94,18 @@ Regole del monolite modulare:
 
 | Area | Endpoint principali |
 |---|---|
-| Auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me` |
+| Auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me`, `POST /auth/verify-email/request`\|`confirm`, `POST /auth/forgot-password`, `POST /auth/reset-password` (M6, rate-limited — `core/rate_limit.py`) |
+| OAuth | `GET /auth/oauth/providers`, `GET /auth/oauth/{provider}/authorize`, `GET /auth/oauth/{provider}/callback` (M6 — vuoto/404 finché nessun provider è configurato, vedi `services/oauth.py`) |
 | Geo | `GET /geo/countries`, `GET /geo/areas` (filtri country/level/parent/q), `GET /geo/areas/{id}` |
 | Listings | `GET /listings` (filtri, paginazione, sort), `GET /listings/{id}`, `GET /listings/{id}/history`, `GET /listings/{id}/comparables`, `GET /listings/{id}/versions/{n}/snapshot` (M4), `POST`/`GET /listings/{id}/valuations` (stima persistita, M5), `POST /listings/compare` (2-4 annunci, M5) |
 | Market | `GET /market/metrics` (serie storica per area), `GET /market/summary` (KPI + variazioni 1/3/6/12m,5y), `GET /market/forecast`, `GET /market/omi-quotations` (bande OMI per zona, M4), `GET /market/economic-indicators` (indicatori live Eurostat, M4), `GET /market/compare-areas` (2-4 aree, M5), `GET /market/explanation` (motore driver, M5) |
 | Watchlist | CRUD `/watchlists`, `/watchlists/{id}/items` |
 | Notifications | `GET /notifications`, `GET /notifications/digest` (M4), `POST /notifications/{id}/read`, `POST /notifications/read-all`, `GET`/`PUT /notifications/preferences` (frequenza + tipi silenziati, M5) |
+| Users | `GET /users/me/export` (export dati, GDPR art. 20, M6), `DELETE /users/me` (cancellazione/anonimizzazione, GDPR art. 17, M6) |
 | Sources | `GET /sources` (provider, ToS, qualità, is_demo) |
-| Admin | `GET /admin/stats`, `POST /admin/simulate/listing-update` (motore demo variazioni), `POST /admin/ingestion/run/{provider_code}`, `GET /admin/ingestion/jobs` (M4), `GET /admin/users`, `POST /admin/users/{id}/deactivate`\|`reactivate` (M5), `POST /admin/sources/{code}/toggle` (kill-switch ToS, M5) |
+| Admin | `GET /admin/stats`, `POST /admin/simulate/listing-update` (motore demo variazioni), `POST /admin/ingestion/run/{provider_code}`, `GET /admin/ingestion/jobs` (M4), `GET /admin/users`, `POST /admin/users/{id}/deactivate`\|`reactivate` (M5), `POST /admin/sources/{code}/toggle` (kill-switch ToS, M5), `POST /admin/backup` (M6, storage — nessun restore automatico) |
 | Map | `POST /map/search` (marker per bbox/raggio/poligono), `GET /map/areas-geo` (centroidi per livello amministrativo) |
-| Health | `GET /health` |
+| Health | `GET /health`, `GET /metrics` (Prometheus text format, M6 — per-processo, non autenticato: da restringere a livello di rete in produzione, vedi `docs/DEPLOYMENT.md`) |
 
 Convenzioni: paginazione `limit/offset` con `total`; errori JSON uniformi
 (`{"detail": ...}`); ogni risposta analitica include il blocco `data_context`
@@ -223,13 +225,20 @@ fallback del job queue. Recuperabile via
 - **Geospaziali**: filtri raggio/poligono testati contro SQLite (portabili su Postgres, vedi sopra); PostGIS reale in compose non eseguito nella suite automatica.
 - **Ingestion (M4)**: adapter OMI (fetch/validate/normalize/determinismo), adapter Eurostat (parser SDMX-JSON deterministico + un test a chiamata reale che si skippa se la rete non è raggiungibile, non un mock), job (provider sconosciuto/disabilitato/force, upsert idempotente per entrambi gli adapter, persistenza `DataIngestionJob`), fallback coda→inline con Redis reale non raggiungibile (test dedicato, non un mock).
 - **Storage (M4)**: percorso disco locale eseguito realmente; percorso S3 verificato contro un client boto3 mockato (nessun MinIO richiesto in CI).
+- **Auth estesa (M6)**: verifica email/reset password end-to-end (token emesso → consumato → single-use verificato), rate limiting (unit test diretti su `core/rate_limit.py`, non tramite l'app, per usare limiti bassi senza disturbare il resto della suite — vedi `tests/conftest.py`), OAuth verificato contro un provider HTTP mock (non Google live, stesso approccio di Eurostat), backup verificato contro un file SQLite temporaneo reale (non il DB in-memory dei test, che non ha un file da copiare — quel caso è invece il test del 400 onesto).
 - CI (GitHub Actions): ruff → mypy → pytest su ogni push.
 
 ## Strategia di deployment
 
 - Dev: `docker compose up` (Postgres+PostGIS, Redis, MinIO, backend, worker, scheduler, frontend) oppure backend standalone su SQLite (ingestion e storage funzionano comunque, vedi sopra).
 - Ambienti separati via `.env` (mai committati); `.env.example` come contratto.
-- Prod (da M6): immagini Docker su container host, Postgres gestito, migrazioni Alembic al deploy, backup automatici, logging strutturato + monitoring (health endpoint già presente).
+- Prod: guida completa in `docs/DEPLOYMENT.md` (M6) — non eseguita in questo
+  ambiente (nessun accesso cloud/rete), ma con passi concreti: Docker Compose
+  su una VM dietro reverse proxy TLS, checklist di variabili d'ambiente
+  obbligatorie, backup on-demand (`POST /admin/backup`, M6) con restore
+  manuale documentato, note su scalabilità (rate limiting e metriche sono
+  per-processo senza Redis condiviso) e gap noti (migrazioni Alembic,
+  lock distribuito per lo scheduler).
 
 ## Sicurezza e privacy (implementato in M1 / pianificato)
 
@@ -241,6 +250,12 @@ M4: trigger di ingestion e log job riservati al ruolo admin; il kill-switch
 `enabled=False` di un provider blocca l'esecuzione schedulata (bypassabile solo
 esplicitamente da admin con `force=True`); nessuna credenziale S3/Redis hardcoded
 (da `.env`).
-M5-M6: rate limiting distribuito, email verification, reset password, OAuth,
-consensi, export/cancellazione account (GDPR), dependency/secret scanning in CI,
-retention policy.
+M6: rate limiting distribuito su login/registrazione/reset (Redis con
+fallback in-memory, `core/rate_limit.py`), verifica email e reset password
+(token hash single-use con scadenza, mai il valore grezzo persistito —
+`services/auth_tokens.py`), login OAuth2 generico disattivato finché non
+configurato con credenziali reali (`services/oauth.py`),
+export/cancellazione account (GDPR art. 20/17 — `api/v1/users.py`).
+Ancora pianificato: dependency/secret scanning in CI, retention policy,
+consensi granulari (cookie/marketing), migrazioni Alembic (vedi
+`docs/DEPLOYMENT.md` §2 e §8 per l'elenco completo dei gap pre-produzione).

@@ -54,3 +54,13 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         return jwt.decode(token, get_settings().secret_key, algorithms=[ALGORITHM])
     except jwt.PyJWTError:
         return None
+
+
+def generate_token() -> str:
+    """A random, URL-safe, single-use token (email verification, password
+    reset). Only its hash (see below) is ever persisted."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()

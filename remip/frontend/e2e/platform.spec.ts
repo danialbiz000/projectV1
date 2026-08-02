@@ -116,3 +116,85 @@ test("non-admin is denied access to the admin panel", async ({ page }) => {
   await page.goto("/admin");
   await expect(page.getByText("Accesso riservato agli amministratori.")).toBeVisible();
 });
+
+test("login page shows no OAuth buttons when no provider is configured", async ({ page }) => {
+  await page.goto("/login");
+  await expect(page.getByLabel("Email")).toBeVisible(); // page loaded past the OAuth fetch
+  await expect(page.getByRole("button", { name: /^Continua con/ })).toHaveCount(0);
+});
+
+test("forgot password and reset password flow (own throwaway user)", async ({ page }) => {
+  const email = `e2e-reset-${Date.now()}@example.com`;
+  await page.goto("/register");
+  await page.getByLabel("Nome completo").fill("Reset Flow");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel(/Password/).fill("originalpass123");
+  await page.getByRole("button", { name: "Registrati" }).click();
+  await page.waitForURL("**/onboarding");
+
+  await page.goto("/forgot-password");
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: "Invia istruzioni" }).click();
+  await expect(page.getByText("Modalità demo", { exact: false })).toBeVisible();
+
+  await page.getByRole("link", { name: /Continua alla reimpostazione password/ }).click();
+  await page.waitForURL("**/reset-password**");
+  await page.getByLabel(/Nuova password/).fill("brandnewpass456");
+  await page.getByRole("button", { name: "Reimposta password" }).click();
+  await expect(page.getByText("Password aggiornata.")).toBeVisible();
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("brandnewpass456");
+  await page.getByRole("button", { name: "Accedi" }).click();
+  // a fresh registration hasn't completed onboarding yet, so login redirects there
+  await page.waitForURL("**/onboarding");
+});
+
+test("account page: resend verification, confirm it, then export data", async ({ page }) => {
+  const email = `e2e-verify-${Date.now()}@example.com`;
+  await page.goto("/register");
+  await page.getByLabel("Nome completo").fill("Verify Flow");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel(/Password/).fill("password123");
+  await page.getByRole("button", { name: "Registrati" }).click();
+  await page.waitForURL("**/onboarding");
+
+  await page.goto("/account");
+  await expect(page.getByText("non verificata")).toBeVisible();
+  await page.getByRole("button", { name: "Invia email di verifica" }).click();
+  await expect(page.getByText("Modalità demo", { exact: false })).toBeVisible();
+
+  await page.getByRole("link", { name: "Verifica ora →" }).click();
+  await page.waitForURL("**/verify-email**");
+  await expect(page.getByText("Email verificata")).toBeVisible();
+
+  await page.goto("/account");
+  await expect(page.getByText("verificata", { exact: true })).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /Scarica i miei dati/ }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^remip-dati-.*\.json$/);
+});
+
+test("account page: delete account revokes access", async ({ page }) => {
+  const email = `e2e-delete-${Date.now()}@example.com`;
+  await page.goto("/register");
+  await page.getByLabel("Nome completo").fill("Delete Flow");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel(/Password/).fill("password123");
+  await page.getByRole("button", { name: "Registrati" }).click();
+  await page.waitForURL("**/onboarding");
+
+  await page.goto("/account");
+  await page.getByRole("button", { name: "Elimina account" }).click();
+  await page.getByRole("button", { name: "Sì, elimina definitivamente" }).click();
+  await page.waitForURL("http://localhost:3000/");
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Accedi" }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+});

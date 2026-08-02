@@ -14,6 +14,7 @@ interface AuthState {
   user: UserOut | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<UserOut>;
+  loginWithToken: (token: string) => Promise<UserOut>;
   register: (email: string, password: string, fullName: string) => Promise<void>;
   logout: () => void;
   refresh: () => Promise<void>;
@@ -57,6 +58,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return me;
   }, []);
 
+  const loginWithToken = useCallback(async (token: string) => {
+    setToken(token);
+    const me = await api<UserOut>("/api/v1/auth/me");
+    setUser(me);
+    return me;
+  }, []);
+
   const register = useCallback(
     async (email: string, password: string, fullName: string) => {
       await api("/api/v1/auth/register", {
@@ -75,7 +83,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refresh }}>
+    <AuthContext.Provider
+      value={{ user, loading, login, loginWithToken, register, logout, refresh }}
+    >
       {children}
     </AuthContext.Provider>
   );

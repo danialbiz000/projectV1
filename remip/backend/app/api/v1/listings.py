@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, DbDep
+from app.db.base import ensure_aware
 from app.models import (
     AdministrativeArea,
     ListingVersion,
@@ -52,10 +53,7 @@ def descendant_area_ids(db: Session, area_id: str) -> list[str]:
 
 
 def _days_on_market(listing: PropertyListing) -> int:
-    published = listing.published_at
-    if published.tzinfo is None:
-        published = published.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - published).days, 0)
+    return max((datetime.now(UTC) - ensure_aware(listing.published_at)).days, 0)
 
 
 def _version_out(v: ListingVersion) -> VersionOut:

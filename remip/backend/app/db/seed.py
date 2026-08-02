@@ -368,6 +368,7 @@ def seed_database(db: Session, listings_per_neighborhood: int = 12, seed: int = 
         full_name="Utente Demo",
         role="user",
         onboarding_completed=True,
+        email_verified=True,
     )
     admin_user = User(
         email=DEMO_ADMIN_EMAIL,
@@ -375,6 +376,7 @@ def seed_database(db: Session, listings_per_neighborhood: int = 12, seed: int = 
         full_name="Admin Demo",
         role="admin",
         onboarding_completed=True,
+        email_verified=True,
     )
     db.add_all([demo_user, admin_user])
     db.flush()

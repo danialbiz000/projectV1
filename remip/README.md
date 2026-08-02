@@ -13,7 +13,7 @@ watchlist, notifiche e previsioni baseline con scenari.
 > integrate e i prerequisiti legali/commerciali sono in
 > [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
-**Stato: Milestone 5 completata** — backend (M1: API, modello dati, versionamento
+**Stato: Milestone 6 completata** — backend (M1: API, modello dati, versionamento
 annunci, notifiche, forecast baseline, seed demo, test) + frontend Next.js (M2:
 landing, auth, onboarding, dashboard di zona con grafici, ricerca, dettaglio
 immobile, watchlist, centro notifiche, dark/light) + mappa interattiva (M3:
@@ -26,9 +26,13 @@ storage, digest notifiche) + confronti, valutazioni e admin esteso (M5:
 valutazione persistita con intervallo (`/listings/{id}/valuations`), motore di
 spiegazione driver del trend (`/market/explanation`, correlazioni dichiarate
 non causalità), confronto annunci (`/compare`) e zone (dashboard), preferenze
-notifiche per tipo, pagina `/admin` — utenti, fonti dati, job di ingestion).
-Prossima: hardening e produzione in Milestone 6 (roadmap:
-[`docs/PLAN.md`](docs/PLAN.md)).
+notifiche per tipo, pagina `/admin` — utenti, fonti dati, job di ingestion) +
+hardening (M6: verifica email e reset password, rate limiting distribuito su
+login/registrazione/reset, login OAuth2 generico — nessun provider reale
+configurato, vedi sotto —, export/cancellazione account GDPR, metriche
+Prometheus su `/metrics`, backup on-demand del database, guida al deployment
+cloud non eseguita in questo ambiente). Prossima: nessuna milestone
+ulteriore ancora pianificata (roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
 
 ## Documentazione
 
@@ -38,6 +42,7 @@ Prossima: hardening e produzione in Milestone 6 (roadmap:
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Architettura, diagrammi Mermaid, API, strategia test/deploy |
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | ER e dizionario dati |
 | [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) | Fonti esterne: stato e autorizzazioni necessarie |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Guida al deployment cloud (M6, non eseguita in questo ambiente) |
 
 ## Avvio rapido (senza Docker — SQLite)
 
@@ -131,6 +136,18 @@ curl -s "localhost:8000/api/v1/market/explanation?area_id=<AREA_ID>"
 curl -s -X PUT localhost:8000/api/v1/notifications/preferences -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"frequency":"instant","muted_types":["photos_change"]}'
 curl -s localhost:8000/api/v1/admin/users -H "Authorization: Bearer $ADMIN_TOKEN"
+# 9. Verifica email, reset password (in demo_mode il token torna nella
+#    risposta invece di essere solo "inviato" — mai così in produzione) — M6
+curl -s -X POST localhost:8000/api/v1/auth/verify-email/request -H "Authorization: Bearer $TOKEN"
+curl -s -X POST localhost:8000/api/v1/auth/forgot-password -H 'Content-Type: application/json' \
+  -d '{"email":"demo@example.com"}'
+# 10. Provider OAuth configurati (vuoto di default — nessuna credenziale reale) — M6
+curl -s localhost:8000/api/v1/auth/oauth/providers
+# 11. Esporta/elimina i propri dati (GDPR) — M6
+curl -s localhost:8000/api/v1/users/me/export -H "Authorization: Bearer $TOKEN"
+# 12. Metriche Prometheus e backup on-demand (admin) — M6
+curl -s localhost:8000/metrics
+curl -s -X POST localhost:8000/api/v1/admin/backup -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 ## Qualità
@@ -156,14 +173,25 @@ parametrizzato, CORS esplicito, isolamento dati utente coperto da test. Gli
 endpoint di ingestion (trigger e log job) sono riservati al ruolo admin; il
 kill-switch `enabled=false` di una fonte blocca l'esecuzione schedulata.
 Nessun segreto nel repository: configurazione via `.env` (vedi `.env.example`).
+**M6**: rate limiting su login/registrazione/reset password (Redis con
+fallback in-memory per-processo, vedi `docs/DEPLOYMENT.md` §7 per il limite
+in scenari multi-replica); token di verifica email/reset password hashati
+(mai il valore grezzo persistito) e single-use; risposta identica a
+`/auth/forgot-password` che esista o meno l'email (nessuna enumerazione
+account); `/metrics` non autenticato per design (da restringere a livello
+di rete in produzione, non applicativo).
 
 ## Limitazioni note
 
 - Dati esclusivamente sintetici o illustrativi; le stime/previsioni sono
   dimostrative e non costituiscono consulenza finanziaria.
-- Schema creato con `create_all` (migrazioni Alembic da M2).
-- Notifiche solo in-app (con digest riassuntivo in-app da M4); email/push da
-  M6. Rate limiting distribuito da M6.
+- Schema creato con `create_all`, non ancora con migrazioni Alembic — gap
+  esplicito e bloccante prima di un database di produzione con dati reali,
+  vedi `docs/DEPLOYMENT.md` §2 e §8.
+- Notifiche solo in-app (con digest riassuntivo in-app da M4); l'invio email
+  reale (verifica/reset password, M6) richiede SMTP configurato — senza,
+  `services/email.py` usa un adapter console (solo log), nessuna email
+  arriva davvero a nessuno (vedi sotto).
 - **Mappa (M3)**: i filtri per raggio/poligono girano in Python (portabili tra
   SQLite e PostgreSQL) invece che con query PostGIS indicizzate — vedi
   `docs/ARCHITECTURE.md`; l'estensione PostGIS è comunque abilitata e pronta
@@ -188,7 +216,22 @@ Nessun segreto nel repository: configurazione via `.env` (vedi `.env.example`).
 - **Confronti e valutazioni (M5)**: `NotificationPreference.frequency`
   (`daily_digest`/`weekly_digest`) è persistita e restituita dall'API ma non
   ancora applicata da un job di invio raggruppato — solo `muted_types` è già
-  rispettato in tempo reale da `services/notifications.py` (il digest via
-  email/push resta M6). La valutazione persistita richiede almeno 3
+  rispettato in tempo reale da `services/notifications.py` (il digest per
+  frequenza — `daily_digest`/`weekly_digest` — resta da implementare, nessuna
+  milestone ancora assegnata). La valutazione persistita richiede almeno 3
   comparabili nella stessa area — sotto soglia l'endpoint risponde 422
   invece di restituire un numero non fondato.
+- **Hardening (M6)**: nessun provider OAuth reale è configurato in questo
+  deployment (`GET /auth/oauth/providers` torna vuoto) — il codice di scambio
+  authorization-code→token→userinfo è reale ma verificato nei test contro un
+  provider HTTP mock, non contro Google live, per lo stesso motivo per cui
+  l'adapter Eurostat è verificato così quando la rete non è raggiungibile.
+  Nessun SMTP reale configurato: verifica email e reset password funzionano
+  end-to-end (in `demo_mode` il token torna nella risposta API, mai in
+  produzione) ma non recapitano un'email reale finché non si imposta
+  `REMIP_SMTP_HOST` e le altre variabili SMTP. Le metriche `/metrics` e il
+  rate limiter in-memory sono per-processo, non aggregati tra repliche senza
+  Redis condiviso (`docs/DEPLOYMENT.md` §7). Nessun deployment cloud è stato
+  eseguito in questo ambiente (nessun accesso di rete/cloud) — vedi
+  `docs/DEPLOYMENT.md` per la guida non verificata e l'elenco esplicito dei
+  gap pre-produzione (§8), incluse le migrazioni Alembic ancora mancanti.

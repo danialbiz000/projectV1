@@ -16,6 +16,7 @@ from app.models import (
     User,
 )
 from app.schemas.listing import SimulateUpdateRequest
+from app.services.backup import BackupError, create_backup
 from app.services.versioning import apply_listing_update
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -200,3 +201,25 @@ def toggle_source(provider_code: str, admin: AdminUser, db: DbDep, enabled: bool
     )
     db.commit()
     return {"detail": "Provider updated", "provider_code": provider_code, "enabled": enabled}
+
+
+@router.post("/backup")
+def trigger_backup(admin: AdminUser, db: DbDep) -> dict:
+    """On-demand database backup to object storage (M6). See
+    services/backup.py — there is deliberately no matching restore
+    endpoint; restoring belongs in an operator runbook, not an API call."""
+    try:
+        result = create_backup()
+    except BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    db.add(
+        AuditLog(
+            user_id=admin.id,
+            action="admin.backup",
+            entity="database",
+            entity_id=result["storage_key"],
+            meta=result,
+        )
+    )
+    db.commit()
+    return result

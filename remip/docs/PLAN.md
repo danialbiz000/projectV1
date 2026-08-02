@@ -123,7 +123,40 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 | **M3** ✅ | Mappa interattiva (MapLibre): marker, clustering, heatmap €/m², disegno poligoni, ricerca per raggio, estensione PostGIS abilitata | M | Ricerca per poligono/raggio funzionante |
 | **M4** ✅ | Ingestion asincrona reale: job queue (RQ+Redis) + scheduler (APScheduler), adapter open data OMI-shaped, deduplicazione cross-agenzia con confidence, snapshot su object storage (MinIO/S3), digest notifiche | L | Vedi nota sotto |
 | **M5** ✅ | Confronti (immobili/zone), valutazione automatica con intervallo, motore di spiegazione driver, preferenze notifiche, admin esteso | M | Vedi nota sotto |
-| M6 | Hardening: email verification, reset password, OAuth, rate limiting distribuito, export/cancellazione dati (GDPR), monitoring, backup, deploy cloud | M | Production-ready |
+| **M6** ✅ | Hardening: email verification, reset password, OAuth, rate limiting distribuito, export/cancellazione dati (GDPR), monitoring, backup, deploy cloud | M | Vedi nota sotto |
+
+> **Nota sul criterio di uscita M6**: "Production-ready" nel senso di
+> *meccanismi* implementati e testati, non di un deployment reale eseguito —
+> vedi `docs/DEPLOYMENT.md` per il gap esplicito (nessun accesso cloud in
+> questo ambiente). Backend — verifica email e reset password (token hash,
+> single-use, scadenza; adapter email pluggable — console/log di default,
+> nessuna credenziale SMTP reale disponibile qui, vedi `services/email.py`;
+> in `demo_mode` il token è restituito nella risposta per essere testabile
+> end-to-end senza casella di posta, mai in produzione); rate limiting
+> distribuito su login/registrazione/reset (Redis con fallback in-memory
+> per-processo, stesso pattern di `jobs/ingestion.py`, vedi
+> `core/rate_limit.py`); login OAuth2 generico "Google-shaped"
+> (`services/oauth.py`) — nessuna credenziale client reale in questo
+> ambiente, quindi ogni provider risulta "non configurato" di default;
+> lo scambio authorization-code→token→userinfo è codice reale, verificato
+> nei test contro un provider HTTP mock, non contro Google live (stesso
+> approccio di `adapters/eurostat.py`); export dati (`GET
+> /users/me/export`, GDPR art. 20) e cancellazione account
+> (`DELETE /users/me`, art. 17 — anonimizzazione del profilo, cancellazione
+> reale di watchlist/notifiche/preferenze/token pendenti); metriche
+> Prometheus hand-rolled (`GET /metrics`, per-processo, nessuna dipendenza
+> esterna) + log strutturati per richiesta; backup on-demand
+> (`POST /admin/backup`, copia file SQLite o `pg_dump`, nessun restore
+> automatico per design — vedi `services/backup.py`). Frontend — pagine
+> `/forgot-password`, `/reset-password`, `/verify-email`, callback OAuth
+> (`/login/oauth/[provider]/callback`), pagina `/account` (stato verifica +
+> reinvio, esportazione dati, cancellazione account con conferma), bottoni
+> OAuth su `/login` che non si mostrano affatto quando nessun provider è
+> configurato (stato vuoto verificato in E2E). 155 test backend + 16 E2E
+> Playwright verdi, ruff/mypy/eslint/tsc/build puliti. Corretto anche un bug
+> preesistente in `backend/Dockerfile` (mancava `httpx`, già usato da M4
+> per l'adapter Eurostat — l'immagine Docker sarebbe andata in errore
+> all'avvio).
 
 > **Nota sul criterio di uscita M5**: backend — entità `Valuation` (stima
 > puntuale persistita come azione esplicita dell'utente, non su ogni

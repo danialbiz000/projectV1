@@ -58,7 +58,20 @@ export interface UserOut {
   email: string;
   full_name: string;
   role: string;
+  email_verified: boolean;
   onboarding_completed: boolean;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+}
+
+export interface MessageResponse {
+  detail: string;
+  // Only set when the backend runs with demo_mode=true — see
+  // schemas/auth.py::MessageResponse. Never populated in production.
+  dev_token?: string | null;
 }
 
 export interface Area {
@@ -415,6 +428,25 @@ export interface AdminStats {
   listing_versions: number;
   notifications: number;
   listings_by_status: Record<string, number>;
+}
+
+export interface OAuthProvidersResponse {
+  providers: string[];
+}
+
+export interface OAuthAuthorizeResponse {
+  authorize_url: string;
+  state: string;
+}
+
+export interface DataExport {
+  exported_at: string;
+  profile: Record<string, unknown>;
+  watchlists: unknown[];
+  notifications: unknown[];
+  notification_preference: Record<string, unknown> | null;
+  oauth_accounts: unknown[];
+  audit_log: unknown[];
 }
 
 export function formatPrice(value: number, currency = "EUR"): string {

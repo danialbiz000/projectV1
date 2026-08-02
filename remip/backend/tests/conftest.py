@@ -3,6 +3,12 @@ import os
 os.environ["REMIP_DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["REMIP_SEED_ON_STARTUP"] = "false"
 os.environ["REMIP_SECRET_KEY"] = "test-secret-not-for-production-0123456789abcdef"
+# The test suite legitimately calls /auth/register and /auth/login far more
+# than a real client would inside one minute; rate limiting itself is
+# covered directly against app.core.rate_limit in test_rate_limit.py.
+os.environ["REMIP_RATE_LIMIT_LOGIN_PER_MINUTE"] = "100000"
+os.environ["REMIP_RATE_LIMIT_REGISTER_PER_MINUTE"] = "100000"
+os.environ["REMIP_RATE_LIMIT_PASSWORD_RESET_PER_MINUTE"] = "100000"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

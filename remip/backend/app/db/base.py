@@ -27,6 +27,13 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def ensure_aware(dt: datetime) -> datetime:
+    """SQLite silently drops tzinfo on read for ``DateTime(timezone=True)``
+    columns; PostgreSQL does not. Comparing a value read back from either
+    dialect against ``utcnow()`` needs this normalization first."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
 def _make_engine():
     settings = get_settings()
     url = settings.database_url

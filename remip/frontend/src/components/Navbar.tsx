@@ -15,6 +15,7 @@ const links = [
   { href: "/compare", label: "Confronta" },
   { href: "/watchlist", label: "Watchlist" },
   { href: "/notifications", label: "Notifiche" },
+  { href: "/account", label: "Account" },
 ];
 
 export function Navbar() {

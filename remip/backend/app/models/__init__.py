@@ -1,3 +1,4 @@
+from app.models.auth import AuthToken, OAuthAccount
 from app.models.geo import AdministrativeArea, Country
 from app.models.ingestion import DataIngestionJob, EconomicIndicator, OmiZoneQuotation
 from app.models.listing import (
@@ -17,6 +18,7 @@ __all__ = [
     "AdministrativeArea",
     "Agency",
     "AuditLog",
+    "AuthToken",
     "Country",
     "DataIngestionJob",
     "DataProvider",
@@ -26,6 +28,7 @@ __all__ = [
     "MarketMetric",
     "Notification",
     "NotificationPreference",
+    "OAuthAccount",
     "OmiZoneQuotation",
     "PhysicalProperty",
     "PriceObservation",
