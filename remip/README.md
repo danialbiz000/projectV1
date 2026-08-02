@@ -80,6 +80,17 @@ snapshot funzionano comunque — l'ingestion gira in-process se Redis non è
 raggiungibile e gli snapshot si scrivono su disco locale se S3 non è
 configurato (vedi `docs/ARCHITECTURE.md`).
 
+Per applicare le migrazioni Alembic (M6) contro il Postgres di Compose
+invece di affidarsi al `create_all` di comodo del backend:
+
+```bash
+docker compose --profile tools run --rm migrate
+```
+
+(facoltativo in sviluppo — `create_all` crea comunque lo schema al primo
+avvio; utile per verificare che le migrazioni girino davvero contro
+Postgres, non solo SQLite. Vedi `docs/DEPLOYMENT.md` §3.)
+
 ## Credenziali demo (solo sviluppo, create dal seed)
 
 | Utente | Email | Password | Ruolo |
@@ -185,9 +196,13 @@ di rete in produzione, non applicativo).
 
 - Dati esclusivamente sintetici o illustrativi; le stime/previsioni sono
   dimostrative e non costituiscono consulenza finanziaria.
-- Schema creato con `create_all`, non ancora con migrazioni Alembic — gap
-  esplicito e bloccante prima di un database di produzione con dati reali,
-  vedi `docs/DEPLOYMENT.md` §2 e §8.
+- Migrazioni Alembic disponibili da M6 (`backend/alembic/`, baseline
+  M1-M6, verificata in `tests/test_migrations.py` contro un file SQLite
+  reale — non contro Postgres, mai raggiungibile in questo ambiente). Il
+  backend continua a chiamare `Base.metadata.create_all` all'avvio per il
+  flusso dev senza Docker (no-op una volta che Alembic ha già creato le
+  stesse tabelle); un deployment reale deve eseguire `alembic upgrade head`
+  come step esplicito pre-avvio, vedi `docs/DEPLOYMENT.md` §3.
 - Notifiche solo in-app (con digest riassuntivo in-app da M4); l'invio email
   reale (verifica/reset password, M6) richiede SMTP configurato — senza,
   `services/email.py` usa un adapter console (solo log), nessuna email
@@ -231,7 +246,9 @@ di rete in produzione, non applicativo).
   produzione) ma non recapitano un'email reale finché non si imposta
   `REMIP_SMTP_HOST` e le altre variabili SMTP. Le metriche `/metrics` e il
   rate limiter in-memory sono per-processo, non aggregati tra repliche senza
-  Redis condiviso (`docs/DEPLOYMENT.md` §7). Nessun deployment cloud è stato
+  Redis condiviso (`docs/DEPLOYMENT.md` §8). Nessun deployment cloud è stato
   eseguito in questo ambiente (nessun accesso di rete/cloud) — vedi
-  `docs/DEPLOYMENT.md` per la guida non verificata e l'elenco esplicito dei
-  gap pre-produzione (§8), incluse le migrazioni Alembic ancora mancanti.
+  `docs/DEPLOYMENT.md` per la guida non verificata, §9 per come procurarsi
+  credenziali SMTP/OAuth reali (richiedono un account presso un provider
+  terzo, non ottenibili da qui) e §10 per l'elenco completo dei gap
+  pre-produzione.

@@ -157,6 +157,30 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 > preesistente in `backend/Dockerfile` (mancava `httpx`, già usato da M4
 > per l'adapter Eurostat — l'immagine Docker sarebbe andata in errore
 > all'avvio).
+>
+> **Addendum (richiesta esplicita: migrazioni Alembic + credenziali reali
+> SMTP/OAuth)**: aggiunta la storia di migrazioni Alembic mancante
+> (`backend/alembic/`, revisione baseline che copre l'intero schema M1-M6,
+> generata via autogenerate e verificata — tabelle prodotte identiche a
+> `Base.metadata`, incluso il downgrade completo — in
+> `tests/test_migrations.py` contro un file SQLite reale; non verificata
+> contro PostgreSQL, mai raggiungibile in questo ambiente). Il backend
+> continua a chiamare `Base.metadata.create_all` all'avvio per non rompere
+> il flusso dev senza Docker già documentato nel README — le due cose non
+> confliggono (`create_all` diventa un no-op una volta che Alembic ha già
+> creato le stesse tabelle), ma da qui in avanti ogni cambio di schema va
+> fatto con una nuova revisione Alembic, non lasciato al solo `create_all`.
+> Aggiunto anche un servizio Compose `migrate` (profilo `tools`, non avviato
+> da un `up` normale) per eseguirle contro il Postgres di Compose. **Le
+> credenziali reali SMTP/OAuth non sono state aggiunte**: richiedono un
+> account presso un provider terzo (SendGrid/Gmail per SMTP, Google Cloud
+> Console per OAuth) che solo l'operatore del deployment può creare — non
+> ottenibile dal codice o da questo ambiente sandbox (nessun accesso di
+> rete/account, stessa limitazione già documentata per gli adapter dati
+> live). Il meccanismo per riceverle è già completo da M6
+> (`services/email.py`, `services/oauth.py`, entrambi attivati da semplici
+> variabili d'ambiente); `docs/DEPLOYMENT.md` §9 (nuovo) spiega passo per
+> passo come procurarsele.
 
 > **Nota sul criterio di uscita M5**: backend — entità `Valuation` (stima
 > puntuale persistita come azione esplicita dell'utente, non su ogni

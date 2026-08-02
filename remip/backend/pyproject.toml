@@ -16,6 +16,7 @@ dependencies = [
     "apscheduler>=3.10",
     "boto3>=1.34",
     "httpx>=0.27",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -29,9 +30,20 @@ postgres = ["psycopg2-binary>=2.9"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Migration files must stay exactly what `alembic revision --autogenerate`
+# produced — the DB schema history, not something to hand-reformat — so
+# they're excluded from lint/type-check the same way most Alembic setups do.
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.ruff.lint.isort]
+# Without this, ruff only infers "app" as first-party for files that live
+# inside the app/ package itself — a file elsewhere in the repo (like
+# alembic/env.py) would otherwise get app.* imports alphabetized in with
+# third-party ones instead of grouped separately, unlike every other file.
+known-first-party = ["app"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's Query()/Depends() in argument defaults is the documented DI
@@ -45,7 +57,7 @@ python_version = "3.11"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = false
-exclude = ["tests"]
+exclude = ["tests", "alembic/versions"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

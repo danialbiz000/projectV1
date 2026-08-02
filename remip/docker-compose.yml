@@ -55,6 +55,23 @@ services:
       minio:
         condition: service_started
 
+  # One-off Alembic migration runner (M6) — not started by a plain
+  # `docker compose up`, only via `docker compose --profile tools run --rm
+  # migrate`. The backend's own lifespan still calls
+  # Base.metadata.create_all on startup for zero-friction dev (harmless
+  # no-op once Alembic has already created the same tables — SQLAlchemy
+  # skips tables that already exist), so nothing breaks if this step is
+  # skipped in local dev; it's the recommended step before the first `up`
+  # against a real deployment (see docs/DEPLOYMENT.md).
+  migrate:
+    build: ./backend
+    command: alembic upgrade head
+    environment: *backend_env
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["tools"]
+
   # Consumes ingestion jobs enqueued by the scheduler (or an admin manual
   # trigger). See docs/ARCHITECTURE.md for the job-queue design.
   worker:

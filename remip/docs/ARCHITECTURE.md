@@ -226,6 +226,7 @@ fallback del job queue. Recuperabile via
 - **Ingestion (M4)**: adapter OMI (fetch/validate/normalize/determinismo), adapter Eurostat (parser SDMX-JSON deterministico + un test a chiamata reale che si skippa se la rete non è raggiungibile, non un mock), job (provider sconosciuto/disabilitato/force, upsert idempotente per entrambi gli adapter, persistenza `DataIngestionJob`), fallback coda→inline con Redis reale non raggiungibile (test dedicato, non un mock).
 - **Storage (M4)**: percorso disco locale eseguito realmente; percorso S3 verificato contro un client boto3 mockato (nessun MinIO richiesto in CI).
 - **Auth estesa (M6)**: verifica email/reset password end-to-end (token emesso → consumato → single-use verificato), rate limiting (unit test diretti su `core/rate_limit.py`, non tramite l'app, per usare limiti bassi senza disturbare il resto della suite — vedi `tests/conftest.py`), OAuth verificato contro un provider HTTP mock (non Google live, stesso approccio di Eurostat), backup verificato contro un file SQLite temporaneo reale (non il DB in-memory dei test, che non ha un file da copiare — quel caso è invece il test del 400 onesto).
+- **Migrazioni (M6)**: `alembic upgrade head` verificato contro un file SQLite temporaneo reale (non il DB in-memory condiviso dagli altri test), con assert che l'insieme di tabelle prodotto combaci esattamente con `Base.metadata` — più il downgrade completo (`tests/test_migrations.py`). Non verificato contro PostgreSQL (nessuna istanza raggiungibile in questo ambiente).
 - CI (GitHub Actions): ruff → mypy → pytest su ogni push.
 
 ## Strategia di deployment
@@ -233,12 +234,15 @@ fallback del job queue. Recuperabile via
 - Dev: `docker compose up` (Postgres+PostGIS, Redis, MinIO, backend, worker, scheduler, frontend) oppure backend standalone su SQLite (ingestion e storage funzionano comunque, vedi sopra).
 - Ambienti separati via `.env` (mai committati); `.env.example` come contratto.
 - Prod: guida completa in `docs/DEPLOYMENT.md` (M6) — non eseguita in questo
-  ambiente (nessun accesso cloud/rete), ma con passi concreti: Docker Compose
-  su una VM dietro reverse proxy TLS, checklist di variabili d'ambiente
-  obbligatorie, backup on-demand (`POST /admin/backup`, M6) con restore
-  manuale documentato, note su scalabilità (rate limiting e metriche sono
-  per-processo senza Redis condiviso) e gap noti (migrazioni Alembic,
-  lock distribuito per lo scheduler).
+  ambiente (nessun accesso cloud/rete), ma con passi concreti: migrazioni
+  Alembic come step esplicito pre-deploy (`docker compose --profile tools
+  run --rm migrate`, M6 — vedi sotto), Docker Compose su una VM dietro
+  reverse proxy TLS, checklist di variabili d'ambiente obbligatorie, backup
+  on-demand (`POST /admin/backup`, M6) con restore manuale documentato,
+  note su scalabilità (rate limiting e metriche sono per-processo senza
+  Redis condiviso) e gap noti (lock distribuito per lo scheduler,
+  credenziali SMTP/OAuth reali — richiedono un account presso un provider
+  terzo, non ottenibili dal codice).
 
 ## Sicurezza e privacy (implementato in M1 / pianificato)
 
@@ -255,7 +259,10 @@ fallback in-memory, `core/rate_limit.py`), verifica email e reset password
 (token hash single-use con scadenza, mai il valore grezzo persistito —
 `services/auth_tokens.py`), login OAuth2 generico disattivato finché non
 configurato con credenziali reali (`services/oauth.py`),
-export/cancellazione account (GDPR art. 20/17 — `api/v1/users.py`).
+export/cancellazione account (GDPR art. 20/17 — `api/v1/users.py`),
+migrazioni Alembic con storia versionata dello schema (`backend/alembic/`,
+baseline M1-M6, vedi `docs/DEPLOYMENT.md` §3).
 Ancora pianificato: dependency/secret scanning in CI, retention policy,
-consensi granulari (cookie/marketing), migrazioni Alembic (vedi
-`docs/DEPLOYMENT.md` §2 e §8 per l'elenco completo dei gap pre-produzione).
+consensi granulari (cookie/marketing) — vedi `docs/DEPLOYMENT.md` §10 per
+l'elenco completo dei gap pre-produzione (in gran parte credenziali reali
+da provider terzi, non codice mancante).
