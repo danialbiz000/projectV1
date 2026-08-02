@@ -180,7 +180,11 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 > live). Il meccanismo per riceverle è già completo da M6
 > (`services/email.py`, `services/oauth.py`, entrambi attivati da semplici
 > variabili d'ambiente); `docs/DEPLOYMENT.md` §9 (nuovo) spiega passo per
-> passo come procurarsele.
+> passo come procurarsele. Scelta confermata dall'utente: Gmail per SMTP
+> (procedura App Password dettagliata in §9), solo Google per OAuth
+> (già implementato, nessun provider aggiuntivo richiesto) — `.env.example`
+> aggiornato con i campi `REMIP_SMTP_*`/`REMIP_OAUTH_GOOGLE_*` pronti,
+> commentati, in attesa dei valori reali dell'operatore.
 
 > **Nota sul criterio di uscita M5**: backend — entità `Valuation` (stima
 > puntuale persistita come azione esplicita dell'utente, non su ogni

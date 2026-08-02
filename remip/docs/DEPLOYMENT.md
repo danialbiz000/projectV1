@@ -179,20 +179,34 @@ codice o da questo ambiente di sviluppo (nessun accesso di rete/account).
 Il codice è già pronto a riceverle via `.env`; questa sezione spiega solo
 dove procurarsele.
 
-**SMTP** — qualunque provider SMTP standard funziona (`services/email.py`
-usa `smtplib`, nessuna integrazione proprietaria). Opzioni comuni:
-- **SendGrid/Mailgun/Postmark** (servizi email transazionali dedicati):
-  creare un account, verificare il dominio mittente (record SPF/DKIM sul
-  DNS), generare una API key da usare come `REMIP_SMTP_USER`/`REMIP_SMTP_PASSWORD`
-  secondo la loro documentazione SMTP relay.
-- **Gmail/Workspace**: richiede una "App Password" (non la password
-  dell'account) generata da account Google con 2FA attivo; `REMIP_SMTP_HOST=smtp.gmail.com`,
-  `REMIP_SMTP_PORT=587`. Va bene per volumi bassi, non per traffico di
-  produzione (limiti di invio giornalieri stretti).
-
-Una volta ottenute, impostarle in `.env` (mai committarlo) e verificare con
-`POST /auth/verify-email/request` (con `REMIP_DEMO_MODE=false`): se l'email
-arriva davvero, la configurazione è corretta.
+**SMTP (Gmail — scelta corrente del progetto)** — `services/email.py` usa
+`smtplib` puro, nessuna integrazione proprietaria, quindi Gmail funziona
+senza codice aggiuntivo:
+1. Sull'account Google da usare come mittente, attivare la verifica in due
+   passaggi (2FA) — obbligatoria per generare una App Password, se non è già
+   attiva: <https://myaccount.google.com/security> → "Verifica in due passaggi".
+2. Generare una App Password: <https://myaccount.google.com/apppasswords>
+   → nome app a piacere (es. "REMIP") → Google mostra una password di 16
+   caratteri **una sola volta**. Non è la password normale dell'account e
+   non va mai committata.
+3. Impostare in `.env` (mai committarlo):
+   ```
+   REMIP_SMTP_HOST=smtp.gmail.com
+   REMIP_SMTP_PORT=587
+   REMIP_SMTP_USER=<indirizzo gmail usato al passo 1>
+   REMIP_SMTP_PASSWORD=<i 16 caratteri del passo 2, senza spazi>
+   REMIP_SMTP_FROM=<stesso indirizzo di REMIP_SMTP_USER>
+   ```
+   (`.env.example` ha già questi campi pronti, commentati, con gli stessi
+   nomi.)
+4. Verificare con `REMIP_DEMO_MODE=false` e `POST /auth/verify-email/request`
+   (autenticato): se l'email arriva davvero nella casella di destinazione,
+   la configurazione è corretta. Nota: Gmail impone limiti di invio
+   giornalieri stretti (circa 500/giorno per un account personale) — va
+   bene per demo/staging, non per traffico di produzione reale; per quello
+   servirebbe comunque un servizio email transazionale dedicato
+   (SendGrid/Mailgun/Postmark), stesso meccanismo `REMIP_SMTP_*` ma senza
+   quel limite.
 
 **OAuth (Google)** — `services/oauth.py` è scritto per il flusso
 authorization-code standard di Google:
