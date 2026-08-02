@@ -15,13 +15,14 @@
 
 `docker-compose.yml` è già production-shaped: `db` (Postgres+PostGIS),
 `redis`, `minio` (S3-compatibile), `backend`, `worker`, `scheduler`,
-`frontend`, più `migrate` (M6, one-off — §3). Il modo più diretto per andare
-in produzione è eseguire lo stesso Compose su una singola VM dietro un
-reverse proxy TLS — opzione (A) sotto. Un PaaS a container (Fly.io, Render,
-Railway) è un'alternativa valida se si preferisce non gestire la VM —
-opzione (B), solo accennata: richiede sostituire `db`/`redis`/`minio` con i
-servizi gestiti del provider, il resto (immagini Docker, env var) non
-cambia.
+`frontend`, più `migrate` (M6, one-off — §3). Chi ha già una VM può
+eseguire lo stesso Compose dietro un reverse proxy TLS — opzione (A)
+sotto. Chi parte da zero senza infrastruttura propria trova più semplice un
+PaaS a container gestito — opzione (B), Render nello specifico, con
+percorso a click nel dashboard senza dover gestire una VM: sostituisce
+`db`/`redis`/`minio` con i servizi gestiti del provider, il resto (immagini
+Docker, env var) non cambia. Altri PaaS simili (Fly.io, Railway) userebbero
+lo stesso schema con un dashboard diverso, non documentati qui in dettaglio.
 
 ## 2. Prerequisiti prima di qualunque deployment
 
@@ -107,16 +108,79 @@ api.tuodominio.it {
 
 DNS: due record A verso l'IP della VM per i due (sub)domini sopra.
 
-## 5. Opzione B — PaaS a container (cenni)
+## 5. Opzione B — Render (scelta consigliata per chi parte da zero)
 
-Backend/worker/scheduler/frontend sono le stesse quattro immagini Docker;
-sostituire `db`→Postgres gestito (con estensione PostGIS abilitata),
-`redis`→Redis gestito, `minio`→bucket S3 reale (AWS S3, Cloudflare R2,
-ecc., impostando `REMIP_S3_ENDPOINT_URL`/`_BUCKET`/`_ACCESS_KEY`/`_SECRET_KEY`).
-La maggior parte dei PaaS a container offre un "release command"/"pre-deploy
-hook" dove far girare `alembic upgrade head` (§3) prima che il nuovo
-codice riceva traffico — verificare la sintassi specifica del provider
-scelto, non riprodotta qui perché non verificabile in questo ambiente.
+> ⚠️ Anche questa sezione non è stata verificata dal vivo (nessun accesso di
+> rete verso render.com da questo ambiente). Il percorso a click nel
+> dashboard sotto non dipende da alcuna sintassi che possa sbagliare da qui;
+> il file `render.yaml` (Blueprint, opzionale) invece sì — vedi il suo
+> commento in testa al file per il dettaglio.
+
+Render gestisce Postgres, Redis e servizi Docker da un unico dashboard, con
+inserimento delle variabili d'ambiente via interfaccia grafica — nessun
+file da editare a mano per i segreti. Percorso interamente a click:
+
+1. **Account**: <https://render.com> → registrazione (anche via GitHub, così
+   il passo successivo è immediato).
+2. **Database**: dashboard → "New +" → "PostgreSQL" → nome `remip-db`,
+   piano a scelta (verificare i prezzi correnti sul sito, non riportati qui
+   perché non verificabili in questo ambiente) → "Create Database". Una
+   volta pronto, Render mostra una "Internal Database URL" — copiala, serve
+   al passo 4.
+3. **Redis**: "New +" → "Redis" (o "Key Value" a seconda della dicitura
+   attuale del dashboard) → nome `remip-redis` → "Create". Copia anche qui
+   l'URL di connessione interno mostrato.
+4. **Backend**: "New +" → "Web Service" → "Build and deploy from a Git
+   repository" → collega il repository GitHub del progetto → Render rileva
+   `backend/Dockerfile` automaticamente se imposti "Root Directory" su
+   `backend`, oppure "Dockerfile Path" su `backend/Dockerfile` con root
+   sulla radice del repo (dipende dall'interfaccia corrente — se non è
+   ovvio, prova un'opzione e correggi se il build fallisce, l'anteprima non
+   crea nulla finché non confermi). Poi, nella sezione "Environment" del
+   servizio, aggiungi (via GUI, una riga alla volta):
+   ```
+   REMIP_DATABASE_URL   = <Internal Database URL dal passo 2>
+   REMIP_REDIS_URL      = <URL Redis dal passo 3>
+   REMIP_SECRET_KEY     = <genera con: openssl rand -hex 32, o fai generare a Render>
+   REMIP_ENVIRONMENT    = production
+   REMIP_DEMO_MODE      = false
+   REMIP_SEED_ON_STARTUP = false
+   REMIP_SMTP_HOST       = smtp.gmail.com
+   REMIP_SMTP_PORT       = 587
+   REMIP_SMTP_USER       = <la tua email Gmail>
+   REMIP_SMTP_PASSWORD   = <la tua App Password>
+   REMIP_SMTP_FROM       = <la tua email Gmail>
+   ```
+   "Health Check Path": `/health`. Deploy. Quando è pronto, Render assegna
+   un URL tipo `https://remip-backend-xxxx.onrender.com` — copialo, serve
+   al passo 6.
+5. **Worker e scheduler** (opzionali per una prima prova, necessari per
+   l'ingestion schedulata — vedi `docs/ARCHITECTURE.md`): "New +" →
+   "Background Worker" due volte, stesso repository/Dockerfile del passo 4,
+   cambiando solo il comando di avvio in `python -m app.worker` e
+   `python -m app.scheduler` rispettivamente; stesse variabili
+   `REMIP_DATABASE_URL`/`REMIP_REDIS_URL`/`REMIP_SECRET_KEY` del backend.
+6. **Frontend**: "New +" → "Web Service" → stesso repository, root/Dockerfile
+   su `frontend/Dockerfile` → variabile `NEXT_PUBLIC_API_URL` = l'URL del
+   backend copiato al passo 4. Deploy. Render assegna un URL tipo
+   `https://remip-frontend-xxxx.onrender.com`.
+7. **Torna al backend** (passo 4) e aggiungi/aggiorna
+   `REMIP_CORS_ORIGINS = ["https://remip-frontend-xxxx.onrender.com"]`
+   (con le parentesi quadre e le virgolette — è letto come JSON, non come
+   testo semplice) con l'URL vero del frontend dal passo 6, poi salva
+   (Render fa il redeploy automaticamente).
+8. **Migrazioni** (§3): dal dashboard del servizio backend, apri la
+   "Shell" (terminale integrato nel browser, se disponibile per il piano
+   scelto) ed esegui `alembic upgrade head` — oppure, se la Shell non è
+   disponibile, aggiungi temporaneamente `alembic upgrade head &&` davanti
+   al comando di avvio del backend per il primo deploy, poi rimuovilo.
+
+Blueprint automatico (opzionale, per redeploy futuri più rapidi): il file
+`render.yaml` nella radice del repo descrive gli stessi servizi — dal
+dashboard, "New +" → "Blueprint" → collega il repo → Render legge il file
+e propone i servizi da creare, chiedendo solo i valori marcati `sync: false`
+(i segreti). Se il parsing del file desse errore, i passi 1-8 sopra restano
+validi come alternativa indipendente dal file.
 
 ## 6. Health check, monitoring e superficie esposta
 

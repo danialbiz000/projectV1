@@ -184,7 +184,20 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 > (procedura App Password dettagliata in §9), solo Google per OAuth
 > (già implementato, nessun provider aggiuntivo richiesto) — `.env.example`
 > aggiornato con i campi `REMIP_SMTP_*`/`REMIP_OAUTH_GOOGLE_*` pronti,
-> commentati, in attesa dei valori reali dell'operatore.
+> commentati, in attesa dei valori reali dell'operatore. Gmail configurato
+> e testato dall'utente in locale (fuori da questo ambiente, sul proprio
+> PC), stesso schema di verifica usato per l'adapter Eurostat.
+>
+> **Secondo addendum (dove pubblicare il sito)**: l'utente non ha un
+> account cloud esistente e ha chiesto una raccomandazione. Scelto Render
+> (dashboard unico, inserimento segreti via interfaccia grafica senza
+> editare file — il profilo più adatto dato che l'operatore ha bisogno di
+> istruzioni molto guidate, osservato durante la configurazione Gmail).
+> Aggiunto `render.yaml` (Blueprint, opzionale) nella radice del repo e un
+> percorso primario interamente a click nel dashboard in `docs/DEPLOYMENT.md`
+> §5, **non verificato dal vivo** (nessun accesso di rete verso render.com
+> da questo ambiente) — stessa onestà già applicata a tutta la guida di
+> deployment.
 
 > **Nota sul criterio di uscita M5**: backend — entità `Valuation` (stima
 > puntuale persistita come azione esplicita dell'utente, non su ogni

@@ -1,0 +1,133 @@
+# REMIP — Render Blueprint (optional, M6+).
+#
+# ⚠️ Non verificato dal vivo: questo ambiente di sviluppo non ha accesso di
+# rete verso render.com, quindi questo file non è mai stato effettivamente
+# caricato su Render. La sintassi segue lo schema Blueprint documentato da
+# Render, ma se al momento del deploy Render segnala un errore di parsing,
+# è più veloce sistemarlo direttamente nel dashboard (che mostra un'anteprima
+# prima di creare qualunque servizio) che indovinarlo da qui — vedi
+# docs/DEPLOYMENT.md §5 per il percorso alternativo, interamente a click nel
+# dashboard, senza questo file.
+#
+# Cosa NON include: MinIO/S3 (il backend usa il fallback su disco locale
+# per gli snapshot annunci quando REMIP_S3_ENDPOINT_URL non è impostato —
+# vedi services/storage.py); un bucket S3 reale (AWS S3, Cloudflare R2, ecc.)
+# si aggiunge in un secondo momento impostando le variabili REMIP_S3_* a
+# mano nel dashboard, senza toccare questo file.
+
+databases:
+  - name: remip-db
+    databaseName: remip
+    user: remip
+    plan: starter
+
+services:
+  - type: redis
+    name: remip-redis
+    plan: starter
+    ipAllowList: []
+
+  - type: web
+    name: remip-backend
+    runtime: docker
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: REMIP_DATABASE_URL
+        fromDatabase:
+          name: remip-db
+          property: connectionString
+      - key: REMIP_REDIS_URL
+        fromService:
+          name: remip-redis
+          type: redis
+          property: connectionString
+      - key: REMIP_SECRET_KEY
+        generateValue: true
+      - key: REMIP_ENVIRONMENT
+        value: production
+      - key: REMIP_DEMO_MODE
+        value: "false"
+      - key: REMIP_SEED_ON_STARTUP
+        value: "false"
+      # JSON array string, es. ["https://remip-frontend.onrender.com"] —
+      # non una lista separata da virgole (pydantic-settings la legge come
+      # JSON, un formato diverso farebbe fallire l'avvio). Da impostare a
+      # mano dopo il primo deploy del frontend, quando se ne conosce l'URL.
+      - key: REMIP_CORS_ORIGINS
+        sync: false
+      - key: REMIP_SMTP_HOST
+        sync: false
+      - key: REMIP_SMTP_PORT
+        sync: false
+      - key: REMIP_SMTP_USER
+        sync: false
+      - key: REMIP_SMTP_PASSWORD
+        sync: false
+      - key: REMIP_SMTP_FROM
+        sync: false
+      - key: REMIP_OAUTH_GOOGLE_CLIENT_ID
+        sync: false
+      - key: REMIP_OAUTH_GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: REMIP_OAUTH_REDIRECT_BASE_URL
+        sync: false
+
+  - type: worker
+    name: remip-worker
+    runtime: docker
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    dockerCommand: python -m app.worker
+    plan: starter
+    envVars:
+      - key: REMIP_DATABASE_URL
+        fromDatabase:
+          name: remip-db
+          property: connectionString
+      - key: REMIP_REDIS_URL
+        fromService:
+          name: remip-redis
+          type: redis
+          property: connectionString
+      - key: REMIP_SECRET_KEY
+        sync: false
+      - key: REMIP_ENVIRONMENT
+        value: production
+
+  - type: worker
+    name: remip-scheduler
+    runtime: docker
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    dockerCommand: python -m app.scheduler
+    plan: starter
+    envVars:
+      - key: REMIP_DATABASE_URL
+        fromDatabase:
+          name: remip-db
+          property: connectionString
+      - key: REMIP_REDIS_URL
+        fromService:
+          name: remip-redis
+          type: redis
+          property: connectionString
+      - key: REMIP_SECRET_KEY
+        sync: false
+      - key: REMIP_ENVIRONMENT
+        value: production
+
+  - type: web
+    name: remip-frontend
+    runtime: docker
+    dockerContext: ./frontend
+    dockerfilePath: ./frontend/Dockerfile
+    plan: starter
+    envVars:
+      # URL pubblico di remip-backend, noto solo dopo il suo primo deploy —
+      # da impostare a mano (non risolto automaticamente in questo file,
+      # per non affidarsi a una sintassi fromService non verificata qui).
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
