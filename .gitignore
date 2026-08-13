@@ -10,6 +10,8 @@ __pycache__/
 # REMIP
 remip/backend/*.db
 remip/backend/.venv/
+remip/backend/venv/
+remip/backend/*.egg-info/
 remip/backend/data/
 .pytest_cache/
 .mypy_cache/

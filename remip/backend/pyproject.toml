@@ -27,6 +27,12 @@ dev = [
 ]
 postgres = ["psycopg2-binary>=2.9"]
 
+[tool.setuptools.packages.find]
+# Without this, setuptools' flat-layout auto-discovery sees app/, data/, and
+# alembic/ all sitting next to pyproject.toml and refuses to guess which one
+# is the installable package — `pip install -e .` fails outright.
+include = ["app*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
