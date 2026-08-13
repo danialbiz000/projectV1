@@ -318,9 +318,27 @@ export interface ValuationOut {
   assumptions: string;
 }
 
+export interface TrendPoint {
+  period: string;
+  avg_price_sqm: number;
+}
+
+export interface MarketScore {
+  score: number;
+  label: string;
+  observed_trend: string;
+  evidence_strength: string;
+  positive_drivers: ExplanationDriver[];
+  negative_drivers: ExplanationDriver[];
+  methodology: string;
+  limitations: string;
+}
+
 export interface ListingCompareRow extends ListingSummary {
   deviation_from_area_pct: number | null;
   estimate: EstimateOut | null;
+  market_score: MarketScore | null;
+  price_trend: TrendPoint[];
 }
 
 export interface AreaCompareRow {
@@ -344,6 +362,8 @@ export interface AreaCompareRow {
   gross_yield_pct: number | null;
   currency: string | null;
   changes_pct: Record<string, number | null> | null;
+  market_score: MarketScore | null;
+  price_trend: TrendPoint[];
 }
 
 export interface NotificationPreferenceOut {
@@ -382,6 +402,7 @@ export interface ExplanationResult {
   evidence_strength?: string;
   sources?: string[];
   national_context?: NationalContext | null;
+  market_score?: MarketScore | null;
   uncertain_elements?: string[];
   alternative_explanations?: string;
 }
@@ -447,6 +468,21 @@ export interface DataExport {
   notification_preference: Record<string, unknown> | null;
   oauth_accounts: unknown[];
   audit_log: unknown[];
+}
+
+export interface FloorplanRoom {
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  area_sqm: number;
+}
+
+export interface Floorplan {
+  width: number;
+  height: number;
+  rooms: FloorplanRoom[];
 }
 
 export function formatPrice(value: number, currency = "EUR"): string {

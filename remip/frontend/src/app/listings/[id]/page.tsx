@@ -16,6 +16,7 @@ import {
   api,
   formatPct,
   formatPrice,
+  type Floorplan,
   type ListingDetail,
   type ValuationOut,
   type WatchlistOut,
@@ -29,6 +30,76 @@ const featureLabels: Record<string, string> = {
   garage: "Garage",
   garden: "Giardino",
 };
+
+function roomColor(label: string): string {
+  if (label.startsWith("Soggiorno")) return "#2a7de1";
+  if (label.startsWith("Cucina")) return "#22a06b";
+  if (label.startsWith("Camera")) return "#9333ea";
+  if (label.startsWith("Bagno")) return "#64748b";
+  return "#94a3b8";
+}
+
+function FloorplanSection({ listingId }: { listingId: string }) {
+  const [plan, setPlan] = useState<Floorplan | null>(null);
+
+  useEffect(() => {
+    api<{ data: Floorplan }>(`/api/v1/listings/${listingId}/floorplan`, { auth: false })
+      .then((r) => setPlan(r.data))
+      .catch(() => setPlan(null));
+  }, [listingId]);
+
+  if (!plan) return null;
+
+  return (
+    <section className="card" aria-label="Pianta illustrativa">
+      <h2 className="mb-1 font-semibold">Pianta illustrativa</h2>
+      <p className="mb-3 rounded-lg bg-amber-100 px-3 py-2 text-xs text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
+        Pianta generata automaticamente dai dati dell&apos;annuncio (m² totali, numero di camere
+        e bagni) — non è la planimetria reale dell&apos;immobile, che questa piattaforma non
+        possiede per nessun annuncio.
+      </p>
+      <svg
+        viewBox={`0 0 ${plan.width} ${plan.height}`}
+        className="mx-auto w-full max-w-lg"
+        role="img"
+        aria-label="Schema della pianta"
+      >
+        {plan.rooms.map((room) => (
+          <g key={room.label}>
+            <rect
+              x={room.x}
+              y={room.y}
+              width={room.width}
+              height={room.height}
+              fill={roomColor(room.label)}
+              fillOpacity={0.18}
+              stroke={roomColor(room.label)}
+              strokeWidth={1.5}
+            />
+            <text
+              x={room.x + room.width / 2}
+              y={room.y + room.height / 2 - 4}
+              textAnchor="middle"
+              fontSize={11}
+              className="fill-slate-700 dark:fill-slate-200"
+            >
+              {room.label}
+            </text>
+            <text
+              x={room.x + room.width / 2}
+              y={room.y + room.height / 2 + 10}
+              textAnchor="middle"
+              fontSize={9}
+              className="fill-slate-500"
+            >
+              {room.area_sqm} m²
+            </text>
+          </g>
+        ))}
+      </svg>
+    </section>
+  );
+}
 
 const diffLabels: Record<string, string> = {
   price: "Prezzo",
@@ -273,6 +344,8 @@ export default function ListingDetailPage() {
           </LineChart>
         </ResponsiveContainer>
       </section>
+
+      <FloorplanSection listingId={detail.id} />
 
       <section className="card" aria-label="Cronologia versioni">
         <h2 className="mb-2 font-semibold">Cronologia dell&apos;annuncio</h2>

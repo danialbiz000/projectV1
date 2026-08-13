@@ -198,3 +198,31 @@ test("account page: delete account revokes access", async ({ page }) => {
   await page.getByRole("button", { name: "Accedi" }).click();
   await expect(page.getByRole("alert")).toBeVisible();
 });
+
+test("listing detail page shows an illustrative generated floor plan (M7)", async ({ page }) => {
+  await page.goto("/listings");
+  await expect(page.getByText(/annunci trovati/)).toBeVisible();
+  await page.locator("a[href^='/listings/']").first().click();
+
+  const floorplanSection = page.getByRole("region", { name: "Pianta illustrativa" });
+  await expect(floorplanSection.getByRole("heading", { name: "Pianta illustrativa" })).toBeVisible();
+  await expect(page.getByText("non è la planimetria reale", { exact: false })).toBeVisible();
+  await expect(floorplanSection.locator("svg rect").first()).toBeVisible();
+});
+
+test("compare page shows zone price-history chart and market-quality score (M7)", async ({
+  page,
+}) => {
+  await page.goto("/listings");
+  await expect(page.getByText(/annunci trovati/)).toBeVisible();
+  const compareButtons = page.getByRole("button", { name: /Confronta \(max/ });
+  await compareButtons.nth(0).click();
+  await compareButtons.nth(1).click();
+
+  await page.goto("/compare");
+  await expect(page.getByText("Indicatore di mercato zona")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Storico prezzi delle zone (€/m²)" }),
+  ).toBeVisible();
+  await expect(page.locator(".recharts-line").first()).toBeVisible();
+});

@@ -19,6 +19,7 @@ from app.models import (
     PropertyListing,
     Valuation,
 )
+from app.schemas.common import DataContext
 from app.schemas.listing import (
     ListingCompareRequest,
     ListingCompareRow,
@@ -29,6 +30,8 @@ from app.schemas.listing import (
     VersionOut,
 )
 from app.services.comparables import estimate_value, find_comparables
+from app.services.floorplan import generate_floorplan
+from app.services.market import price_trend_and_score
 from app.services.storage import get_snapshot
 
 router = APIRouter(prefix="/listings", tags=["listings"])
@@ -238,6 +241,35 @@ def get_listing_history(listing_id: str, db: DbDep) -> list[VersionOut]:
     return [_version_out(v) for v in listing.versions]
 
 
+@router.get("/{listing_id}/floorplan")
+def get_listing_floorplan(listing_id: str, db: DbDep) -> dict:
+    """Illustrative floor plan (M7) — no source has a real one for any
+    listing here, only aggregate figures. See services/floorplan.py for the
+    deterministic layout algorithm and why it must never be presented as
+    the property's actual plan."""
+    listing = db.get(PropertyListing, listing_id)
+    if listing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found")
+    prop = listing.property
+    plan = generate_floorplan(prop.rooms, prop.bathrooms, prop.size_sqm, prop.property_type)
+    return {
+        "data": plan,
+        "data_context": DataContext(
+            sources=["generated"],
+            observations=len(plan["rooms"]),
+            aggregation_level="listing",
+            methodology="Pianta schematica generata algoritmicamente (partizione "
+            "proporzionale ai m² totali, numero di camere e bagni dell'annuncio) — "
+            "non deriva da alcuna planimetria reale, che questa piattaforma non possiede "
+            "per nessun annuncio.",
+            limitations="Illustrativa: le proporzioni sono stimate dai soli dati aggregati "
+            "(camere, bagni, m² totali), non riflettono la disposizione reale degli spazi, "
+            "porte, finestre o pareti portanti.",
+            is_demo_data=True,
+        ).model_dump(),
+    }
+
+
 @router.get("/{listing_id}/versions/{version_number}/snapshot")
 def get_listing_version_snapshot(listing_id: str, version_number: int, db: DbDep) -> dict:
     """Raw immutable snapshot as stored in object storage at capture time
@@ -316,10 +348,15 @@ def compare_listings(body: ListingCompareRequest, db: DbDep) -> list[ListingComp
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Listing {listing_id} not found")
         area = db.get(AdministrativeArea, listing.property.area_id)
         _, deviation, estimate = _comparables_deviation_and_estimate(db, listing)
+        trend, score = price_trend_and_score(db, listing.property.area_id, listing.listing_type)
         base = _summary(listing, area.name if area else "")
         rows.append(
             ListingCompareRow(
-                **base.model_dump(), deviation_from_area_pct=deviation, estimate=estimate
+                **base.model_dump(),
+                deviation_from_area_pct=deviation,
+                estimate=estimate,
+                market_score=score,
+                price_trend=trend,
             )
         )
     return rows

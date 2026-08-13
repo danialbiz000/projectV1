@@ -97,8 +97,8 @@ Regole del monolite modulare:
 | Auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me`, `POST /auth/verify-email/request`\|`confirm`, `POST /auth/forgot-password`, `POST /auth/reset-password` (M6, rate-limited — `core/rate_limit.py`) |
 | OAuth | `GET /auth/oauth/providers`, `GET /auth/oauth/{provider}/authorize`, `GET /auth/oauth/{provider}/callback` (M6 — vuoto/404 finché nessun provider è configurato, vedi `services/oauth.py`) |
 | Geo | `GET /geo/countries`, `GET /geo/areas` (filtri country/level/parent/q), `GET /geo/areas/{id}` |
-| Listings | `GET /listings` (filtri, paginazione, sort), `GET /listings/{id}`, `GET /listings/{id}/history`, `GET /listings/{id}/comparables`, `GET /listings/{id}/versions/{n}/snapshot` (M4), `POST`/`GET /listings/{id}/valuations` (stima persistita, M5), `POST /listings/compare` (2-4 annunci, M5) |
-| Market | `GET /market/metrics` (serie storica per area), `GET /market/summary` (KPI + variazioni 1/3/6/12m,5y), `GET /market/forecast`, `GET /market/omi-quotations` (bande OMI per zona, M4), `GET /market/economic-indicators` (indicatori live Eurostat, M4), `GET /market/compare-areas` (2-4 aree, M5), `GET /market/explanation` (motore driver, M5) |
+| Listings | `GET /listings` (filtri, paginazione, sort), `GET /listings/{id}`, `GET /listings/{id}/history`, `GET /listings/{id}/comparables`, `GET /listings/{id}/versions/{n}/snapshot` (M4), `POST`/`GET /listings/{id}/valuations` (stima persistita, M5), `POST /listings/compare` (2-4 annunci, M5 — ora include `price_trend`/`market_score` per zona, M7), `GET /listings/{id}/floorplan` (pianta generata algoritmicamente, illustrativa, M7) |
+| Market | `GET /market/metrics` (serie storica per area), `GET /market/summary` (KPI + variazioni 1/3/6/12m,5y), `GET /market/forecast`, `GET /market/omi-quotations` (bande OMI per zona, M4), `GET /market/economic-indicators` (indicatori live Eurostat, M4), `GET /market/compare-areas` (2-4 aree, M5 — ora include `price_trend`/`market_score` per riga, M7), `GET /market/explanation` (motore driver, M5 — ora include `market_score`, M7) |
 | Watchlist | CRUD `/watchlists`, `/watchlists/{id}/items` |
 | Notifications | `GET /notifications`, `GET /notifications/digest` (M4), `POST /notifications/{id}/read`, `POST /notifications/read-all`, `GET`/`PUT /notifications/preferences` (frequenza + tipi silenziati, M5) |
 | Users | `GET /users/me/export` (export dati, GDPR art. 20, M6), `DELETE /users/me` (cancellazione/anonimizzazione, GDPR art. 17, M6) |
@@ -215,6 +215,33 @@ aggiornamento) salva il payload grezzo su storage S3-compatibile
 (`snapshot_local_dir`) invece di richiedere MinIO — stesso principio di
 fallback del job queue. Recuperabile via
 `GET /listings/{id}/versions/{n}/snapshot`.
+
+## Confronto avanzato e pianta generata (M7)
+
+**Nessuna nuova tabella o migrazione**: entrambe le funzionalità M7 sono
+servizi puramente computazionali, eseguiti on-demand sui dati già persistiti
+(`MarketMetric`, `PhysicalProperty`) e mai scritti su disco.
+
+**`services/zone_quality.py` — indicatore di mercato della zona**: riusa la
+stessa classificazione dei driver del motore di spiegazione M5
+(`services/explanation.py`, correlazioni non causalità) e pesa i driver
+positivi/negativi (`{"weak": 8, "moderate": 16}`) attorno a una base di 50,
+saturato a [0,100]. **Non è un punteggio di vivibilità/sicurezza/scuole** —
+nessun dataset di quel tipo è integrato in questo ambiente — ma un'etichetta
+derivata dall'andamento dei prezzi della zona. Esposto sia in
+`GET /market/explanation` sia nelle righe di `POST /listings/compare` e
+`GET /market/compare-areas` insieme a `price_trend` (serie `€/m²` a 24 mesi
+per zona, `services/market.py:price_trend_and_score`), usato dal frontend
+per il grafico a linee in `/compare`.
+
+**`services/floorplan.py` — pianta illustrativa generata**: algoritmo
+deterministico di partizione ricorsiva del rettangolo (slice-and-dice,
+alternando tagli orizzontali/verticali) proporzionale alla quota di area di
+ogni vano, calcolata da `rooms`/`bathrooms`/`size_sqm`/`property_type` già
+presenti su `Property` — nessun campo o migrazione nuovi. Stesso input →
+stesso output (nessuna casualità). Esposto da
+`GET /listings/{id}/floorplan`; il frontend la mostra come SVG con una
+didascalia permanente "pianta generata, non è la planimetria reale".
 
 ## Strategia di testing
 

@@ -60,6 +60,14 @@ erDiagram
 | **AuthToken** (M6) | id, user_id, kind (`email_verify`/`password_reset`), token_hash (unique), expires_at, used_at?, created_at | solo l'hash SHA-256 del token è persistito, mai il valore grezzo; single-use (`used_at` impostato al consumo) — vedi `services/auth_tokens.py` |
 | **OAuthAccount** (M6) | id, user_id, provider, provider_account_id, created_at (unique su provider+provider_account_id) | collega un'identità OAuth esterna a un utente locale; nessun provider reale configurato in questo ambiente, vedi `services/oauth.py` |
 
+**M7 (confronto avanzato, pianta generata) — nessuna nuova entità o
+migrazione.** L'indicatore di mercato di zona (`services/zone_quality.py`) e
+lo storico prezzi nel confronto sono ricalcolati on-demand da `MarketMetric`
+già esistente; la pianta illustrativa (`services/floorplan.py`) è una
+funzione pura di campi già presenti su `PhysicalProperty` (rooms, bathrooms,
+size_sqm, property_type). Nessuna riga scritta su disco per nessuna delle
+due funzionalità.
+
 ## Entità pianificate (milestone successive)
 
 `GeographicBoundary` (geometrie PostGIS reali — oggi la mappa mostra solo

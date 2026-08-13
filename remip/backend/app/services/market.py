@@ -8,8 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AdministrativeArea, MarketMetric
+from app.schemas.listing import TrendPoint
+from app.services.zone_quality import compute_market_score
 
 CHANGE_WINDOWS_MONTHS = {"1m": 1, "3m": 3, "6m": 6, "12m": 12, "5y": 60, "10y": 120}
+PRICE_TREND_MONTHS = 24
 
 
 def get_series(
@@ -73,3 +76,17 @@ def summarize(db: Session, area: AdministrativeArea, listing_type: str = "sale")
         "currency": latest.currency,
         "changes_pct": compute_changes(series),
     }
+
+
+def price_trend_and_score(
+    db: Session, area_id: str, listing_type: str = "sale"
+) -> tuple[list[TrendPoint], dict[str, Any] | None]:
+    """Zone-level monthly €/m² series and the market-quality score derived
+    from it (M7) — used to compare properties across different zones on
+    equal footing, since a single listing rarely has enough of its own
+    price history to chart meaningfully (see docs/PLAN.md M7 exit note)."""
+    series = get_series(db, area_id, listing_type, months=PRICE_TREND_MONTHS)
+    trend = [
+        TrendPoint(period=m.period.isoformat(), avg_price_sqm=m.avg_price_sqm) for m in series
+    ]
+    return trend, compute_market_score(series)

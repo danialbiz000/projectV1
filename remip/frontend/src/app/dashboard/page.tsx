@@ -69,6 +69,12 @@ function ExplanationPanel({ areaId }: { areaId: string }) {
         <p className="text-xs text-slate-500">
           Robustezza delle evidenze: {result.evidence_strength}
         </p>
+        {result.market_score && (
+          <p className="mt-1 text-xs text-slate-500">
+            Indicatore di mercato della zona: {result.market_score.score}/100 (
+            {result.market_score.label})
+          </p>
+        )}
       </div>
       <ul className="space-y-1.5">
         {allDrivers.map((d) => (

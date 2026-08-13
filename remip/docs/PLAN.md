@@ -124,6 +124,37 @@ Principi: ID stabili (UUID), timestamp UTC, valuta esplicita su ogni importo
 | **M4** ✅ | Ingestion asincrona reale: job queue (RQ+Redis) + scheduler (APScheduler), adapter open data OMI-shaped, deduplicazione cross-agenzia con confidence, snapshot su object storage (MinIO/S3), digest notifiche | L | Vedi nota sotto |
 | **M5** ✅ | Confronti (immobili/zone), valutazione automatica con intervallo, motore di spiegazione driver, preferenze notifiche, admin esteso | M | Vedi nota sotto |
 | **M6** ✅ | Hardening: email verification, reset password, OAuth, rate limiting distribuito, export/cancellazione dati (GDPR), monitoring, backup, deploy cloud | M | Vedi nota sotto |
+| **M7** ✅ | Confronto proprietà avanzato (indicatore di mercato zona, storico €/m² della zona a grafico), pianta illustrativa generata per annuncio | S | Vedi nota sotto |
+
+> **Nota sul criterio di uscita M7**: richiesta esplicita dell'utente, con
+> domande di chiarimento poste prima di implementare (vedi risposte
+> nell'addendum sotto). Backend — `services/zone_quality.py`: punteggio
+> 0-100 "indicatore di mercato" derivato dagli stessi driver del motore di
+> spiegazione M5 (offerta, tempi di vendita, ribassi), **non** una qualità
+> della vita/sicurezza/scuole — nessuna fonte autorizzata esiste per quello
+> (vedi `docs/INTEGRATIONS.md`), inventarla avrebbe violato il principio di
+> trasparenza del progetto. `POST /listings/compare` e
+> `GET /market/compare-areas` ora includono anche `price_trend` (serie
+> mensile €/m² della zona, 24 mesi) e `market_score`. `services/floorplan.py`:
+> pianta generata algoritmicamente (partizione "slice-and-dice" proporzionale
+> a m² totali/camere/bagni esistenti — nessun nuovo campo nel modello dati,
+> nessuna migrazione necessaria), deterministica, esposta da
+> `GET /listings/{id}/floorplan` con `data_context` che dichiara
+> esplicitamente la natura illustrativa. Frontend — grafico storico prezzi
+> multi-linea (una linea per zona) e indicatore di mercato nella pagina
+> `/compare`; pianta SVG con didascalia permanente "generata, non reale"
+> (mai un tooltip nascondibile, per scelta esplicita dell'utente) nella
+> pagina di dettaglio annuncio. 177 test backend + 18 E2E Playwright verdi,
+> ruff/mypy/eslint/tsc/build puliti. Verificato anche visivamente in
+> browser reale (screenshot), non solo con i test automatici.
+>
+> **Addendum (risposte alle domande di chiarimento)**: (1) qualità zona →
+> indicatore di mercato derivato dai dati esistenti, non un punteggio di
+> vivibilità; (2) storico prezzi nel confronto → andamento medio della zona,
+> non il singolo annuncio (serie più lunga e più significativa tra zone
+> diverse); (3) dati per la pianta → schema proporzionale dai campi già
+> esistenti (camere/bagni/m² totali), nessun nuovo dato da raccogliere;
+> (4) etichetta pianta → sempre visibile, mai un tooltip discreto.
 
 > **Nota sul criterio di uscita M6**: "Production-ready" nel senso di
 > *meccanismi* implementati e testati, non di un deployment reale eseguito —

@@ -42,9 +42,16 @@ class ListingSummary(BaseModel):
     is_demo_data: bool = True
 
 
+class TrendPoint(BaseModel):
+    period: str
+    avg_price_sqm: float
+
+
 class ListingCompareRow(ListingSummary):
     deviation_from_area_pct: float | None
     estimate: dict[str, Any] | None
+    market_score: dict[str, Any] | None = None
+    price_trend: list[TrendPoint] = Field(default_factory=list)
 
 
 class ListingCompareRequest(BaseModel):
@@ -72,6 +79,8 @@ class AreaCompareRow(BaseModel):
     gross_yield_pct: float | None = None
     currency: str | None = None
     changes_pct: dict[str, float | None] | None = None
+    market_score: dict[str, Any] | None = None
+    price_trend: list[TrendPoint] = Field(default_factory=list)
 
 
 class VersionOut(BaseModel):

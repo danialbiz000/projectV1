@@ -11,6 +11,7 @@ from app.schemas.listing import AreaCompareRow
 from app.services import explanation as explanation_service
 from app.services import forecast as forecast_service
 from app.services import market as market_service
+from app.services import zone_quality as zone_quality_service
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -250,7 +251,14 @@ def compare_areas(
     rows: list[AreaCompareRow] = []
     for area_id in area_ids:
         area = _area_or_404(db, area_id)
-        rows.append(AreaCompareRow(**market_service.summarize(db, area, listing_type)))
+        trend, score = market_service.price_trend_and_score(db, area_id, listing_type)
+        rows.append(
+            AreaCompareRow(
+                **market_service.summarize(db, area, listing_type),
+                market_score=score,
+                price_trend=trend,
+            )
+        )
     return rows
 
 
@@ -275,6 +283,7 @@ def market_explanation(
         .limit(1)
     )
     result = explanation_service.explain_trend(series, latest_hpi)
+    result["market_score"] = zone_quality_service.compute_market_score(series, latest_hpi)
     return {
         "data": result,
         "data_context": _context(

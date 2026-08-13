@@ -13,7 +13,7 @@ watchlist, notifiche e previsioni baseline con scenari.
 > integrate e i prerequisiti legali/commerciali sono in
 > [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
-**Stato: Milestone 6 completata** — backend (M1: API, modello dati, versionamento
+**Stato: Milestone 7 completata** — backend (M1: API, modello dati, versionamento
 annunci, notifiche, forecast baseline, seed demo, test) + frontend Next.js (M2:
 landing, auth, onboarding, dashboard di zona con grafici, ricerca, dettaglio
 immobile, watchlist, centro notifiche, dark/light) + mappa interattiva (M3:
@@ -31,7 +31,11 @@ hardening (M6: verifica email e reset password, rate limiting distribuito su
 login/registrazione/reset, login OAuth2 generico — nessun provider reale
 configurato, vedi sotto —, export/cancellazione account GDPR, metriche
 Prometheus su `/metrics`, backup on-demand del database, guida al deployment
-cloud non eseguita in questo ambiente). Prossima: nessuna milestone
+cloud non eseguita in questo ambiente) + confronto avanzato e pianta generata
+(M7: indicatore di mercato di zona e storico €/m² a grafico nel confronto
+annunci/zone — non un punteggio di vivibilità —, pianta illustrativa generata
+algoritmicamente per ogni annuncio da rooms/bathrooms/size_sqm, nessuna nuova
+tabella). Prossima: nessuna milestone
 ulteriore ancora pianificata (roadmap: [`docs/PLAN.md`](docs/PLAN.md)).
 
 ## Documentazione
@@ -159,6 +163,8 @@ curl -s localhost:8000/api/v1/users/me/export -H "Authorization: Bearer $TOKEN"
 # 12. Metriche Prometheus e backup on-demand (admin) — M6
 curl -s localhost:8000/metrics
 curl -s -X POST localhost:8000/api/v1/admin/backup -H "Authorization: Bearer $ADMIN_TOKEN"
+# 13. Pianta illustrativa generata per annuncio — M7
+curl -s "localhost:8000/api/v1/listings/<LISTING_ID>/floorplan"
 ```
 
 ## Qualità
@@ -252,3 +258,14 @@ di rete in produzione, non applicativo).
   credenziali SMTP/OAuth reali (richiedono un account presso un provider
   terzo, non ottenibili da qui) e §10 per l'elenco completo dei gap
   pre-produzione.
+- **Confronto avanzato e pianta generata (M7)**: l'"indicatore di mercato
+  della zona" (`market_score`) **non è un punteggio di vivibilità, sicurezza
+  o qualità dei servizi** — nessun dataset di quel tipo è integrato in questo
+  ambiente — è derivato riclassificando l'andamento dei prezzi con lo stesso
+  motore driver di M5 (correlazioni dichiarate, non causalità). Lo storico
+  prezzi nel confronto (`price_trend`) è la media di zona, non il prezzo
+  della singola proprietà: due annunci nella stessa zona mostrano la stessa
+  linea. La pianta nella pagina annuncio è **generata algoritmicamente**
+  (partizione proporzionale rooms/bathrooms/size_sqm) e **non rappresenta la
+  planimetria reale dell'immobile** — didascalia permanente in UI, nessuna
+  pianta reale è mai stata acquisita o disegnata a mano.

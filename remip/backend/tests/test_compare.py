@@ -12,6 +12,12 @@ def test_compare_listings(client):
     for row in rows:
         assert "deviation_from_area_pct" in row
         assert "estimate" in row
+        assert "price_trend" in row and isinstance(row["price_trend"], list)
+        if row["price_trend"]:
+            assert {"period", "avg_price_sqm"} <= row["price_trend"][0].keys()
+        # market_score is None when there isn't enough monthly history yet,
+        # otherwise a dict with the same shape as GET /market/explanation's
+        assert row["market_score"] is None or {"score", "label"} <= row["market_score"].keys()
 
 
 def test_compare_listings_too_few(client):
@@ -58,6 +64,9 @@ def test_compare_areas(client, city_ids):
     assert len(rows) == 3
     assert all(r["available"] for r in rows)
     assert len({r["area_id"] for r in rows}) == 3
+    for row in rows:
+        assert "price_trend" in row and isinstance(row["price_trend"], list)
+        assert row["market_score"] is None or {"score", "label"} <= row["market_score"].keys()
 
 
 def test_compare_areas_too_few(client, city_ids):
