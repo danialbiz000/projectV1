@@ -37,19 +37,119 @@ const ALLOWED_ORIGINS = new Set(
 );
 const sessions = new Map();
 
+// ─── Database ─────────────────────────────────────────────────────────────────
+const Database = require('better-sqlite3');
+let db;
+
+function initDb() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  db = new Database(path.join(DATA_DIR, 'nexus.db'));
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      digest TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS at_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL DEFAULT 'main',
+      symbol TEXT NOT NULL,
+      action TEXT NOT NULL,
+      confidence REAL,
+      reasoning TEXT,
+      executed INTEGER NOT NULL DEFAULT 0,
+      order_id TEXT,
+      suggested_notional REAL,
+      executed_action TEXT,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS options_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL DEFAULT 'main',
+      underlying TEXT,
+      strategy TEXT,
+      action TEXT NOT NULL,
+      details TEXT,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS patterns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL DEFAULT 'main',
+      tag TEXT,
+      lesson TEXT NOT NULL,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS requiem (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      personality TEXT,
+      cause_of_death TEXT,
+      lessons TEXT,
+      trade_count INTEGER,
+      final_pnl REAL,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_decisions_symbol ON decisions(symbol);
+    CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(ts);
+    CREATE INDEX IF NOT EXISTS idx_decisions_agent ON decisions(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_decisions_executed ON decisions(executed);
+    CREATE INDEX IF NOT EXISTS idx_options_underlying ON options_log(underlying);
+    CREATE INDEX IF NOT EXISTS idx_patterns_tag ON patterns(tag);
+  `);
+}
+
 // ─── Session Persistence ──────────────────────────────────────────────────────
 function loadSessions() {
   try {
-    if (!fs.existsSync(SESSIONS_FILE)) return;
-    const raw = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
     const now = Date.now();
-    for (const [digest, entry] of Object.entries(raw)) {
-      if (entry.expiresAt > now) sessions.set(digest, { expiresAt: entry.expiresAt });
+    // Load from DB
+    const rows = db.prepare('SELECT digest, expires_at FROM sessions WHERE expires_at > ?').all(now);
+    for (const row of rows) sessions.set(row.digest, { expiresAt: row.expires_at });
+    // One-time migration from legacy JSON
+    if (fs.existsSync(SESSIONS_FILE)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+        const ins = db.prepare('INSERT OR IGNORE INTO sessions (digest, expires_at) VALUES (?, ?)');
+        const tx = db.transaction(() => {
+          for (const [digest, entry] of Object.entries(raw)) {
+            if (entry.expiresAt > now) { sessions.set(digest, { expiresAt: entry.expiresAt }); ins.run(digest, entry.expiresAt); }
+          }
+        });
+        tx();
+        fs.renameSync(SESSIONS_FILE, SESSIONS_FILE + '.migrated');
+      } catch (_) {}
     }
   } catch (_) {}
 }
 
-// Windows-safe atomic write: rename fails with EPERM if dest exists on Windows
+function saveSessions() {
+  try {
+    const now = Date.now();
+    const ins = db.prepare('INSERT OR REPLACE INTO sessions (digest, expires_at) VALUES (?, ?)');
+    const del = db.prepare('DELETE FROM sessions WHERE expires_at <= ?');
+    const tx = db.transaction(() => {
+      del.run(now);
+      for (const [digest, entry] of sessions.entries()) {
+        if (entry.expiresAt > now) ins.run(digest, entry.expiresAt);
+      }
+    });
+    tx();
+  } catch (_) {}
+}
+
+// Windows-safe atomic write (kept for any future file ops)
 function safeRename(src, dest) {
   try {
     fs.renameSync(src, dest);
@@ -59,20 +159,7 @@ function safeRename(src, dest) {
   }
 }
 
-function saveSessions() {
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    const now = Date.now();
-    const out = {};
-    for (const [digest, entry] of sessions.entries()) {
-      if (entry.expiresAt > now) out[digest] = { expiresAt: entry.expiresAt };
-    }
-    const tmp = `${SESSIONS_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(out));
-    safeRename(tmp, SESSIONS_FILE);
-  } catch (_) {}
-}
-
+initDb();
 loadSessions();
 
 // ─── Auth Helpers ─────────────────────────────────────────────────────────────
@@ -1024,6 +1111,13 @@ async function optionsCycle(account, openPositions, anthropicKey) {
     if (AT.optionsLog.length > 500) AT.optionsLog.splice(0, AT.optionsLog.length - 500);
     console.log(`[Options] ${msg}`, data);
     broadcast({ type: 'options_log', entry });
+    // Persist to DB
+    try {
+      const underlying = data.underlying || (msg.includes(':') ? msg.split(':')[0].trim() : null);
+      const strategy = data.strategy || (msg.toLowerCase().includes('csp') ? 'CSP' : msg.toLowerCase().includes('covered') ? 'CC' : null);
+      db.prepare('INSERT INTO options_log (agent_id,underlying,strategy,action,details,ts) VALUES (?,?,?,?,?,?)')
+        .run('main', underlying, strategy, msg, JSON.stringify(entry), Date.now());
+    } catch (_) {}
   };
 
   // 1. Covered Calls — overlay on existing long positions with P&L > 2%
@@ -1435,11 +1529,10 @@ function markAutoTrade(symbol, action) {
 function saveAtState() {
   try {
     ensureAtDayState();
-    fs.mkdirSync(DATA_DIR, { recursive: true });
     const todayTradesObj = {};
     for (const [sym, actions] of AT.todayTrades.entries()) todayTradesObj[sym] = actions;
     const state = {
-      version: 2,
+      version: 3,
       savedAt: Date.now(),
       config: {
         enabled: AT.enabled,
@@ -1474,12 +1567,10 @@ function saveAtState() {
       tradeHistory: AT.tradeHistory,
       lessonsByTag: AT.lessonsByTag,
       activeOptions: AT.activeOptions,
-      optionsLog: AT.optionsLog.slice(-200),
-      log: AT.log.slice(0, 100),
+      // decisions and options_log now stored in dedicated DB tables
     };
-    const tmp = `${AT_STATE_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    safeRename(tmp, AT_STATE_FILE);
+    db.prepare('INSERT OR REPLACE INTO at_state (key, value, updated_at) VALUES (?, ?, ?)')
+      .run('main', JSON.stringify(state), Date.now());
   } catch (err) {
     console.error('[AutoTrader] Failed to persist state:', err.message);
   }
@@ -1500,8 +1591,31 @@ async function sendTelegram(text) {
 
 function loadAtState() {
   try {
-    if (!fs.existsSync(AT_STATE_FILE)) { ensureAtDayState(); return; }
-    const state = JSON.parse(fs.readFileSync(AT_STATE_FILE, 'utf8'));
+    let state = null;
+    const row = db.prepare('SELECT value FROM at_state WHERE key = ?').get('main');
+    if (row) {
+      state = JSON.parse(row.value);
+    } else if (fs.existsSync(AT_STATE_FILE)) {
+      // One-time migration from legacy JSON file
+      state = JSON.parse(fs.readFileSync(AT_STATE_FILE, 'utf8'));
+      console.log('[AutoTrader] Migrating state from JSON to SQLite...');
+      // Seed decisions table from old log
+      const ins = db.prepare(`INSERT INTO decisions (agent_id,symbol,action,confidence,reasoning,executed,order_id,suggested_notional,executed_action,ts) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+      const tx = db.transaction(() => {
+        for (const e of (state.log || [])) {
+          ins.run('main', e.symbol, e.action, e.confidence ?? null, e.reasoning ?? null,
+            e.executed ? 1 : 0, e.orderId ?? null, e.suggestedNotional ?? null, e.executedAction ?? null, e.ts ?? Date.now());
+        }
+        for (const e of (state.optionsLog || [])) {
+          db.prepare('INSERT INTO options_log (agent_id,underlying,strategy,action,details,ts) VALUES (?,?,?,?,?,?)')
+            .run('main', e.underlying ?? null, e.strategy ?? null, e.msg ?? 'LOG', JSON.stringify(e), e.ts ? new Date(e.ts).getTime() : Date.now());
+        }
+      });
+      tx();
+      try { fs.renameSync(AT_STATE_FILE, AT_STATE_FILE + '.migrated'); } catch (_) {}
+      console.log('[AutoTrader] Migration complete.');
+    }
+    if (!state) { ensureAtDayState(); return; }
     const cfg = state.config || {};
     if (typeof cfg.enabled === 'boolean') AT.enabled = cfg.enabled;
     if (Number.isFinite(+cfg.intervalMs)) AT.intervalMs = Math.max(5 * 60 * 1000, +cfg.intervalMs);
@@ -1539,8 +1653,13 @@ function loadAtState() {
     AT.tradeHistory = (state.tradeHistory && typeof state.tradeHistory === 'object') ? state.tradeHistory : {};
     AT.lessonsByTag = (state.lessonsByTag && typeof state.lessonsByTag === 'object') ? state.lessonsByTag : {};
     AT.activeOptions = (state.activeOptions && typeof state.activeOptions === 'object') ? state.activeOptions : {};
-    AT.optionsLog = Array.isArray(state.optionsLog) ? state.optionsLog : [];
-    AT.log = Array.isArray(state.log) ? state.log.slice(0, 100) : [];
+    // Hydrate in-memory buffers from DB tables (full history lives in DB)
+    AT.log = db.prepare('SELECT * FROM decisions WHERE agent_id = ? ORDER BY ts DESC LIMIT 50').all('main')
+      .map(r => ({ symbol: r.symbol, action: r.action, confidence: r.confidence, reasoning: r.reasoning,
+        executed: !!r.executed, orderId: r.order_id, suggestedNotional: r.suggested_notional,
+        executedAction: r.executed_action, ts: r.ts }));
+    AT.optionsLog = db.prepare('SELECT action, details, ts FROM options_log WHERE agent_id = ? ORDER BY ts DESC LIMIT 100').all('main')
+      .map(r => { try { return JSON.parse(r.details); } catch (_) { return { msg: r.action, ts: new Date(r.ts).toISOString() }; } });
     ensureAtDayState();
   } catch (err) {
     console.error('[AutoTrader] Failed to load state:', err.message);
@@ -1553,6 +1672,13 @@ function atLog(entry) {
   const e = { ...entry, ts: Date.now() };
   AT.log.unshift(e);
   if (AT.log.length > 50) AT.log.pop();
+  // Persist to DB (non-blocking — synchronous but fast)
+  try {
+    db.prepare(`INSERT INTO decisions (agent_id,symbol,action,confidence,reasoning,executed,order_id,suggested_notional,executed_action,ts)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('main', e.symbol, e.action, e.confidence ?? null, e.reasoning ?? null,
+        e.executed ? 1 : 0, e.orderId ?? null, e.suggestedNotional ?? null, e.executedAction ?? null, e.ts);
+  } catch (_) {}
   if (e.executed && e.symbol && !['SYSTEM', 'MACRO'].includes(e.symbol)) {
     AT.dailyTradeHistory[AT.todayKey].unshift({
       ts: e.ts, symbol: e.symbol, action: e.action,
@@ -2915,6 +3041,48 @@ app.delete('/api/autotrader/options/:underlying', requireAuth, (req, res) => {
   delete AT.activeOptions[underlying.toUpperCase()];
   saveAtState();
   res.json({ ok: true, message: `Cleared active option tracking for ${underlying.toUpperCase()}` });
+});
+
+// ─── DB Query Endpoints ───────────────────────────────────────────────────────
+
+// GET /api/autotrader/db/decisions?limit=100&symbol=AAPL&executed=1&agent=main
+app.get('/api/autotrader/db/decisions', requireAuth, (req, res) => {
+  try {
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10)));
+    const conditions = ['agent_id = ?'];
+    const params = [req.query.agent || 'main'];
+    if (req.query.symbol) { conditions.push('symbol = ?'); params.push(req.query.symbol.toUpperCase()); }
+    if (req.query.executed !== undefined) { conditions.push('executed = ?'); params.push(req.query.executed === '1' ? 1 : 0); }
+    params.push(limit);
+    const rows = db.prepare(`SELECT * FROM decisions WHERE ${conditions.join(' AND ')} ORDER BY ts DESC LIMIT ?`).all(...params);
+    res.json({ count: rows.length, rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/autotrader/db/options?limit=100&underlying=SPY&agent=main
+app.get('/api/autotrader/db/options', requireAuth, (req, res) => {
+  try {
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10)));
+    const conditions = ['agent_id = ?'];
+    const params = [req.query.agent || 'main'];
+    if (req.query.underlying) { conditions.push('underlying = ?'); params.push(req.query.underlying.toUpperCase()); }
+    params.push(limit);
+    const rows = db.prepare(`SELECT * FROM options_log WHERE ${conditions.join(' AND ')} ORDER BY ts DESC LIMIT ?`).all(...params);
+    res.json({ count: rows.length, rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/autotrader/db/stats — aggregate stats from DB
+app.get('/api/autotrader/db/stats', requireAuth, (req, res) => {
+  try {
+    const agent = req.query.agent || 'main';
+    const totalDecisions = db.prepare('SELECT COUNT(*) as n FROM decisions WHERE agent_id = ?').get(agent).n;
+    const totalExecuted  = db.prepare('SELECT COUNT(*) as n FROM decisions WHERE agent_id = ? AND executed = 1').get(agent).n;
+    const totalOptions   = db.prepare('SELECT COUNT(*) as n FROM options_log WHERE agent_id = ?').get(agent).n;
+    const byAction = db.prepare(`SELECT action, COUNT(*) as n FROM decisions WHERE agent_id = ? AND executed = 1 GROUP BY action ORDER BY n DESC`).all(agent);
+    const bySymbol = db.prepare(`SELECT symbol, COUNT(*) as n FROM decisions WHERE agent_id = ? AND executed = 1 GROUP BY symbol ORDER BY n DESC LIMIT 10`).all(agent);
+    res.json({ agent, totalDecisions, totalExecuted, totalOptions, byAction, bySymbol });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── nexus_quant Bridge Endpoints ────────────────────────────────────────────
