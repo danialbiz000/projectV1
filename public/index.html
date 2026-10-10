@@ -369,6 +369,7 @@ tr:hover td { background: var(--surface2); }
       <a data-section="trading" onclick="showSection('trading', this)">⚡ Trading</a>
       <a data-section="watchdog" onclick="showSection('watchdog', this)">🛡️ Rischio</a>
       <a data-section="autotrader" onclick="showSection('autotrader', this)">🤖 AutoTrader</a>
+      <a data-section="agents" onclick="showSection('agents', this)">🧬 Agenti</a>
       <a data-section="screener" onclick="showSection('screener', this)">🔍 Screener</a>
       <a data-section="macro" onclick="showSection('macro', this)">🌍 Macro</a>
       <a data-section="chat" onclick="showSection('chat', this)">💬 AI Desk</a>
@@ -988,6 +989,78 @@ tr:hover td { background: var(--surface2); }
       <div id="alloc-result"></div>
     </section>
 
+    <!-- 11. Agenti Evolutivi -->
+    <section id="section-agents" class="section">
+      <div class="tabs">
+        <div class="tab active" onclick="showTab('agents','overview',this)">🧬 Agenti Attivi</div>
+        <div class="tab" onclick="showTab('agents','requiem',this)">💀 Requiem</div>
+      </div>
+
+      <!-- Overview tab -->
+      <div id="agents-tab-overview" class="tab-content active">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+          <div class="card" style="padding:10px 18px;min-width:120px;text-align:center">
+            <div style="font-size:0.75rem;color:var(--text-muted)">Agenti Vivi</div>
+            <div id="agents-alive-count" style="font-size:1.6rem;font-weight:700;color:var(--green)">—</div>
+          </div>
+          <div class="card" style="padding:10px 18px;min-width:120px;text-align:center">
+            <div style="font-size:0.75rem;color:var(--text-muted)">Agenti Morti</div>
+            <div id="agents-dead-count" style="font-size:1.6rem;font-weight:700;color:var(--red)">—</div>
+          </div>
+          <div class="card" style="padding:10px 18px;min-width:140px;text-align:center">
+            <div style="font-size:0.75rem;color:var(--text-muted)">Capital Pool</div>
+            <div id="agents-total-capital" style="font-size:1.2rem;font-weight:700;color:var(--gold)">—</div>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-secondary btn-sm" onclick="loadAgents()">↺ Aggiorna</button>
+            <button class="btn btn-primary btn-sm" onclick="showSpawnModal()">+ Spawna Agente</button>
+          </div>
+        </div>
+
+        <!-- Agent cards grid -->
+        <div id="agents-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;margin-bottom:24px">
+          <div style="color:var(--text-muted);padding:20px;text-align:center;grid-column:1/-1">Caricamento agenti…</div>
+        </div>
+
+        <!-- All open positions table -->
+        <div class="card">
+          <div class="card-title">📊 Posizioni Virtuali Aggregate</div>
+          <div class="table-wrap" style="margin-top:12px">
+            <table>
+              <thead><tr><th>Agente</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Prezzo</th><th>P&L $</th><th>P&L %</th><th>Aperta</th></tr></thead>
+              <tbody id="agents-positions-tbody"><tr><td colspan="9" style="color:var(--text-muted);text-align:center;padding:20px">—</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Requiem tab -->
+      <div id="agents-tab-requiem" class="tab-content">
+        <div class="card">
+          <div class="card-title">💀 Archivio Requiem — Saggezza dei Caduti</div>
+          <div id="requiem-list" style="margin-top:12px;display:flex;flex-direction:column;gap:12px">
+            <div style="color:var(--text-muted);text-align:center;padding:20px">Nessun requiem ancora. Gli agenti morti lasceranno qui la loro saggezza.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Spawn Agent Modal -->
+    <div class="modal-overlay" id="spawn-modal" onclick="if(event.target===this)closeSpawnModal()" style="display:none">
+      <div class="modal" style="width:460px;max-width:96vw;padding:24px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+          <h3 style="color:var(--gold);font-size:1rem">🧬 Spawna Nuovo Agente</h3>
+          <button class="btn btn-secondary btn-sm" onclick="closeSpawnModal()">✕</button>
+        </div>
+        <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:16px">Scegli la personalità dell'agente. Ogni agente gestisce un portafoglio virtuale separato con capitale dedicato.</p>
+        <div id="personality-cards" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-secondary btn-sm" onclick="closeSpawnModal()">Annulla</button>
+          <button class="btn btn-primary btn-sm" id="spawn-confirm-btn" onclick="confirmSpawn()" disabled>Spawna</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 10. Impostazioni -->
     <section id="section-settings" class="section">
       <div class="grid-2">
@@ -1432,6 +1505,7 @@ const SECTION_TITLES = {
   screener:'Screener Aziende', macro:'Macro & Geopolitica',
   chat:'Trading Desk AI', allocator:'Allocatore Budget', settings:'Impostazioni',
   autotrader:'AutoTrader — AI Trading Engine',
+  agents:'Agenti Evolutivi — Multi-Agent Trading',
 };
 function showSection(id, el) {
   closeDetailPanel();
@@ -1447,6 +1521,7 @@ function showSection(id, el) {
   if (id === 'autotrader') loadAutoTraderStatus();
   if (id === 'equity') loadATIntelligence();
   if (id === 'watchdog') loadRischioPortfolio();
+  if (id === 'agents') { loadAgents(); loadRequiem(); }
 }
 
 function subscribeEquityPrices() {
@@ -1488,6 +1563,10 @@ function connectWS() {
     if (data.type === 'autotrader_macro') updateMacroBrief(data.brief, data.ts);
     if (data.type === 'autotrader_regime') { updateRegimeBadge(data.regime, data.intervalMins); showToast(`Regime → ${data.regime} | ciclo ${data.intervalMins}min | maxPos ${data.maxPositionPct}%`, data.regime === 'RISK-OFF' ? 'error' : data.regime === 'RISK-ON' ? 'success' : 'info'); }
     if (data.type === 'autotrader_recap') { renderDailyRecap(data.recap, data.date); showToast(`🔍 Resoconto EOD ${data.date} generato`, 'success'); }
+    if (data.type === 'agent_spawned') { showToast(`🧬 Agente spawned: ${data.agent?.personality || data.agent?.id}`, 'success'); loadAgents(); }
+    if (data.type === 'agent_decision') { loadAgents(); }
+    if (data.type === 'agent_died') { showToast(`💀 Agente ${data.agent?.personality || data.agentId} eliminato: ${data.reason}`, 'error'); loadAgents(); loadRequiem(); }
+    if (data.type === 'agent_killed') { showToast(`💀 Agente eliminato: ${data.reason}`, 'error'); loadAgents(); loadRequiem(); }
   };
   ws.onclose = () => { wsConnected = false; updateWsStatus(false); setTimeout(connectWS, 3000); };
   ws.onerror = () => { wsConnected = false; updateWsStatus(false); };
@@ -3810,6 +3889,206 @@ async function init() {
   setInterval(initHistoryChart, 60000);
   loadAutoTraderStatus();
   refreshIntradayCharts(); startIntradayAutoRefresh();
+}
+
+// ─── AGENTS ───────────────────────────────────────────────────────────────────
+
+const PERSONALITY_META = {
+  hawk:  { icon: '🦅', label: 'Hawk',  desc: 'Aggressivo, momentum, alta frequenza',     color: '#e94560' },
+  owl:   { icon: '🦉', label: 'Owl',   desc: 'Conservativo, mean-reversion, difensivo',  color: '#4fa3e0' },
+  fox:   { icon: '🦊', label: 'Fox',   desc: 'Opportunista, contrarian, adattivo',        color: '#f0a500' },
+  bull:  { icon: '🐂', label: 'Bull',  desc: 'Long bias, trend-following, ottimista',     color: '#00c853' },
+  bear:  { icon: '🐻', label: 'Bear',  desc: 'Short bias, hedging, macro-driven',         color: '#9c27b0' },
+};
+
+let selectedPersonality = null;
+let agentsData = [];
+
+async function loadAgents() {
+  try {
+    const res = await secureFetch('/api/agents');
+    if (!res.ok) return;
+    const agents = await res.json();
+    agentsData = agents;
+    renderAgentsGrid(agents);
+    renderAgentsPositionsTable(agents);
+    updateAgentsKPIs(agents);
+  } catch(_) {}
+}
+
+async function loadRequiem() {
+  try {
+    const res = await secureFetch('/api/agents/requiem');
+    if (!res.ok) return;
+    const rows = await res.json();
+    const container = document.getElementById('requiem-list');
+    if (!container) return;
+    if (!rows.length) {
+      container.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px">Nessun requiem ancora.</div>';
+      return;
+    }
+    container.innerHTML = rows.map(r => {
+      const meta = PERSONALITY_META[r.personality] || { icon: '🤖', color: '#888', label: r.personality };
+      const died = r.died_at ? new Date(r.died_at).toLocaleString('it-IT') : '—';
+      const pnl = r.final_pnl != null ? (r.final_pnl >= 0 ? '+' : '') + r.final_pnl.toFixed(2) : '—';
+      return `<div class="card" style="border-left:3px solid ${meta.color};padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span style="font-size:1.4rem">${meta.icon}</span>
+          <div>
+            <span style="font-weight:700;color:${meta.color}">${meta.label}</span>
+            <span style="font-size:0.75rem;color:var(--text-muted);margin-left:8px">morto ${died}</span>
+          </div>
+          <div style="margin-left:auto;font-size:0.83rem">
+            <span style="color:var(--text-muted)">P&L Finale: </span>
+            <span style="color:${r.final_pnl >= 0 ? 'var(--green)' : 'var(--red)';font-weight:700">${pnl}</span>
+          </div>
+        </div>
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:6px">Motivo: ${r.death_reason || '—'}</div>
+        <div style="font-size:0.84rem;line-height:1.55;color:var(--text-primary)">${r.content || '—'}</div>
+      </div>`;
+    }).join('');
+  } catch(_) {}
+}
+
+function updateAgentsKPIs(agents) {
+  const alive = agents.filter(a => a.status === 'alive').length;
+  const dead = agents.filter(a => a.status === 'dead').length;
+  const totalCapital = agents.filter(a => a.status === 'alive').reduce((s, a) => s + (a.capital_current || 0), 0);
+  const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  el('agents-alive-count', alive);
+  el('agents-dead-count', dead);
+  el('agents-total-capital', alive ? '$' + totalCapital.toLocaleString('en-US', {maximumFractionDigits:0}) : '$0');
+}
+
+function renderAgentsGrid(agents) {
+  const grid = document.getElementById('agents-grid');
+  if (!grid) return;
+  if (!agents.length) {
+    grid.innerHTML = '<div style="color:var(--text-muted);padding:20px;text-align:center;grid-column:1/-1">Nessun agente. Spawnane uno per iniziare l\'evoluzione.</div>';
+    return;
+  }
+  grid.innerHTML = agents.map(a => {
+    const meta = PERSONALITY_META[a.personality] || { icon: '🤖', color: '#888', label: a.personality };
+    const alive = a.status === 'alive';
+    const pnlAbs = (a.capital_current || 0) - (a.capital_start || 0);
+    const pnlPct = a.capital_start ? (pnlAbs / a.capital_start) * 100 : 0;
+    const pnlColor = pnlAbs >= 0 ? 'var(--green)' : 'var(--red)';
+    const drawdown = a.peak_capital ? ((a.peak_capital - a.capital_current) / a.peak_capital) * 100 : 0;
+    const created = a.created_at ? new Date(a.created_at).toLocaleString('it-IT', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+    const died = a.died_at ? new Date(a.died_at).toLocaleString('it-IT', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : null;
+    const drawdownBar = Math.min(drawdown, 100);
+    const drawdownColor = drawdown > 15 ? 'var(--red)' : drawdown > 8 ? '#f0a500' : 'var(--green)';
+    return `<div class="card" style="border-top:3px solid ${meta.color};opacity:${alive ? 1 : 0.6}">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span style="font-size:1.8rem">${meta.icon}</span>
+        <div style="flex:1">
+          <div style="font-weight:700;color:${meta.color};font-size:0.95rem">${meta.label}</div>
+          <div style="font-size:0.72rem;color:var(--text-muted)">${a.id?.slice(0,12)}… · Creato ${created}</div>
+        </div>
+        <span class="badge ${alive ? 'badge-paper' : ''}" style="${alive ? '' : 'background:rgba(233,69,96,0.15);color:var(--red)'}">${alive ? 'VIVO' : 'MORTO'}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.8rem;margin-bottom:10px">
+        <div><span style="color:var(--text-muted)">Capitale: </span><span style="font-weight:700">$${(a.capital_current||0).toLocaleString('en-US',{maximumFractionDigits:0})}</span></div>
+        <div><span style="color:var(--text-muted)">Trade: </span><span style="font-weight:700">${a.trade_count || 0}</span></div>
+        <div><span style="color:var(--text-muted)">P&L: </span><span style="font-weight:700;color:${pnlColor}">${pnlAbs >= 0 ? '+' : ''}$${pnlAbs.toFixed(0)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)</span></div>
+        <div><span style="color:var(--text-muted)">Drawdown: </span><span style="font-weight:700;color:${drawdownColor}">${drawdown.toFixed(1)}%</span></div>
+      </div>
+      <div style="background:var(--surface);border-radius:3px;height:4px;margin-bottom:10px;overflow:hidden">
+        <div style="height:100%;width:${drawdownBar}%;background:${drawdownColor};transition:width 0.3s"></div>
+      </div>
+      ${died ? `<div style="font-size:0.75rem;color:var(--red);margin-bottom:8px">💀 ${a.death_reason || 'drawdown'} · ${died}</div>` : ''}
+      ${alive ? `<button class="btn btn-danger btn-sm" onclick="killAgentConfirm('${a.id}','${meta.label}')" style="width:100%;font-size:0.75rem">⚠ Kill Agent</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+async function renderAgentsPositionsTable(agents) {
+  const tbody = document.getElementById('agents-positions-tbody');
+  if (!tbody) return;
+  const allPositions = [];
+  for (const a of agents.filter(ag => ag.status === 'alive')) {
+    try {
+      const res = await secureFetch(`/api/agents/${a.id}/positions`);
+      if (!res.ok) continue;
+      const pos = await res.json();
+      pos.forEach(p => allPositions.push({ ...p, agentPersonality: a.personality }));
+    } catch(_) {}
+  }
+  if (!allPositions.length) {
+    tbody.innerHTML = '<tr><td colspan="9" style="color:var(--text-muted);text-align:center;padding:20px">Nessuna posizione aperta</td></tr>';
+    return;
+  }
+  tbody.innerHTML = allPositions.map(p => {
+    const meta = PERSONALITY_META[p.agentPersonality] || { icon: '🤖', label: p.agentPersonality };
+    const price = p.current_price || p.entry_price;
+    const pnlAbs = (price - p.entry_price) * p.qty * (p.side === 'short' ? -1 : 1);
+    const pnlPct = p.entry_price ? (pnlAbs / (p.entry_price * p.qty)) * 100 : 0;
+    const pnlColor = pnlAbs >= 0 ? 'var(--green)' : 'var(--red)';
+    const opened = new Date(p.opened_at).toLocaleString('it-IT',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    return `<tr>
+      <td>${meta.icon} ${meta.label}</td>
+      <td style="font-weight:700">${p.symbol}</td>
+      <td><span class="badge" style="${p.side==='long'?'color:var(--green)':'color:var(--red)'}">${p.side.toUpperCase()}</span></td>
+      <td>${p.qty}</td>
+      <td>$${(+p.entry_price).toFixed(2)}</td>
+      <td>$${(+price).toFixed(2)}</td>
+      <td style="color:${pnlColor}">${pnlAbs >= 0 ? '+' : ''}$${pnlAbs.toFixed(2)}</td>
+      <td style="color:${pnlColor}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%</td>
+      <td style="font-size:0.75rem">${opened}</td>
+    </tr>`;
+  }).join('');
+}
+
+function showSpawnModal() {
+  selectedPersonality = null;
+  const modal = document.getElementById('spawn-modal');
+  if (!modal) return;
+  const container = document.getElementById('personality-cards');
+  container.innerHTML = Object.entries(PERSONALITY_META).map(([id, m]) =>
+    `<div class="card" id="pcard-${id}" onclick="selectPersonality('${id}')" style="cursor:pointer;padding:12px;border:2px solid transparent;transition:border-color 0.2s">
+      <div style="font-size:1.5rem;margin-bottom:4px">${m.icon}</div>
+      <div style="font-weight:700;color:${m.color};font-size:0.85rem">${m.label}</div>
+      <div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">${m.desc}</div>
+    </div>`
+  ).join('');
+  modal.style.display = 'flex';
+  document.getElementById('spawn-confirm-btn').disabled = true;
+}
+
+function closeSpawnModal() {
+  const modal = document.getElementById('spawn-modal');
+  if (modal) modal.style.display = 'none';
+  selectedPersonality = null;
+}
+
+function selectPersonality(id) {
+  selectedPersonality = id;
+  document.querySelectorAll('[id^="pcard-"]').forEach(el => el.style.borderColor = 'transparent');
+  const meta = PERSONALITY_META[id];
+  const el = document.getElementById('pcard-' + id);
+  if (el && meta) el.style.borderColor = meta.color;
+  document.getElementById('spawn-confirm-btn').disabled = false;
+}
+
+async function confirmSpawn() {
+  if (!selectedPersonality) return;
+  try {
+    const res = await secureFetch('/api/agents', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ personality: selectedPersonality }) });
+    if (!res.ok) { const err = await res.json().catch(()=>({})); showToast('Spawn fallito: ' + (err.error || res.status), 'error'); return; }
+    closeSpawnModal();
+    loadAgents();
+  } catch(e) { showToast('Errore spawn: ' + e.message, 'error'); }
+}
+
+async function killAgentConfirm(agentId, label) {
+  if (!confirm(`⚠ Sei sicuro di voler eliminare l'agente ${label}? L'operazione è irreversibile.`)) return;
+  try {
+    const res = await secureFetch(`/api/agents/${agentId}`, { method: 'DELETE' });
+    if (!res.ok) { showToast('Kill fallito', 'error'); return; }
+    showToast(`💀 Agente ${label} eliminato`, 'success');
+    loadAgents();
+    loadRequiem();
+  } catch(e) { showToast('Errore kill: ' + e.message, 'error'); }
 }
 
 // Auto-init if already unlocked (session exists)

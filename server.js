@@ -107,6 +107,38 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_decisions_executed ON decisions(executed);
     CREATE INDEX IF NOT EXISTS idx_options_underlying ON options_log(underlying);
     CREATE INDEX IF NOT EXISTS idx_patterns_tag ON patterns(tag);
+
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      personality TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'alive',
+      capital_start REAL NOT NULL,
+      capital_current REAL NOT NULL,
+      peak_capital REAL NOT NULL,
+      trade_count INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      died_at INTEGER,
+      death_reason TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_positions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL,
+      qty REAL NOT NULL,
+      entry_price REAL NOT NULL,
+      current_price REAL,
+      opened_at INTEGER NOT NULL,
+      closed_at INTEGER,
+      exit_price REAL,
+      realized_pnl REAL,
+      close_reason TEXT,
+      status TEXT NOT NULL DEFAULT 'open'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+    CREATE INDEX IF NOT EXISTS idx_agent_positions_agent ON agent_positions(agent_id, status);
   `);
 }
 
@@ -3043,6 +3075,253 @@ app.delete('/api/autotrader/options/:underlying', requireAuth, (req, res) => {
   res.json({ ok: true, message: `Cleared active option tracking for ${underlying.toUpperCase()}` });
 });
 
+// ─── Multi-Agent Evolution System ────────────────────────────────────────────
+
+const MAX_AGENTS = 8;
+
+const AGENT_PERSONALITIES = {
+  hawk: { id: 'hawk', name: 'Hawk', description: 'Aggressivo, tech-focused, cicli rapidi, alta soglia di rischio', riskPerTrade: 0.15, entryThreshold: 0.65, stopLoss: 0.06, takeProfit: 0.15, allowShort: false, cycleMs: 25 * 60000, killDrawdown: 0.30, capitalAllocation: 10000 },
+  owl:  { id: 'owl',  name: 'Owl',  description: 'Conservativo, diversificato, predilige qualità e dividendi',    riskPerTrade: 0.08, entryThreshold: 0.80, stopLoss: 0.04, takeProfit: 0.10, allowShort: false, cycleMs: 60 * 60000, killDrawdown: 0.20, capitalAllocation: 10000 },
+  fox:  { id: 'fox',  name: 'Fox',  description: 'Contrarian, cerca titoli oversold, opera contro il trend',     riskPerTrade: 0.12, entryThreshold: 0.70, stopLoss: 0.07, takeProfit: 0.20, allowShort: true,  cycleMs: 45 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
+  bull: { id: 'bull', name: 'Bull', description: 'Momentum puro, segue il trend, no short',                     riskPerTrade: 0.12, entryThreshold: 0.68, stopLoss: 0.05, takeProfit: 0.18, allowShort: false, cycleMs: 35 * 60000, killDrawdown: 0.28, capitalAllocation: 10000 },
+  bear: { id: 'bear', name: 'Bear', description: 'Macro/ribassista, specializzato in short e protezione',       riskPerTrade: 0.10, entryThreshold: 0.75, stopLoss: 0.05, takeProfit: 0.20, allowShort: true,  cycleMs: 50 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
+};
+
+const agentTimers = new Map(); // agentId -> NodeJS.Timer
+
+function agentCapital(agentId, capitalStart) {
+  const { total: realized } = db.prepare('SELECT COALESCE(SUM(realized_pnl),0) AS total FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'closed');
+  const open = db.prepare('SELECT entry_price, current_price, qty, side FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
+  const unrealized = open.reduce((sum, p) => {
+    if (!p.current_price) return sum;
+    return sum + (p.side === 'long' ? (p.current_price - p.entry_price) : (p.entry_price - p.current_price)) * p.qty;
+  }, 0);
+  return capitalStart + realized + unrealized;
+}
+
+async function agentUpdatePrices(agentId, symbols) {
+  if (!symbols.length) return {};
+  try {
+    const r = await alpacaDataFetch(`/v2/stocks/bars?symbols=${symbols.join(',')}&timeframe=1Min&limit=1`);
+    if (!r.ok) return {};
+    const data = await r.json();
+    const prices = {};
+    for (const [sym, bars] of Object.entries(data.bars || {})) {
+      if (bars?.length) prices[sym] = bars[bars.length - 1].c;
+    }
+    const stmt = db.prepare('UPDATE agent_positions SET current_price=? WHERE agent_id=? AND symbol=? AND status=?');
+    for (const [sym, price] of Object.entries(prices)) stmt.run(price, agentId, sym, 'open');
+    return prices;
+  } catch (_) { return {}; }
+}
+
+function agentClosePosition(agentId, symbol, exitPrice, reason) {
+  const pos = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND symbol=? AND status=?').get(agentId, symbol, 'open');
+  if (!pos) return null;
+  const pnl = (pos.side === 'long' ? (exitPrice - pos.entry_price) : (pos.entry_price - exitPrice)) * pos.qty;
+  db.prepare('UPDATE agent_positions SET status=?,exit_price=?,realized_pnl=?,closed_at=?,close_reason=? WHERE id=?')
+    .run('closed', exitPrice, pnl, Date.now(), reason, pos.id);
+  return pnl;
+}
+
+async function generateRequiem(agentRow, anthropicKey) {
+  const personality = JSON.parse(agentRow.personality);
+  const decisions = db.prepare('SELECT symbol,action,confidence,ts FROM decisions WHERE agent_id=? ORDER BY ts DESC LIMIT 30').all(agentRow.id);
+  const positions = db.prepare('SELECT symbol,side,realized_pnl,close_reason FROM agent_positions WHERE agent_id=? ORDER BY opened_at DESC LIMIT 15').all(agentRow.id);
+  const summary = `${personality.name} (${agentRow.id}) | Causa: ${agentRow.death_reason} | Capitale: $${agentRow.capital_start}→$${agentRow.capital_current?.toFixed(0)} | Trade: ${agentRow.trade_count}`;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: `Analizza il fallimento di questo agente di trading algoritmico e scrivi un REQUIEM — memoria di 3-4 frasi per gli agenti futuri.
+
+${summary}
+
+Ultime decisioni: ${JSON.stringify(decisions.slice(0, 15).map(d => ({ s: d.symbol, a: d.action, c: d.confidence })))}
+Posizioni chiuse: ${JSON.stringify(positions.map(p => ({ s: p.symbol, side: p.side, pnl: p.realized_pnl?.toFixed(1), why: p.close_reason })))}
+
+Scrivi 3-4 frasi che catturino: perché è fallito, in quali condizioni, quali pattern decisionali erano sbagliati, cosa evitare. Tono conciso e diretto.` }]
+      }),
+    });
+    const d = await res.json();
+    return d.content?.[0]?.text || `${personality.name} eliminato: ${agentRow.death_reason}`;
+  } catch (_) { return `${personality.name} eliminato: ${agentRow.death_reason}`; }
+}
+
+async function killAgent(agentId, reason, anthropicKey) {
+  const agentRow = db.prepare('SELECT * FROM agents WHERE id=?').get(agentId);
+  if (!agentRow || agentRow.status === 'dead') return;
+  // Mark to market all open positions
+  const open = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
+  for (const p of open) { if (p.current_price) agentClosePosition(agentId, p.symbol, p.current_price, 'agent_death'); }
+  const finalCapital = agentCapital(agentId, agentRow.capital_start);
+  db.prepare('UPDATE agents SET status=?,died_at=?,death_reason=?,capital_current=? WHERE id=?')
+    .run('dead', Date.now(), reason, finalCapital, agentId);
+  const timer = agentTimers.get(agentId);
+  if (timer) { clearInterval(timer); agentTimers.delete(agentId); }
+  const personality = JSON.parse(agentRow.personality);
+  console.log(`[Agent:${agentId}] 💀 MORTO — ${reason} | $${finalCapital.toFixed(0)}`);
+  const updatedRow = db.prepare('SELECT * FROM agents WHERE id=?').get(agentId);
+  const lessons = await generateRequiem(updatedRow, anthropicKey);
+  db.prepare('INSERT INTO requiem (agent_id,personality,cause_of_death,lessons,trade_count,final_pnl,ts) VALUES (?,?,?,?,?,?,?)')
+    .run(agentId, agentRow.personality, reason, lessons, agentRow.trade_count, finalCapital - agentRow.capital_start, Date.now());
+  broadcast({ type: 'agent_died', agentId, name: personality.name, reason, lessons, finalCapital });
+  await sendTelegram(`💀 <b>Agente Morto: ${personality.name}</b>\nMotivo: ${reason}\nCapitale: $${finalCapital.toFixed(0)} (${((finalCapital / agentRow.capital_start - 1) * 100).toFixed(1)}%)\n\n📜 <i>${lessons.slice(0, 300)}</i>`);
+}
+
+async function agentCycle(agentId, anthropicKey) {
+  const agentRow = db.prepare('SELECT * FROM agents WHERE id=? AND status=?').get(agentId, 'alive');
+  if (!agentRow) return;
+  const personality = JSON.parse(agentRow.personality);
+
+  // 1. Refresh prices + check stop loss / take profit
+  const openPositions = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
+  const watchSymbols = AT.watchlist.slice(0, 8);
+  const allSymbols = [...new Set([...openPositions.map(p => p.symbol), ...watchSymbols])];
+  const prices = await agentUpdatePrices(agentId, allSymbols);
+
+  let closedThisCycle = 0;
+  for (const pos of openPositions) {
+    const price = prices[pos.symbol];
+    if (!price) continue;
+    const pct = pos.side === 'long' ? (price - pos.entry_price) / pos.entry_price : (pos.entry_price - price) / pos.entry_price;
+    if (pct <= -personality.stopLoss) { agentClosePosition(agentId, pos.symbol, price, 'stop_loss'); closedThisCycle++; }
+    else if (pct >= personality.takeProfit) { agentClosePosition(agentId, pos.symbol, price, 'take_profit'); closedThisCycle++; }
+  }
+  if (closedThisCycle > 0) db.prepare('UPDATE agents SET trade_count=trade_count+?, capital_current=? WHERE id=?').run(closedThisCycle, agentCapital(agentId, agentRow.capital_start), agentId);
+
+  // 2. Check kill condition
+  const currentCapital = agentCapital(agentId, agentRow.capital_start);
+  const peakCapital = Math.max(agentRow.peak_capital, currentCapital);
+  db.prepare('UPDATE agents SET capital_current=?,peak_capital=? WHERE id=?').run(currentCapital, peakCapital, agentId);
+  const drawdown = peakCapital > 0 ? (peakCapital - currentCapital) / peakCapital : 0;
+  if (drawdown >= personality.killDrawdown) {
+    await killAgent(agentId, `Drawdown ${(drawdown * 100).toFixed(1)}% supera soglia ${(personality.killDrawdown * 100).toFixed(0)}%`, anthropicKey);
+    return;
+  }
+
+  // 3. AI decision — open new position if slot available
+  const openCount = db.prepare('SELECT COUNT(*) AS n FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'open').n;
+  if (openCount >= 3) return;
+
+  const requiems = db.prepare('SELECT lessons FROM requiem ORDER BY ts DESC LIMIT 5').all();
+  const requiemCtx = requiems.length ? requiems.map(r => r.lessons).join('\n---\n') : 'Nessun requiem ancora. Sei un pioniere.';
+  const priceList = Object.entries(prices).map(([s, p]) => `${s}:$${p.toFixed(2)}`).join(' ');
+  const posStr = openPositions.filter(p => p.status === 'open').map(p => `${p.symbol}(${p.side})`).join(',') || 'nessuna';
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 350,
+        messages: [{ role: 'user', content: `Sei l'agente "${personality.name}": ${personality.description}
+Params: riskPerTrade=${(personality.riskPerTrade * 100).toFixed(0)}% stopLoss=${(personality.stopLoss * 100).toFixed(0)}% takeProfit=${(personality.takeProfit * 100).toFixed(0)}% short=${personality.allowShort ? 'sì' : 'no'}
+Capitale: $${currentCapital.toFixed(0)}/$${agentRow.capital_start} | Drawdown: ${(drawdown * 100).toFixed(1)}% | Posizioni: ${posStr}
+Prezzi: ${priceList}
+
+REQUIEM — memoria agenti morti:
+${requiemCtx}
+
+Scegli UN'operazione o passa. Rispondi SOLO JSON:
+{"symbol":"AAPL","side":"long","confidence":0.75,"reasoning":"..."} oppure {"symbol":null,"reasoning":"..."}` }],
+      }),
+    });
+    const d = await res.json();
+    const text = d.content?.[0]?.text || '';
+    const m = text.match(/\{[\s\S]*?\}/);
+    if (!m) return;
+    const dec = JSON.parse(m[0]);
+
+    db.prepare('INSERT INTO decisions (agent_id,symbol,action,confidence,reasoning,executed,ts) VALUES (?,?,?,?,?,?,?)')
+      .run(agentId, dec.symbol || 'NONE', dec.side === 'long' ? 'BUY' : dec.side === 'short' ? 'SHORT' : 'HOLD', dec.confidence || 0, dec.reasoning || '', dec.symbol ? 1 : 0, Date.now());
+
+    if (!dec.symbol || (dec.confidence || 0) < personality.entryThreshold) return;
+    if (dec.side === 'short' && !personality.allowShort) return;
+    const price = prices[dec.symbol];
+    if (!price) return;
+    const qty = Math.floor((currentCapital * personality.riskPerTrade) / price);
+    if (qty < 1) return;
+
+    db.prepare('INSERT INTO agent_positions (agent_id,symbol,side,qty,entry_price,current_price,opened_at,status) VALUES (?,?,?,?,?,?,?,?)')
+      .run(agentId, dec.symbol, dec.side, qty, price, price, Date.now(), 'open');
+    db.prepare('UPDATE agents SET trade_count=trade_count+1 WHERE id=?').run(agentId);
+    broadcast({ type: 'agent_trade', agentId, name: personality.name, symbol: dec.symbol, side: dec.side, qty, price, confidence: dec.confidence });
+    console.log(`[Agent:${agentId}] ${dec.side?.toUpperCase()} ${dec.symbol} ×${qty} @$${price} conf=${dec.confidence}`);
+  } catch (e) { console.error(`[Agent:${agentId}] cycle error:`, e.message); }
+}
+
+function spawnAgent(personalityId) {
+  const template = AGENT_PERSONALITIES[personalityId];
+  if (!template) throw new Error(`Personalità sconosciuta: ${personalityId}`);
+  const alive = db.prepare('SELECT COUNT(*) AS n FROM agents WHERE status=?').get('alive').n;
+  if (alive >= MAX_AGENTS) throw new Error(`Massimo ${MAX_AGENTS} agenti simultanei raggiunto`);
+  const agentId = `${personalityId}_${Date.now()}`;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  db.prepare('INSERT INTO agents (id,personality,status,capital_start,capital_current,peak_capital,trade_count,created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .run(agentId, JSON.stringify(template), 'alive', template.capitalAllocation, template.capitalAllocation, template.capitalAllocation, 0, Date.now());
+  const timer = setInterval(() => agentCycle(agentId, anthropicKey).catch(e => console.error(`[Agent:${agentId}]`, e.message)), template.cycleMs);
+  agentTimers.set(agentId, timer);
+  console.log(`[Agent:${agentId}] ✅ AVVIATO — ${template.name} | $${template.capitalAllocation}`);
+  broadcast({ type: 'agent_started', agentId, personality: template });
+  setTimeout(() => agentCycle(agentId, anthropicKey).catch(() => {}), 8000);
+  return agentId;
+}
+
+function restoreAgentsFromDb() {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  const alive = db.prepare('SELECT * FROM agents WHERE status=?').all('alive');
+  for (const agent of alive) {
+    const personality = JSON.parse(agent.personality);
+    const timer = setInterval(() => agentCycle(agent.id, anthropicKey).catch(e => console.error(`[Agent:${agent.id}]`, e.message)), personality.cycleMs);
+    agentTimers.set(agent.id, timer);
+    console.log(`[Agent:${agent.id}] ♻️  RIPRISTINATO — ${personality.name}`);
+  }
+}
+
+// ─── Agent API Endpoints ──────────────────────────────────────────────────────
+
+app.get('/api/agents', requireAuth, (req, res) => {
+  const agents = db.prepare('SELECT * FROM agents ORDER BY created_at DESC LIMIT 50').all()
+    .map(a => ({ ...a, personality: JSON.parse(a.personality), currentCapital: agentCapital(a.id, a.capital_start) }));
+  const requiems = db.prepare('SELECT * FROM requiem ORDER BY ts DESC LIMIT 20').all();
+  res.json({ agents, requiems, personalities: AGENT_PERSONALITIES, maxAgents: MAX_AGENTS, alive: agents.filter(a => a.status === 'alive').length });
+});
+
+app.post('/api/agents', requireAuth, (req, res) => {
+  const { personalityId } = req.body || {};
+  if (!personalityId || !AGENT_PERSONALITIES[personalityId])
+    return res.status(400).json({ error: 'personalityId non valido. Valori: ' + Object.keys(AGENT_PERSONALITIES).join(', ') });
+  try {
+    const agentId = spawnAgent(personalityId);
+    res.json({ ok: true, agentId });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/agents/:id', requireAuth, async (req, res) => {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  try {
+    await killAgent(req.params.id, 'Terminato manualmente', anthropicKey);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/agents/:id/positions', requireAuth, (req, res) => {
+  const agent = db.prepare('SELECT * FROM agents WHERE id=?').get(req.params.id);
+  if (!agent) return res.status(404).json({ error: 'Agente non trovato' });
+  const positions = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? ORDER BY opened_at DESC LIMIT 50').all(req.params.id);
+  res.json({ agent: { ...agent, personality: JSON.parse(agent.personality), currentCapital: agentCapital(agent.id, agent.capital_start) }, positions });
+});
+
+app.get('/api/agents/requiem', requireAuth, (req, res) => {
+  const requiems = db.prepare('SELECT * FROM requiem ORDER BY ts DESC LIMIT 50').all();
+  res.json({ count: requiems.length, requiems });
+});
+
 // ─── DB Query Endpoints ───────────────────────────────────────────────────────
 
 // GET /api/autotrader/db/decisions?limit=100&symbol=AAPL&executed=1&agent=main
@@ -3168,6 +3447,7 @@ server.listen(PORT, () => {
   connectAlpacaTradingWs();
   atSchedule();
   scheduleEodRecap();
+  restoreAgentsFromDb();
 });
 
 module.exports = { app, server, broadcast, subscribeSymbols };
