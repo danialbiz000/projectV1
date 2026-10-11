@@ -370,6 +370,7 @@ tr:hover td { background: var(--surface2); }
       <a data-section="watchdog" onclick="showSection('watchdog', this)">🛡️ Rischio</a>
       <a data-section="autotrader" onclick="showSection('autotrader', this)">🤖 AutoTrader</a>
       <a data-section="agents" onclick="showSection('agents', this)">🧬 Agenti</a>
+      <a data-section="backtest" onclick="showSection('backtest', this)">📈 Backtest</a>
       <a data-section="screener" onclick="showSection('screener', this)">🔍 Screener</a>
       <a data-section="macro" onclick="showSection('macro', this)">🌍 Macro</a>
       <a data-section="chat" onclick="showSection('chat', this)">💬 AI Desk</a>
@@ -1061,6 +1062,90 @@ tr:hover td { background: var(--surface2); }
       </div>
     </div>
 
+    <!-- 12. Backtest Engine -->
+    <section id="section-backtest" class="section">
+      <div class="tabs">
+        <div class="tab active" onclick="showTab('backtest','config',this)">⚙ Configura</div>
+        <div class="tab" id="backtest-results-tab" onclick="showTab('backtest','results',this)">📊 Risultati</div>
+        <div class="tab" onclick="showTab('backtest','history',this)">📋 Storico</div>
+      </div>
+
+      <div id="backtest-tab-config" class="tab-content active">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title">🧬 Personalità Strategia</div>
+            <div id="bt-personality-btns" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px"></div>
+            <div class="card" style="margin-top:14px;padding:12px;font-size:0.8rem;line-height:1.7">
+              <div><strong style="color:#e94560">🦅 Hawk</strong> — Breakout su max 20gg + vol confirm. TP 8%, SL 4%, max 15gg</div>
+              <div><strong style="color:#4fa3e0">🦉 Owl</strong> — Mean reversion: compra a -1.8σ dalla SMA20. TP 6%, SL 4%</div>
+              <div><strong style="color:#f0a500">🦊 Fox</strong> — Contrarian: long su cali &gt;8%, short su rialzi &gt;10% in 10gg</div>
+              <div><strong style="color:#00c853">🐂 Bull</strong> — Golden cross SMA10/SMA50, long only. TP 15%, SL 6%</div>
+              <div><strong style="color:#9c27b0">🐻 Bear</strong> — Death cross SMA10/SMA50, short only. TP 12%, SL 5%</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">⚙ Parametri Simulazione</div>
+            <div style="margin-top:12px">
+              <div class="field">
+                <label>Simboli (separati da virgola)</label>
+                <input type="text" id="bt-symbols" value="AAPL,MSFT,NVDA,TSLA,AMZN" placeholder="AAPL,MSFT,NVDA">
+              </div>
+              <div class="field">
+                <label>Data Inizio</label>
+                <input type="date" id="bt-start-date" value="2022-01-01">
+              </div>
+              <div class="field">
+                <label>Data Fine</label>
+                <input type="date" id="bt-end-date" value="2024-12-31">
+              </div>
+              <div class="field">
+                <label>Capitale Iniziale ($)</label>
+                <input type="number" id="bt-capital" value="10000" min="1000" step="1000">
+              </div>
+              <button class="btn btn-primary" id="bt-run-btn" onclick="runBacktestUI()" style="width:100%;margin-top:8px">▶ Avvia Backtest</button>
+              <div id="bt-running-indicator" style="display:none;text-align:center;margin-top:12px;color:var(--text-muted);font-size:0.85rem">
+                <span style="display:inline-block;animation:spin 1.2s linear infinite">⟳</span>&nbsp;Simulazione in corso…
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="backtest-tab-results" class="tab-content">
+        <div id="bt-results-empty" style="text-align:center;padding:50px;color:var(--text-muted)">
+          Configura e avvia un backtest dalla tab Configura.
+        </div>
+        <div id="bt-results-panel" style="display:none">
+          <div id="bt-kpi-row" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:18px"></div>
+          <div class="card" style="margin-bottom:16px">
+            <div class="card-title">📈 Equity Curve</div>
+            <div style="position:relative;height:240px;margin-top:12px"><canvas id="bt-equity-chart"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-title" id="bt-trades-title">📋 Trade Log</div>
+            <div class="table-wrap" style="margin-top:12px">
+              <table>
+                <thead><tr><th>Simbolo</th><th>Side</th><th>Qty</th><th>Entrata</th><th>Uscita</th><th>In</th><th>Out</th><th>P&L $</th><th>Ret %</th><th>Motivo</th></tr></thead>
+                <tbody id="bt-trades-tbody"><tr><td colspan="10" style="color:var(--text-muted);text-align:center;padding:20px">—</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="backtest-tab-history" class="tab-content">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+          <button class="btn btn-secondary btn-sm" onclick="loadBacktestHistory()">↺ Aggiorna</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Nome</th><th>Personalità</th><th>Simboli</th><th>Periodo</th><th>Capitale</th><th>Return</th><th>Sharpe</th><th>Max DD</th><th>Trade</th><th>Status</th><th></th></tr></thead>
+            <tbody id="bt-history-tbody"><tr><td colspan="11" style="color:var(--text-muted);text-align:center;padding:20px">Nessun backtest eseguito</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- 10. Impostazioni -->
     <section id="section-settings" class="section">
       <div class="grid-2">
@@ -1506,6 +1591,7 @@ const SECTION_TITLES = {
   chat:'Trading Desk AI', allocator:'Allocatore Budget', settings:'Impostazioni',
   autotrader:'AutoTrader — AI Trading Engine',
   agents:'Agenti Evolutivi — Multi-Agent Trading',
+  backtest:'Backtest Engine — Simulazione Storica',
 };
 function showSection(id, el) {
   closeDetailPanel();
@@ -1522,6 +1608,7 @@ function showSection(id, el) {
   if (id === 'equity') loadATIntelligence();
   if (id === 'watchdog') loadRischioPortfolio();
   if (id === 'agents') { loadAgents(); loadRequiem(); }
+  if (id === 'backtest') { initBtPersonalityBtns(); loadBacktestHistory(); }
 }
 
 function subscribeEquityPrices() {
@@ -1567,6 +1654,21 @@ function connectWS() {
     if (data.type === 'agent_decision') { loadAgents(); }
     if (data.type === 'agent_died') { showToast(`💀 Agente ${data.agent?.personality || data.agentId} eliminato: ${data.reason}`, 'error'); loadAgents(); loadRequiem(); }
     if (data.type === 'agent_killed') { showToast(`💀 Agente eliminato: ${data.reason}`, 'error'); loadAgents(); loadRequiem(); }
+    if (data.type === 'backtest_done') {
+      const r = data.results;
+      showToast(`✅ Backtest completato! Return: ${r?.totalReturn >= 0 ? '+' : ''}${r?.totalReturn}% | Sharpe: ${r?.sharpe}`, 'success');
+      document.getElementById('bt-run-btn').disabled = false;
+      document.getElementById('bt-running-indicator').style.display = 'none';
+      if (currentBtId === data.backtestId && r) renderBtResults(r);
+      loadBtTrades(data.backtestId);
+      loadBacktestHistory();
+    }
+    if (data.type === 'backtest_error') {
+      showToast(`❌ Backtest errore: ${data.error}`, 'error');
+      document.getElementById('bt-run-btn').disabled = false;
+      document.getElementById('bt-running-indicator').style.display = 'none';
+      document.getElementById('bt-results-empty').style.display = 'block';
+    }
   };
   ws.onclose = () => { wsConnected = false; updateWsStatus(false); setTimeout(connectWS, 3000); };
   ws.onerror = () => { wsConnected = false; updateWsStatus(false); };
@@ -4089,6 +4191,221 @@ async function killAgentConfirm(agentId, label) {
     loadAgents();
     loadRequiem();
   } catch(e) { showToast('Errore kill: ' + e.message, 'error'); }
+}
+
+// ─── BACKTEST ─────────────────────────────────────────────────────────────────
+
+const BT_PERSONALITY_META = {
+  hawk: { icon: '🦅', label: 'Hawk',  color: '#e94560' },
+  owl:  { icon: '🦉', label: 'Owl',   color: '#4fa3e0' },
+  fox:  { icon: '🦊', label: 'Fox',   color: '#f0a500' },
+  bull: { icon: '🐂', label: 'Bull',  color: '#00c853' },
+  bear: { icon: '🐻', label: 'Bear',  color: '#9c27b0' },
+};
+
+let selectedBtPersonality = null;
+let btEquityChart = null;
+let currentBtId = null;
+
+function initBtPersonalityBtns() {
+  const container = document.getElementById('bt-personality-btns');
+  if (!container || container.children.length > 0) return;
+  container.innerHTML = Object.entries(BT_PERSONALITY_META).map(([id, m]) =>
+    `<button class="btn btn-secondary" id="btpbtn-${id}" onclick="selectBtPersonality('${id}')" style="border:2px solid transparent;transition:border-color 0.2s">
+      ${m.icon} ${m.label}
+    </button>`
+  ).join('');
+}
+
+function selectBtPersonality(id) {
+  selectedBtPersonality = id;
+  Object.keys(BT_PERSONALITY_META).forEach(p => {
+    const btn = document.getElementById('btpbtn-' + p);
+    if (btn) btn.style.borderColor = p === id ? BT_PERSONALITY_META[p].color : 'transparent';
+  });
+}
+
+async function runBacktestUI() {
+  if (!selectedBtPersonality) { showToast('Seleziona una personalità', 'error'); return; }
+  const symbols = document.getElementById('bt-symbols')?.value?.trim();
+  const start = document.getElementById('bt-start-date')?.value;
+  const end = document.getElementById('bt-end-date')?.value;
+  const capital = parseFloat(document.getElementById('bt-capital')?.value || '10000');
+  if (!symbols || !start || !end) { showToast('Compila tutti i campi', 'error'); return; }
+  if (new Date(end) <= new Date(start)) { showToast('Data fine deve essere dopo data inizio', 'error'); return; }
+  document.getElementById('bt-run-btn').disabled = true;
+  document.getElementById('bt-running-indicator').style.display = 'block';
+  document.getElementById('bt-results-panel').style.display = 'none';
+  document.getElementById('bt-results-empty').style.display = 'none';
+  try {
+    const res = await secureFetch('/api/backtest', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ personality: selectedBtPersonality, symbols, start_date: start, end_date: end, initial_capital: capital })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    currentBtId = data.backtestId;
+  } catch(e) {
+    showToast('Backtest fallito: ' + e.message, 'error');
+    document.getElementById('bt-run-btn').disabled = false;
+    document.getElementById('bt-running-indicator').style.display = 'none';
+    document.getElementById('bt-results-empty').style.display = 'block';
+  }
+}
+
+function renderBtResults(results) {
+  document.getElementById('bt-results-empty').style.display = 'none';
+  document.getElementById('bt-results-panel').style.display = 'block';
+  document.querySelectorAll('#section-backtest .tab-content').forEach(tc => tc.classList.remove('active'));
+  document.querySelectorAll('#section-backtest .tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('backtest-tab-results').classList.add('active');
+  document.getElementById('backtest-results-tab').classList.add('active');
+
+  const meta = BT_PERSONALITY_META[selectedBtPersonality] || { icon:'🤖', color:'#888' };
+  const kpis = [
+    { label:'Return Totale',  value:(results.totalReturn >= 0 ? '+':'') + results.totalReturn + '%', color: results.totalReturn >= 0 ? 'var(--green)':'var(--red)' },
+    { label:'Return Ann.',    value:(results.annReturn >= 0 ? '+':'') + results.annReturn + '%',     color: results.annReturn >= 0 ? 'var(--green)':'var(--red)' },
+    { label:'Max Drawdown',   value:'-' + results.maxDrawdown + '%', color: results.maxDrawdown > 20 ? 'var(--red)' : results.maxDrawdown > 10 ? '#f0a500':'var(--green)' },
+    { label:'Sharpe Ratio',   value:results.sharpe.toFixed(2), color: results.sharpe > 1 ? 'var(--green)' : results.sharpe > 0 ? '#f0a500':'var(--red)' },
+    { label:'Win Rate',       value:results.winRate + '%',  color: results.winRate > 55 ? 'var(--green)' : results.winRate > 45 ? '#f0a500':'var(--red)' },
+    { label:'Profit Factor',  value:results.profitFactor === 999 ? '∞' : results.profitFactor.toFixed(2), color: results.profitFactor > 1.5 ? 'var(--green)' : results.profitFactor > 1 ? '#f0a500':'var(--red)' },
+    { label:'Totale Trade',   value:results.totalTrades,   color:'var(--text-primary)' },
+    { label:'Equity Finale',  value:'$' + (+results.finalEquity).toLocaleString('en-US',{maximumFractionDigits:0}), color: meta.color },
+  ];
+  document.getElementById('bt-kpi-row').innerHTML = kpis.map(k =>
+    `<div class="card" style="padding:10px 12px;text-align:center">
+      <div style="font-size:0.72rem;color:var(--text-muted)">${k.label}</div>
+      <div style="font-size:1.05rem;font-weight:700;color:${k.color};margin-top:3px">${k.value}</div>
+    </div>`
+  ).join('');
+
+  if (btEquityChart) { btEquityChart.destroy(); btEquityChart = null; }
+  const ctx = document.getElementById('bt-equity-chart')?.getContext('2d');
+  if (ctx && results.equityCurve?.length) {
+    btEquityChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: results.equityCurve.map(p => p.date), datasets: [{ data: results.equityCurve.map(p => p.equity), borderColor: meta.color, borderWidth: 2, fill: true, backgroundColor: meta.color + '20', pointRadius: 0, tension: 0.25 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => '$' + (+c.raw).toLocaleString('en-US', {maximumFractionDigits:0}) } } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8, color: '#888', maxRotation: 0 }, grid: { color: '#2a2a3a' } },
+          y: { ticks: { color: '#888', callback: v => '$' + (+v).toLocaleString('en-US',{maximumFractionDigits:0}) }, grid: { color: '#2a2a3a' } }
+        }
+      }
+    });
+  }
+}
+
+async function loadBtTrades(btId) {
+  try {
+    const res = await secureFetch('/api/backtest/' + btId);
+    if (!res.ok) return;
+    const data = await res.json();
+    const tbody = document.getElementById('bt-trades-tbody');
+    if (!tbody) return;
+    const titleEl = document.getElementById('bt-trades-title');
+    if (titleEl) titleEl.textContent = `📋 Trade Log (${data.trades?.length || 0} trade)`;
+    if (!data.trades?.length) {
+      tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-muted);text-align:center;padding:20px">Nessun trade eseguito</td></tr>';
+      return;
+    }
+    const exitLabels = { take_profit:'✅ TP', stop_loss:'🛑 SL', max_hold:'⏱ MaxHold', eop:'🏁 Fine' };
+    tbody.innerHTML = data.trades.map(t => {
+      const pnlColor = t.pnl > 0 ? 'var(--green)' : 'var(--red)';
+      return `<tr>
+        <td style="font-weight:700">${t.symbol}</td>
+        <td><span style="color:${t.side==='long'?'var(--green)':'var(--red)'}">${t.side.toUpperCase()}</span></td>
+        <td>${t.qty}</td>
+        <td style="font-size:0.78rem">${t.entry_date}</td>
+        <td style="font-size:0.78rem">${t.exit_date||'—'}</td>
+        <td>$${(+t.entry_price).toFixed(2)}</td>
+        <td>$${(+(t.exit_price||0)).toFixed(2)}</td>
+        <td style="color:${pnlColor};font-weight:700">${t.pnl>=0?'+':''}$${(+t.pnl).toFixed(2)}</td>
+        <td style="color:${pnlColor}">${(+t.return_pct).toFixed(1)}%</td>
+        <td style="font-size:0.78rem">${exitLabels[t.exit_reason]||t.exit_reason}</td>
+      </tr>`;
+    }).join('');
+  } catch(_) {}
+}
+
+async function loadBacktestHistory() {
+  try {
+    const res = await secureFetch('/api/backtest');
+    if (!res.ok) return;
+    const rows = await res.json();
+    const tbody = document.getElementById('bt-history-tbody');
+    if (!tbody) return;
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="11" style="color:var(--text-muted);text-align:center;padding:20px">Nessun backtest eseguito</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const meta = BT_PERSONALITY_META[r.personality] || { icon:'🤖', label:r.personality };
+      const statusEl = r.status === 'done' ? '<span style="color:var(--green)">✅</span>'
+        : r.status === 'running' ? '<span style="color:#f0a500">⟳</span>'
+        : '<span style="color:var(--red)">❌</span>';
+      const fmt = v => v != null ? (v >= 0 ? '+':'') + v.toFixed(2) + '%' : '—';
+      const fmtS = v => v != null ? v.toFixed(2) : '—';
+      const retColor = r.totalReturn == null ? 'inherit' : r.totalReturn >= 0 ? 'var(--green)' : 'var(--red)';
+      return `<tr>
+        <td style="max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.name||'—'}</td>
+        <td>${meta.icon} ${meta.label}</td>
+        <td style="font-size:0.75rem">${r.symbols}</td>
+        <td style="font-size:0.75rem">${r.start_date}→${r.end_date}</td>
+        <td>$${(+r.initial_capital).toLocaleString('en-US',{maximumFractionDigits:0})}</td>
+        <td style="color:${retColor};font-weight:700">${fmt(r.totalReturn)}</td>
+        <td>${fmtS(r.sharpe)}</td>
+        <td style="color:${r.maxDrawdown > 20 ? 'var(--red)':'inherit'}">${r.maxDrawdown != null ? '-' + r.maxDrawdown.toFixed(2) + '%':'—'}</td>
+        <td>${r.totalTrades ?? '—'}</td>
+        <td>${statusEl}</td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-secondary btn-sm" onclick="viewBtResult('${r.id}','${r.personality}')">👁</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteBt('${r.id}')" style="margin-left:4px">🗑</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch(_) {}
+}
+
+async function viewBtResult(btId, personality) {
+  currentBtId = btId;
+  selectedBtPersonality = personality;
+  try {
+    const res = await secureFetch('/api/backtest/' + btId);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.results) renderBtResults(data.results);
+    const tbody = document.getElementById('bt-trades-tbody');
+    const titleEl = document.getElementById('bt-trades-title');
+    if (titleEl) titleEl.textContent = `📋 Trade Log (${data.trades?.length || 0} trade)`;
+    if (tbody && data.trades) {
+      const exitLabels = { take_profit:'✅ TP', stop_loss:'🛑 SL', max_hold:'⏱ MaxHold', eop:'🏁 Fine' };
+      tbody.innerHTML = data.trades.length ? data.trades.map(t => {
+        const pnlColor = t.pnl > 0 ? 'var(--green)' : 'var(--red)';
+        return `<tr>
+          <td style="font-weight:700">${t.symbol}</td>
+          <td><span style="color:${t.side==='long'?'var(--green)':'var(--red)'}">${t.side.toUpperCase()}</span></td>
+          <td>${t.qty}</td>
+          <td style="font-size:0.78rem">${t.entry_date}</td>
+          <td style="font-size:0.78rem">${t.exit_date||'—'}</td>
+          <td>$${(+t.entry_price).toFixed(2)}</td>
+          <td>$${(+(t.exit_price||0)).toFixed(2)}</td>
+          <td style="color:${pnlColor};font-weight:700">${t.pnl>=0?'+':''}$${(+t.pnl).toFixed(2)}</td>
+          <td style="color:${pnlColor}">${(+t.return_pct).toFixed(1)}%</td>
+          <td style="font-size:0.78rem">${exitLabels[t.exit_reason]||t.exit_reason}</td>
+        </tr>`;
+      }).join('') : '<tr><td colspan="10" style="color:var(--text-muted);text-align:center;padding:20px">Nessun trade</td></tr>';
+    }
+    showSection('backtest', document.querySelector('[data-section="backtest"]'));
+  } catch(_) {}
+}
+
+async function deleteBt(btId) {
+  if (!confirm('Eliminare questo backtest e tutti i suoi trade?')) return;
+  await secureFetch('/api/backtest/' + btId, { method: 'DELETE' });
+  showToast('Backtest eliminato', 'success');
+  loadBacktestHistory();
 }
 
 // Auto-init if already unlocked (session exists)
