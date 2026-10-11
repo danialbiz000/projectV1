@@ -3713,4 +3713,19 @@ server.listen(PORT, () => {
   restoreAgentsFromDb();
 });
 
+// ─── Graceful Shutdown ────────────────────────────────────────────────────────
+function shutdown(signal) {
+  console.log(`[Portfolio Nexus] ${signal} — shutting down…`);
+  for (const [, timer] of agentTimers) clearInterval(timer);
+  agentTimers.clear();
+  server.close(() => {
+    try { if (db) db.close(); } catch (_) {}
+    console.log('[Portfolio Nexus] DB closed. Bye.');
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
+
 module.exports = { app, server, broadcast, subscribeSymbols };
