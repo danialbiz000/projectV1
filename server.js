@@ -3436,8 +3436,22 @@ async function fetchBarsForBacktest(symbol, startDate, endDate) {
   return (data.bars || []).map(b => ({ t: b.t.substring(0, 10), o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }));
 }
 
+async function alpacaDataFetchWithRetry(path, maxRetries = 4) {
+  let delay = 1000;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await alpacaDataFetch(path);
+    if (resp.status !== 429) return resp;
+    if (attempt < maxRetries) {
+      console.warn(`[Backtest] 429 rate limit — retry ${attempt + 1}/${maxRetries} in ${delay}ms`);
+      await sleep(delay);
+      delay *= 2;
+    }
+  }
+  throw new Error('Alpaca rate limit: troppe richieste. Attendi qualche secondo e riprova.');
+}
+
 // Fetch bars for multiple symbols in batches using the multi-symbol endpoint
-async function fetchBarsBatch(symbols, startDate, endDate, batchSize = 15) {
+async function fetchBarsBatch(symbols, startDate, endDate, batchSize = 10) {
   const allBars = {};
   for (let i = 0; i < symbols.length; i += batchSize) {
     const batch = symbols.slice(i, i + batchSize);
@@ -3450,8 +3464,8 @@ async function fetchBarsBatch(symbols, startDate, endDate, batchSize = 15) {
     const batchBars = {};
     do {
       if (next_page_token) params.set('page_token', next_page_token);
-      const resp = await alpacaDataFetch(`/v2/stocks/bars?${params}`);
-      if (!resp.ok) throw new Error(`Alpaca multi-bars batch ${i}: ${resp.status}`);
+      const resp = await alpacaDataFetchWithRetry(`/v2/stocks/bars?${params}`);
+      if (!resp.ok) throw new Error(`Alpaca multi-bars batch ${i / batchSize + 1}: ${resp.status}`);
       const data = await resp.json();
       for (const [sym, bars] of Object.entries(data.bars || {})) {
         if (!batchBars[sym]) batchBars[sym] = [];
@@ -3460,7 +3474,7 @@ async function fetchBarsBatch(symbols, startDate, endDate, batchSize = 15) {
       next_page_token = data.next_page_token || null;
     } while (next_page_token);
     Object.assign(allBars, batchBars);
-    if (i + batchSize < symbols.length) await sleep(300);
+    if (i + batchSize < symbols.length) await sleep(600);
   }
   return allBars;
 }
