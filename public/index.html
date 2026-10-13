@@ -4010,7 +4010,8 @@ async function loadAgents() {
   try {
     const res = await secureFetch('/api/agents');
     if (!res.ok) return;
-    const agents = await res.json();
+    const data = await res.json();
+    const agents = Array.isArray(data) ? data : (data.agents || []);
     agentsData = agents;
     renderAgentsGrid(agents);
     renderAgentsPositionsTable(agents);
@@ -4022,7 +4023,8 @@ async function loadRequiem() {
   try {
     const res = await secureFetch('/api/agents/requiem');
     if (!res.ok) return;
-    const rows = await res.json();
+    const data = await res.json();
+    const rows = Array.isArray(data) ? data : (data.requiems || []);
     const container = document.getElementById('requiem-list');
     if (!container) return;
     if (!rows.length) {
@@ -4031,7 +4033,7 @@ async function loadRequiem() {
     }
     container.innerHTML = rows.map(r => {
       const meta = PERSONALITY_META[r.personality] || { icon: '🤖', color: '#888', label: r.personality };
-      const died = r.died_at ? new Date(r.died_at).toLocaleString('it-IT') : '—';
+      const died = r.ts ? new Date(r.ts).toLocaleString('it-IT') : '—';
       const pnl = r.final_pnl != null ? (r.final_pnl >= 0 ? '+' : '') + r.final_pnl.toFixed(2) : '—';
       return `<div class="card" style="border-left:3px solid ${meta.color};padding:14px 16px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -4045,8 +4047,8 @@ async function loadRequiem() {
             <span style="font-weight:700;color:${r.final_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${pnl}</span>
           </div>
         </div>
-        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:6px">Motivo: ${r.death_reason || '—'}</div>
-        <div style="font-size:0.84rem;line-height:1.55;color:var(--text-primary)">${r.content || '—'}</div>
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:6px">Motivo: ${r.cause_of_death || '—'}</div>
+        <div style="font-size:0.84rem;line-height:1.55;color:var(--text-primary)">${r.lessons || '—'}</div>
       </div>`;
     }).join('');
   } catch(_) {}
