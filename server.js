@@ -3426,12 +3426,43 @@ const BACKTEST_STRATEGIES = {
   }
 };
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function fetchBarsForBacktest(symbol, startDate, endDate) {
   const params = new URLSearchParams({ timeframe: '1Day', start: startDate, end: endDate, limit: '1000', adjustment: 'split', sort: 'asc' });
   const resp = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?${params}`);
   if (!resp.ok) throw new Error(`Alpaca bars ${symbol}: ${resp.status}`);
   const data = await resp.json();
   return (data.bars || []).map(b => ({ t: b.t.substring(0, 10), o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }));
+}
+
+// Fetch bars for multiple symbols in batches using the multi-symbol endpoint
+async function fetchBarsBatch(symbols, startDate, endDate, batchSize = 15) {
+  const allBars = {};
+  for (let i = 0; i < symbols.length; i += batchSize) {
+    const batch = symbols.slice(i, i + batchSize);
+    const params = new URLSearchParams({
+      symbols: batch.join(','), timeframe: '1Day',
+      start: startDate, end: endDate,
+      limit: '1000', adjustment: 'split', sort: 'asc',
+    });
+    let next_page_token = null;
+    const batchBars = {};
+    do {
+      if (next_page_token) params.set('page_token', next_page_token);
+      const resp = await alpacaDataFetch(`/v2/stocks/bars?${params}`);
+      if (!resp.ok) throw new Error(`Alpaca multi-bars batch ${i}: ${resp.status}`);
+      const data = await resp.json();
+      for (const [sym, bars] of Object.entries(data.bars || {})) {
+        if (!batchBars[sym]) batchBars[sym] = [];
+        batchBars[sym].push(...bars.map(b => ({ t: b.t.substring(0, 10), o: b.o, h: b.h, l: b.l, c: b.c, v: b.v })));
+      }
+      next_page_token = data.next_page_token || null;
+    } while (next_page_token);
+    Object.assign(allBars, batchBars);
+    if (i + batchSize < symbols.length) await sleep(300);
+  }
+  return allBars;
 }
 
 async function runBacktest(btId) {
@@ -3441,8 +3472,7 @@ async function runBacktest(btId) {
     const strat = BACKTEST_STRATEGIES[row.personality];
     if (!strat) throw new Error('Unknown personality: ' + row.personality);
     const symbols = row.symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-    const allBars = {};
-    for (const sym of symbols) allBars[sym] = await fetchBarsForBacktest(sym, row.start_date, row.end_date);
+    const allBars = await fetchBarsBatch(symbols, row.start_date, row.end_date);
 
     const dateSet = new Set();
     for (const bars of Object.values(allBars)) bars.forEach(b => dateSet.add(b.t));
