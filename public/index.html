@@ -372,9 +372,6 @@ tr:hover td { background: var(--surface2); }
       <a data-section="agents" onclick="showSection('agents', this)">🧬 Agenti</a>
       <a data-section="backtest" onclick="showSection('backtest', this)">📈 Backtest</a>
       <a data-section="screener" onclick="showSection('screener', this)">🔍 Screener</a>
-      <a data-section="macro" onclick="showSection('macro', this)">🌍 Macro</a>
-      <a data-section="chat" onclick="showSection('chat', this)">💬 AI Desk</a>
-      <a data-section="allocator" onclick="showSection('allocator', this)">💰 Allocatore</a>
       <a data-section="settings" onclick="showSection('settings', this)">⚙️ Impostazioni</a>
     </nav>
     <div class="ws-status disconnected" id="ws-status">● WebSocket</div>
@@ -420,6 +417,32 @@ tr:hover td { background: var(--surface2); }
         <div id="dash-positions-list" style="margin-top:14px">
           <span style="color:var(--text-muted);font-size:0.85rem">Caricamento posizioni…</span>
         </div>
+      </div>
+
+      <!-- Macro Brief giornaliero -->
+      <div class="card" style="margin-top:24px">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>🌍 Brief Macro Giornaliero</span>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="macro-brief-date" style="font-size:0.75rem;color:var(--text-muted)"></span>
+            <button class="btn btn-secondary btn-sm" onclick="loadMacroBrief(true)" title="Forza aggiornamento">↺ Aggiorna</button>
+          </div>
+        </div>
+        <div id="macro-brief-body" style="margin-top:14px">
+          <span style="color:var(--text-muted);font-size:0.85rem">Caricamento brief…</span>
+        </div>
+      </div>
+
+      <!-- FX Rates -->
+      <div class="card" style="margin-top:24px">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>💱 Cambi Live (base USD)</span>
+          <button class="btn btn-secondary btn-sm" onclick="loadFX()" title="Aggiorna">↺</button>
+        </div>
+        <div id="fx-grid-dash" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-top:14px">
+          <span style="color:var(--text-muted);font-size:0.85rem">Caricamento…</span>
+        </div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:10px">Fonte: Frankfurter / ECB — aggiornato ogni caricamento</div>
       </div>
     </section>
 
@@ -918,77 +941,7 @@ tr:hover td { background: var(--surface2); }
       <div id="screener-result"></div>
     </section>
 
-    <!-- 7. Macro -->
-    <section id="section-macro" class="section">
-      <h3 style="font-size:0.85rem;color:var(--text-muted);margin-bottom:16px;text-transform:uppercase;letter-spacing:0.05em">Segnali Geografici</h3>
-      <div id="macro-geo-grid" class="macro-grid"></div>
-      <h3 style="font-size:0.85rem;color:var(--text-muted);margin-bottom:16px;text-transform:uppercase;letter-spacing:0.05em">FX Rates — Live (USD base)</h3>
-      <div id="fx-grid" class="fx-grid"></div>
-      <h3 style="font-size:0.85rem;color:var(--text-muted);margin:20px 0 16px;text-transform:uppercase;letter-spacing:0.05em">Rischi Geopolitici</h3>
-      <div id="geo-risks" class="macro-grid"></div>
-      <div class="card" style="margin-top:20px;border-color:var(--gold-dim)">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start">
-          <div>
-            <div class="card-title">⚡ Rheinmetall AG — Watch Speciale (Marzo 2026)</div>
-            <div style="font-size:0.85rem;line-height:1.6;margin-top:8px">
-              RHM.DE: Capitalizzazione ~€28B · P/E 28x · Backlog ordini record €40B+ · Budget difesa EU in forte espansione.<br>
-              <b>Setup:</b> Breakout sopra €1.150 → target €1.350 | SL €1.020 | Proxy US tradeable: <b>RTX</b>, <b>LMT</b>
-            </div>
-          </div>
-          <span class="signal signal-bull">BULLISH</span>
-        </div>
-      </div>
-    </section>
-
-    <!-- 8. Chat AI -->
-    <section id="section-chat" class="section">
-      <div class="chat-container">
-        <div class="quick-btns">
-          <span class="quick-btn" onclick="sendQuick('/markets')">/markets</span>
-          <span class="quick-btn" onclick="sendQuick('Analizza il mio portfolio Alpaca')">Portfolio Analysis</span>
-          <span class="quick-btn" onclick="sendQuick('Setup long ENB')">Long ENB</span>
-          <span class="quick-btn" onclick="sendQuick('Stress test del portfolio')">Stress Test</span>
-          <span class="quick-btn" onclick="sendQuick('Alloca $5.000 con profilo moderato')">Alloca $5k</span>
-          <span class="quick-btn" onclick="sendQuick('Chiudi posizioni in perdita')">Chiudi perdite</span>
-          <span class="quick-btn" onclick="sendQuick('/help')">/help</span>
-        </div>
-        <div class="chat-messages" id="chat-messages"></div>
-        <div class="chat-input-row">
-          <input type="text" class="field" id="chat-input" placeholder="Scrivi un messaggio..." onkeydown="if(event.key==='Enter')sendChat()" style="margin:0">
-          <button class="btn btn-primary" onclick="sendChat()">Invia</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- 9. Allocatore -->
-    <section id="section-allocator" class="section">
-      <div class="card" style="max-width:500px;margin-bottom:24px">
-        <div class="form-row">
-          <div class="field">
-            <label>Importo</label>
-            <input type="number" id="alloc-amount" placeholder="10000" value="10000">
-          </div>
-          <div class="field">
-            <label>Valuta</label>
-            <select id="alloc-currency">
-              <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
-              <option value="GBP">GBP</option>
-            </select>
-          </div>
-        </div>
-        <div class="field">
-          <label>Profilo Rischio</label>
-          <select id="alloc-risk">
-            <option value="moderato">Moderato (Equity 55% · Bond 20% · Comm 15% · FX 10%)</option>
-            <option value="conservativo">Conservativo (Equity 35% · Bond 40% · Comm 15% · FX 10%)</option>
-            <option value="aggressivo">Aggressivo (Equity 70% · Bond 10% · Comm 10% · FX 10%)</option>
-          </select>
-        </div>
-        <button class="btn btn-primary" onclick="calculateAllocation()">Calcola Allocazione →</button>
-      </div>
-      <div id="alloc-result"></div>
-    </section>
+    <!-- sections macro/chat/allocator removed -->
 
     <!-- 11. Agenti Evolutivi -->
     <section id="section-agents" class="section">
@@ -1340,23 +1293,6 @@ const WATCHDOG_PAIRS = [
   { primary:'COIN',  backup:'MSTR',  label:'Crypto Proxy'  },
 ];
 
-const MACRO_GEO = [
-  { area:'🇺🇸 USA', signal:'bullish', text:'Fed in pausa, mercato del lavoro solido. Rischio: tariffe aggressive. Settori forti: tech, energia, difesa.' },
-  { area:'🇪🇺 Europa', signal:'bullish', text:'Spesa difesa record, ripresa industriale. Risk: tassi BCE ancora alti. Fav: industriali, banche.' },
-  { area:'🌏 Asia-Pacific', signal:'bearish', text:'Cina in deflazione strutturale, crescita sotto attese. Giappone: yen debole favorisce export.' },
-  { area:'🌍 Emerging Markets', signal:'bearish', text:'USD forte penalizza debito EM. Opportunità selettive: India, Messico (nearshoring).' },
-  { area:'🕌 Middle East', signal:'neutral', text:'Tensioni persistenti. Petrolio supportato. KSA e UAE continuano diversificazione economica.' },
-  { area:'🌎 Latin America', signal:'neutral', text:'Brasile: commodity play. Messico: nearshoring beneficiary. Rischio politico elevato.' },
-];
-
-const GEO_RISKS = [
-  { name:'US-China Trade', level:'high', text:'Tariffe al 145% su import cinesi. Rischio escalation settore semiconduttori e rare earth.' },
-  { name:'Ukraine-Russia', level:'high', text:'Conflitto prolungato. Impatto energia EU, spesa difesa. Positivo per ENB, RHM.' },
-  { name:'Middle East', level:'medium', text:'Tensioni Israele-Hezbollah-Iran. Canale Suez, petrolio. Monitorare VIX.' },
-  { name:'EU Energy Security', level:'medium', text:'LNG da USA +40% YoY. Transizione accelerata. ENB beneficiario strutturale.' },
-  { name:'Taiwan Strait', level:'high', text:'Esercitazioni PLA frequenti. Semiconduttori: rischio catena fornitura globale.' },
-  { name:'Iran Nuclear', level:'medium', text:'Colloqui JCPOA in stallo. Sanzioni petrolio persistenti. Impatto limitato a breve.' },
-];
 
 // ============================================================
 // PRNG (no Math.random in charts)
@@ -1604,7 +1540,7 @@ const SECTION_TITLES = {
   dashboard:'Dashboard', equity:'AT Intelligence', trading:'Trading — Alpaca Live',
   heatmap:'Heatmap Fondamentali', watchdog:'Rischio Portfolio',
   screener:'Screener Aziende', macro:'Macro & Geopolitica',
-  chat:'Trading Desk AI', allocator:'Allocatore Budget', settings:'Impostazioni',
+  settings:'Impostazioni',
   autotrader:'AutoTrader — AI Trading Engine',
   agents:'Agenti Evolutivi — Multi-Agent Trading',
   backtest:'Backtest Engine — Simulazione Storica',
@@ -1619,7 +1555,7 @@ function showSection(id, el) {
   document.getElementById('section-title').textContent = SECTION_TITLES[id] || id;
   if (id === 'trading') { loadOpenOrders(); loadOrderHistory(); loadAlpacaHistory(); }
   if (id === 'settings') updateSettingsPanel();
-  if (id === 'macro') loadFX();
+  if (id === 'dashboard') { loadMacroBrief(); loadFX(); loadDashboardPositions(); }
   if (id === 'autotrader') loadAutoTraderStatus();
   if (id === 'equity') loadATIntelligence();
   if (id === 'watchdog') loadRischioPortfolio();
@@ -3066,21 +3002,54 @@ function renderGeoRisks() {
 }
 
 async function loadFX() {
-  const el = document.getElementById('fx-grid');
+  const el = document.getElementById('fx-grid-dash');
   if (!el) return;
   try {
     const res = await secureFetch('/api/fx');
     const data = await res.json();
     const rates = data.rates || {};
-    const pairs = [['EUR','€'],['GBP','£'],['JPY','¥'],['SEK','kr'],['KRW','₩'],['SGD','S$']];
-    el.innerHTML = pairs.map(([cur, sym]) => `
-      <div class="fx-card">
-        <div class="fx-pair">USD / ${cur}</div>
-        <div class="fx-rate">${sym}${rates[cur] ? (+rates[cur]).toFixed(4) : '—'}</div>
-      </div>`).join('');
+    const pairs = [
+      ['EUR','€','Euro'],['GBP','£','Sterlina'],['JPY','¥','Yen'],
+      ['CHF','Fr','Franco CH'],['AUD','A$','Dollaro AU'],['CAD','C$','Dollaro CA'],
+      ['CNY','¥','Yuan'],['HKD','HK$','Dollaro HK'],['SEK','kr','Corona SE'],['NOK','kr','Corona NO'],
+    ];
+    el.innerHTML = pairs.map(([cur, sym, label]) => {
+      const rate = rates[cur] ? (+rates[cur]).toFixed(cur === 'JPY' ? 2 : 4) : '—';
+      return `<div style="background:var(--bg-secondary);border-radius:8px;padding:10px 12px;border:1px solid var(--border)">
+        <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:3px">${label}</div>
+        <div style="font-size:0.78rem;color:var(--text-muted)">USD / ${cur}</div>
+        <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary);margin-top:4px">${sym}${rate}</div>
+      </div>`;
+    }).join('');
   } catch(_) {
-    const el2 = document.getElementById('fx-grid');
+    const el2 = document.getElementById('fx-grid-dash');
     if (el2) el2.innerHTML = '<div style="color:var(--text-muted);font-size:0.82rem">FX non disponibile</div>';
+  }
+}
+
+async function loadMacroBrief(force = false) {
+  const body = document.getElementById('macro-brief-body');
+  const dateEl = document.getElementById('macro-brief-date');
+  if (!body) return;
+  body.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem">⟳ Generazione brief in corso…</span>';
+  try {
+    const url = force ? '/api/macro-brief?force=1' : '/api/macro-brief';
+    const res = await secureFetch(url);
+    if (!res.ok) { body.innerHTML = '<span style="color:var(--red)">Errore caricamento brief</span>'; return; }
+    const d = await res.json();
+    if (dateEl) dateEl.textContent = (d.cached ? '📋 cache ' : '✨ generato ') + d.date;
+    const sections = [
+      { icon: '🏦', label: 'Banche Centrali', text: d.central_banks },
+      { icon: '📈', label: 'Mercati', text: d.markets },
+      { icon: '🌍', label: 'Geopolitica', text: d.geopolitics },
+    ];
+    body.innerHTML = sections.map(s => `
+      <div style="margin-bottom:16px;padding:14px 16px;background:var(--bg-secondary);border-radius:8px;border-left:3px solid var(--gold)">
+        <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;color:var(--gold)">${s.icon} ${s.label}</div>
+        <div style="font-size:0.85rem;line-height:1.7;color:var(--text-primary)">${s.text || '—'}</div>
+      </div>`).join('');
+  } catch(e) {
+    body.innerHTML = `<span style="color:var(--red);font-size:0.85rem">Errore: ${e.message}</span>`;
   }
 }
 
@@ -3976,12 +3945,11 @@ async function init() {
   renderStocksGrid();
   renderHeatmap();
   renderWatchdog();
-  renderMacroGeo();
-  renderGeoRisks();
   initDonutChart();
   initPerfChart();
   initHistoryChart();
   loadFX();
+  loadMacroBrief();
   try {
     const account = await alpacaAPI('/account');
     if (account) updateAccountKPIs(account);

@@ -167,6 +167,14 @@ function initDb() {
       exit_reason TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_backtest_trades ON backtest_trades(backtest_id);
+
+    CREATE TABLE IF NOT EXISTS macro_brief (
+      date TEXT PRIMARY KEY,
+      central_banks TEXT,
+      markets       TEXT,
+      geopolitics   TEXT,
+      generated_at  INTEGER NOT NULL
+    );
   `);
 }
 
@@ -817,9 +825,47 @@ app.post('/api/screen', async (req, res) => {
 // ─── Market Data ──────────────────────────────────────────────────────────────
 app.get('/api/fx', async (req, res) => {
   try {
-    const upstream = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,SEK,KRW,SGD');
-    res.status(upstream.status).json(await upstream.json());
+    const upstream = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,CHF,AUD,CAD,CNY,HKD,SEK,NOK');
+    if (!upstream.ok) return res.status(upstream.status).json({ error: 'FX upstream error' });
+    res.json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/macro-brief', requireAuth, async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const force = req.query.force === '1';
+  const cached = !force && db.prepare('SELECT * FROM macro_brief WHERE date=?').get(today);
+  if (cached) return res.json({ date: today, central_banks: cached.central_banks, markets: cached.markets, geopolitics: cached.geopolitics, cached: true });
+
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  if (!anthropicKey) return res.status(503).json({ error: 'ANTHROPIC_API_KEY non configurata' });
+
+  try {
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 900,
+        messages: [{ role: 'user', content: `Sei un analista macro senior. Oggi è ${today}. Genera un brief giornaliero sui mercati finanziari globali in italiano. Rispondi SOLO con JSON valido, nessun testo fuori dal JSON:
+{
+  "central_banks": "2-3 frasi su Fed/BCE/BoJ/BoE: decisioni recenti sui tassi, forward guidance, e impatto atteso sui mercati azionari e obbligazionari.",
+  "markets": "2-3 frasi sulle principali mosse di mercato: equity, bond, commodity, volatilità. Focus su driver macro e settori in evidenza.",
+  "geopolitics": "2-3 frasi sul principale rischio geopolitico attivo e come si riflette sui mercati (petrolio, difesa, supply chain, valute rifugio)."
+}` }],
+      }),
+    });
+    const d = await aiRes.json();
+    const text = d.content?.[0]?.text || '';
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('JSON non estratto dalla risposta AI');
+    const brief = JSON.parse(m[0]);
+    db.prepare('INSERT OR REPLACE INTO macro_brief (date,central_banks,markets,geopolitics,generated_at) VALUES (?,?,?,?,?)')
+      .run(today, brief.central_banks, brief.markets, brief.geopolitics, Date.now());
+    res.json({ date: today, ...brief, cached: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── Health ───────────────────────────────────────────────────────────────────
