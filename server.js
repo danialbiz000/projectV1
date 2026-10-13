@@ -1514,7 +1514,23 @@ function sectorExposure(openPositions) {
   return map;
 }
 
-const AT_WATCHLIST_DEFAULT = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'AMZN', 'GOOGL', 'JPM', 'XOM'];
+const AT_WATCHLIST_DEFAULT = [
+  // ── Tech / Semiconductors ──────────────────────────────────────────────────
+  'AAPL','MSFT','NVDA','AMD','GOOGL','META','AMZN','TSLA','NFLX','CRM',
+  'ADBE','INTC','QCOM','MU','PLTR',
+  // ── Financials ────────────────────────────────────────────────────────────
+  'JPM','BAC','GS','MS','WFC','V','MA','AXP','BLK','C',
+  // ── Healthcare ────────────────────────────────────────────────────────────
+  'JNJ','UNH','PFE','MRK','ABBV','LLY','TMO','ABT','CVS','BMY',
+  // ── Energy / Utilities ────────────────────────────────────────────────────
+  'XOM','CVX','COP','SLB','NEE',
+  // ── Consumer / Retail ─────────────────────────────────────────────────────
+  'WMT','COST','MCD','SBUX','NKE','TGT','HD','PG','KO','PEP',
+  // ── Industrials / Transport ───────────────────────────────────────────────
+  'CAT','BA','GE','HON','UPS','DAL','F','DE',
+  // ── Broad Market ETF ──────────────────────────────────────────────────────
+  'SPY','QQQ','IWM','XLF','XLE',
+];
 
 const AT = {
   enabled: false,
@@ -3207,7 +3223,7 @@ async function agentCycle(agentId, anthropicKey) {
 
   // 1. Refresh prices + check stop loss / take profit
   const openPositions = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
-  const watchSymbols = AT.watchlist.slice(0, 8);
+  const watchSymbols = AT.watchlist.slice(0, 20);
   const allSymbols = [...new Set([...openPositions.map(p => p.symbol), ...watchSymbols])];
   const prices = await agentUpdatePrices(agentId, allSymbols);
 

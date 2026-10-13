@@ -1087,6 +1087,22 @@ tr:hover td { background: var(--surface2); }
             <div class="card-title">⚙ Parametri Simulazione</div>
             <div style="margin-top:12px">
               <div class="field">
+                <label>Basket Predefinito</label>
+                <select id="bt-basket-select" onchange="applyBtBasket(this.value)" style="width:100%;padding:7px 10px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;font-size:0.85rem">
+                  <option value="">— scegli basket oppure digita manuale —</option>
+                  <option value="top5">Top 5 Tech (default)</option>
+                  <option value="tech15">Tech &amp; Semiconduttori (15)</option>
+                  <option value="diversified60">Diversificato Completo (60)</option>
+                  <option value="financials">Finanziari (10)</option>
+                  <option value="healthcare">Healthcare (10)</option>
+                  <option value="energy">Energia &amp; Utilities (8)</option>
+                  <option value="consumer">Consumer &amp; Retail (10)</option>
+                  <option value="cyclicals">Ciclici &amp; Industriali (8)</option>
+                  <option value="etf">ETF Mercato Ampio (8)</option>
+                  <option value="volatile">Titoli Volatili / Stress Test (10)</option>
+                </select>
+              </div>
+              <div class="field">
                 <label>Simboli (separati da virgola)</label>
                 <input type="text" id="bt-symbols" value="AAPL,MSFT,NVDA,TSLA,AMZN" placeholder="AAPL,MSFT,NVDA">
               </div>
@@ -4225,6 +4241,31 @@ function selectBtPersonality(id) {
     const btn = document.getElementById('btpbtn-' + p);
     if (btn) btn.style.borderColor = p === id ? BT_PERSONALITY_META[p].color : 'transparent';
   });
+}
+
+const BT_BASKETS = {
+  top5:          'AAPL,MSFT,NVDA,TSLA,AMZN',
+  tech15:        'AAPL,MSFT,NVDA,AMD,GOOGL,META,AMZN,TSLA,NFLX,CRM,ADBE,INTC,QCOM,MU,PLTR',
+  financials:    'JPM,BAC,GS,MS,WFC,V,MA,AXP,BLK,C',
+  healthcare:    'JNJ,UNH,PFE,MRK,ABBV,LLY,TMO,ABT,CVS,BMY',
+  energy:        'XOM,CVX,COP,SLB,NEE,DUK,BP,OXY',
+  consumer:      'WMT,COST,MCD,SBUX,NKE,TGT,HD,PG,KO,PEP',
+  cyclicals:     'CAT,BA,GE,HON,UPS,DAL,F,DE',
+  etf:           'SPY,QQQ,IWM,DIA,XLF,XLE,XLK,XLV',
+  volatile:      'TSLA,NVDA,META,NFLX,PLTR,PYPL,SNAP,ROKU,COIN,MSTR',
+  diversified60: 'AAPL,MSFT,NVDA,AMD,GOOGL,META,AMZN,TSLA,NFLX,CRM,ADBE,INTC,QCOM,MU,PLTR,' +
+                 'JPM,BAC,GS,MS,WFC,V,MA,AXP,BLK,C,' +
+                 'JNJ,UNH,PFE,MRK,ABBV,LLY,TMO,ABT,CVS,BMY,' +
+                 'XOM,CVX,COP,SLB,NEE,' +
+                 'WMT,COST,MCD,SBUX,NKE,TGT,HD,PG,KO,PEP,' +
+                 'CAT,BA,GE,HON,UPS,DAL,F,DE,' +
+                 'SPY,QQQ,IWM,XLF,XLE',
+};
+
+function applyBtBasket(key) {
+  if (!key || !BT_BASKETS[key]) return;
+  const el = document.getElementById('bt-symbols');
+  if (el) el.value = BT_BASKETS[key];
 }
 
 async function runBacktestUI() {
