@@ -4175,7 +4175,7 @@ function selectPersonality(id) {
 async function confirmSpawn() {
   if (!selectedPersonality) return;
   try {
-    const res = await secureFetch('/api/agents', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ personality: selectedPersonality }) });
+    const res = await secureFetch('/api/agents', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ personalityId: selectedPersonality }) });
     if (!res.ok) { const err = await res.json().catch(()=>({})); showToast('Spawn fallito: ' + (err.error || res.status), 'error'); return; }
     closeSpawnModal();
     loadAgents();
