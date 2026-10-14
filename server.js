@@ -3178,6 +3178,16 @@ const AGENT_PERSONALITIES = {
 };
 
 const agentTimers = new Map(); // agentId -> NodeJS.Timer
+const agentRunning = new Set(); // race condition guard: cycles in progress
+const agentPrevPrices = new Map(); // agentId -> {symbol: lastPrice} for direction context
+
+function isMarketHours() {
+  const now = new Date();
+  const day = now.getUTCDay();
+  if (day === 0 || day === 6) return false; // weekend
+  const min = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return min >= 13 * 60 + 30 && min < 21 * 60; // 13:30-21:00 UTC covers 9:30-17:00 ET all year
+}
 
 function agentCapital(agentId, capitalStart) {
   const { total: realized } = db.prepare('SELECT COALESCE(SUM(realized_pnl),0) AS total FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'closed');
@@ -3263,6 +3273,13 @@ async function killAgent(agentId, reason, anthropicKey) {
 }
 
 async function agentCycle(agentId, anthropicKey) {
+  if (agentRunning.has(agentId)) return; // skip if previous cycle still running
+  if (!isMarketHours()) return; // no decisions outside market hours
+  agentRunning.add(agentId);
+  try { await _agentCycleInner(agentId, anthropicKey); } finally { agentRunning.delete(agentId); }
+}
+
+async function _agentCycleInner(agentId, anthropicKey) {
   const agentRow = db.prepare('SELECT * FROM agents WHERE id=? AND status=?').get(agentId, 'alive');
   if (!agentRow) return;
   const personality = JSON.parse(agentRow.personality);
@@ -3297,9 +3314,16 @@ async function agentCycle(agentId, anthropicKey) {
   const openCount = db.prepare('SELECT COUNT(*) AS n FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'open').n;
   if (openCount >= 3) return;
 
-  const requiems = db.prepare('SELECT lessons FROM requiem ORDER BY ts DESC LIMIT 5').all();
+  const personalityType = agentId.split('_')[0];
+  const requiems = db.prepare('SELECT lessons FROM requiem WHERE agent_id LIKE ? ORDER BY ts DESC LIMIT 5').all(personalityType + '_%');
   const requiemCtx = requiems.length ? requiems.map(r => r.lessons).join('\n---\n') : 'Nessun requiem ancora. Sei un pioniere.';
-  const priceList = Object.entries(prices).map(([s, p]) => `${s}:$${p.toFixed(2)}`).join(' ');
+  const prevPrices = agentPrevPrices.get(agentId) || {};
+  const priceList = Object.entries(prices).map(([s, p]) => {
+    const prev = prevPrices[s];
+    const chg = prev ? ((p - prev) / prev * 100).toFixed(1) : null;
+    return chg !== null ? `${s}:$${p.toFixed(2)}(${chg >= 0 ? '+' : ''}${chg}%)` : `${s}:$${p.toFixed(2)}`;
+  }).join(' ');
+  agentPrevPrices.set(agentId, { ...prices });
   const posStr = openPositions.filter(p => p.status === 'open').map(p => `${p.symbol}(${p.side})`).join(',') || 'nessuna';
 
   try {
@@ -3334,6 +3358,8 @@ Scegli UN'operazione o passa. Rispondi SOLO JSON:
     if (dec.side === 'short' && !personality.allowShort) return;
     const price = prices[dec.symbol];
     if (!price) return;
+    const alreadyOpen = db.prepare('SELECT id FROM agent_positions WHERE agent_id=? AND symbol=? AND status=?').get(agentId, dec.symbol, 'open');
+    if (alreadyOpen) return; // no duplicate positions on same symbol
     const qty = Math.floor((currentCapital * personality.riskPerTrade) / price);
     if (qty < 1) return;
 
@@ -3538,6 +3564,12 @@ async function runBacktest(btId) {
     for (const bars of Object.values(allBars)) bars.forEach(b => dateSet.add(b.t));
     const dates = [...dateSet].sort();
 
+    // Build date→index maps for O(1) bar lookups
+    const barMaps = {};
+    for (const [sym, bars] of Object.entries(allBars)) {
+      barMaps[sym] = new Map(bars.map((b, i) => [b.t, i]));
+    }
+
     let cash = row.initial_capital;
     const positions = {};
     const closedTrades = [];
@@ -3547,7 +3579,8 @@ async function runBacktest(btId) {
       // Exit checks on existing positions
       for (const sym of Object.keys(positions)) {
         const pos = positions[sym];
-        const bar = (allBars[sym] || []).find(b => b.t === date);
+        const bIdx = barMaps[sym]?.get(date);
+        const bar = bIdx !== undefined ? allBars[sym][bIdx] : undefined;
         if (!bar) { pos.days++; continue; }
         pos.days++;
         const price = bar.c;
@@ -3567,27 +3600,30 @@ async function runBacktest(btId) {
           delete positions[sym];
         }
       }
-      // New entries
+      // New entries — signal on bar[i], execute at OPEN of bar[i+1] (no look-ahead bias)
       if (Object.keys(positions).length < strat.maxConc) {
         for (const sym of symbols) {
           if (positions[sym] || Object.keys(positions).length >= strat.maxConc) continue;
           const bars = allBars[sym] || [];
-          const idx = bars.findIndex(b => b.t === date);
-          if (idx < 0) continue;
+          const idx = barMaps[sym]?.get(date);
+          if (idx === undefined || idx < 0) continue;
           const signal = strat.entry(bars, idx);
           if (!signal) continue;
+          const nextBar = bars[idx + 1];
+          if (!nextBar) continue; // can't enter on last available bar
           const alloc = Math.min(cash * (1 / strat.maxConc), cash * 0.95);
-          const price = bars[idx].c;
+          const price = nextBar.o; // entry at next bar's open, not current bar's close
           const qty = Math.floor(alloc / price);
           if (qty < 1) continue;
           cash -= qty * price;
-          positions[sym] = { side: signal, qty, entry_price: price, entry_date: date, days: 0 };
+          positions[sym] = { side: signal, qty, entry_price: price, entry_date: nextBar.t, days: 0 };
         }
       }
       // MTM equity snapshot
       let posValue = 0;
       for (const [sym, pos] of Object.entries(positions)) {
-        const bar = (allBars[sym] || []).find(b => b.t === date);
+        const bIdx2 = barMaps[sym]?.get(date);
+        const bar = bIdx2 !== undefined ? allBars[sym][bIdx2] : undefined;
         const price = bar ? bar.c : pos.entry_price;
         const pnl = pos.side === 'long'
           ? (price - pos.entry_price) * pos.qty
@@ -3639,7 +3675,7 @@ async function runBacktest(btId) {
       profitFactor: grossLoss > 0 ? +(grossProfit / grossLoss).toFixed(3) : grossProfit > 0 ? 999 : 0,
       totalTrades: closedTrades.length, grossProfit, grossLoss,
       finalEquity: +finalEq.toFixed(2), tradingDays: dates.length,
-      equityCurve: equityCurve.slice(-500)
+      equityCurve
     };
 
     const ins = db.prepare('INSERT INTO backtest_trades (backtest_id,symbol,side,qty,entry_date,exit_date,entry_price,exit_price,pnl,return_pct,exit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
