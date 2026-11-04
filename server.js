@@ -3171,10 +3171,19 @@ const MAX_AGENTS = 8;
 
 const AGENT_PERSONALITIES = {
   hawk: { id: 'hawk', name: 'Hawk', description: 'Aggressivo, tech-focused, cicli rapidi, alta soglia di rischio', riskPerTrade: 0.15, entryThreshold: 0.65, stopLoss: 0.06, takeProfit: 0.15, allowShort: false, cycleMs: 25 * 60000, killDrawdown: 0.30, capitalAllocation: 10000 },
-  owl:  { id: 'owl',  name: 'Owl',  description: 'Conservativo, diversificato, predilige qualità e dividendi',    riskPerTrade: 0.08, entryThreshold: 0.80, stopLoss: 0.04, takeProfit: 0.10, allowShort: false, cycleMs: 60 * 60000, killDrawdown: 0.20, capitalAllocation: 10000 },
+  owl:  { id: 'owl',  name: 'Owl',  description: 'Conservativo, diversificato, predilige qualità e dividendi',    riskPerTrade: 0.08, entryThreshold: 0.72, stopLoss: 0.04, takeProfit: 0.10, allowShort: false, cycleMs: 60 * 60000, killDrawdown: 0.20, capitalAllocation: 10000 },
   fox:  { id: 'fox',  name: 'Fox',  description: 'Contrarian, cerca titoli oversold, opera contro il trend',     riskPerTrade: 0.12, entryThreshold: 0.70, stopLoss: 0.07, takeProfit: 0.20, allowShort: true,  cycleMs: 45 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
   bull: { id: 'bull', name: 'Bull', description: 'Momentum puro, segue il trend, no short',                     riskPerTrade: 0.12, entryThreshold: 0.68, stopLoss: 0.05, takeProfit: 0.18, allowShort: false, cycleMs: 35 * 60000, killDrawdown: 0.28, capitalAllocation: 10000 },
-  bear: { id: 'bear', name: 'Bear', description: 'Macro/ribassista, specializzato in short e protezione',       riskPerTrade: 0.10, entryThreshold: 0.75, stopLoss: 0.05, takeProfit: 0.20, allowShort: true,  cycleMs: 50 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
+  bear: { id: 'bear', name: 'Bear', description: 'Macro/ribassista, specializzato in short e protezione',       riskPerTrade: 0.10, entryThreshold: 0.72, stopLoss: 0.05, takeProfit: 0.20, allowShort: true,  cycleMs: 50 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
+};
+
+// Each personality has a curated home universe — agents are independent of AT.watchlist
+const AGENT_UNIVERSE = {
+  hawk: ['NVDA','AMD','TSLA','META','PLTR','CRWD','NET','SNOW','AMZN','GOOGL'],
+  owl:  ['AAPL','MSFT','JPM','V','MA','UNH','COST','WMT','AMGN','ABBV'],
+  fox:  ['TSLA','PLTR','AMD','SNOW','XOM','CVX','BA','GS','RIVN','LABU'],
+  bull: ['NVDA','META','AMZN','GOOGL','MSFT','AVGO','QCOM','AAPL','CRWD','TSM'],
+  bear: ['TSLA','PLTR','SNOW','INTC','PFE','C','RIVN','XOM','CVX','BA'],
 };
 
 const agentTimers = new Map(); // agentId -> NodeJS.Timer
@@ -3302,7 +3311,10 @@ async function _agentCycleInner(agentId, anthropicKey) {
 
   // 1. Refresh prices + check stop loss / take profit
   const openPositions = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
-  const watchSymbols = AT.watchlist.slice(0, 20);
+  const personalityType = agentId.split('_')[0];
+  const ownUniverse = AGENT_UNIVERSE[personalityType] || STOCK_UNIVERSE.slice(0, 10);
+  const atSymbols = AT.watchlist.length >= 5 ? AT.watchlist.slice(0, 10) : [];
+  const watchSymbols = [...new Set([...ownUniverse, ...atSymbols])];
   const allSymbols = [...new Set([...openPositions.map(p => p.symbol), ...watchSymbols])];
   const prices = await agentUpdatePrices(agentId, allSymbols);
   const indicators = await agentFetchTechIndicators(watchSymbols);
@@ -3331,7 +3343,6 @@ async function _agentCycleInner(agentId, anthropicKey) {
   const openCount = db.prepare('SELECT COUNT(*) AS n FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'open').n;
   if (openCount >= 3) return;
 
-  const personalityType = agentId.split('_')[0];
   const requiems = db.prepare('SELECT lessons FROM requiem WHERE agent_id LIKE ? ORDER BY ts DESC LIMIT 5').all(personalityType + '_%');
   const requiemCtx = requiems.length ? requiems.map(r => r.lessons).join('\n---\n') : 'Nessun requiem ancora. Sei un pioniere.';
   const prevPrices = agentPrevPrices.get(agentId) || {};
@@ -3362,7 +3373,7 @@ Prezzi: ${priceList}
 REQUIEM — memoria agenti morti:
 ${requiemCtx}
 
-Scegli UN'operazione o passa. Rispondi SOLO JSON:
+Hai ${Object.keys(prices).length} simboli. Se vedi un setup chiaro, aprilo — passare ha un costo opportunità. Rispondi SOLO JSON:
 {"symbol":"AAPL","side":"long","confidence":0.75,"reasoning":"..."} oppure {"symbol":null,"reasoning":"..."}` }],
       }),
     });
