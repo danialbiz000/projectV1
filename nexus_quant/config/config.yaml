@@ -76,6 +76,22 @@ execution:
   max_retries: 3
   retry_delay_seconds: 2
 
+options:
+  risk_free_rate: 0.053          # US 3m T-bill approximation
+  min_dte: 10                    # minimum days to expiration at entry
+  max_dte: 45                    # maximum days to expiration at entry
+  target_delta_short: 0.30       # target delta for short premium legs
+  max_bid_ask_spread_pct: 0.08   # max (ask-bid)/mid per leg
+  min_open_interest: 200         # minimum OI per leg
+  max_bs_mispricing_pct: 0.35    # discard if market price deviates > 35% from BS
+  iv_rank_low_threshold: 20      # below = IV too low for credit strategies
+  iv_rank_high_threshold: 80     # above = IV extreme, reduce size
+  earnings_blackout_dte: 5       # don't enter within N days of earnings
+  enabled_strategies:
+    - iron_condor
+    - vertical_spread
+    - cash_secured_put
+
 backtest:
   start_date: "2023-01-01"
   end_date: "2024-12-31"

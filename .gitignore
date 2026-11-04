@@ -9,3 +9,6 @@ patch.js
 validate-universe.js
 CONTEXT_FOR_NEW_CHAT.md
 nexus_quant/
+__pycache__/
+*.pyc
+*.pyo
