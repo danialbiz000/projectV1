@@ -1,8 +1,14 @@
 .env
 node_modules/
-package-lock.json
 .claude/
-/data/
+data/
+*.zip
+diagnose.js
+dry-run.js
+patch.js
+validate-universe.js
+CONTEXT_FOR_NEW_CHAT.md
+nexus_quant/
 __pycache__/
 *.pyc
 *.pyo

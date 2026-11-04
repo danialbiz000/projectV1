@@ -25,6 +25,7 @@ const ADMIN_TOKEN_GENERATED = !process.env.NEXUS_ADMIN_TOKEN;
 const SESSION_TTL_MS = Math.max(1, Number(process.env.NEXUS_SESSION_HOURS || 12)) * 60 * 60 * 1000;
 const DATA_DIR = process.env.NEXUS_DATA_DIR || path.join(__dirname, 'data');
 const AT_STATE_FILE = path.join(DATA_DIR, 'autotrader-state.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const MAX_ORDER_NOTIONAL = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_NOTIONAL || 5000));
 const MAX_ORDER_QTY = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_QTY || 1000));
 const AUTOTRADER_MAX_DAILY_TRADES = Math.max(1, Number(process.env.NEXUS_AUTOTRADER_MAX_DAILY_TRADES || 8));
@@ -35,6 +36,199 @@ const ALLOWED_ORIGINS = new Set(
     .split(',').map(s => s.trim()).filter(Boolean)
 );
 const sessions = new Map();
+
+// ─── Database ─────────────────────────────────────────────────────────────────
+const Database = require('better-sqlite3');
+let db;
+
+function initDb() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  db = new Database(path.join(DATA_DIR, 'nexus.db'));
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      digest TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS at_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL DEFAULT 'main',
+      symbol TEXT NOT NULL,
+      action TEXT NOT NULL,
+      confidence REAL,
+      reasoning TEXT,
+      executed INTEGER NOT NULL DEFAULT 0,
+      order_id TEXT,
+      suggested_notional REAL,
+      executed_action TEXT,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS options_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL DEFAULT 'main',
+      underlying TEXT,
+      strategy TEXT,
+      action TEXT NOT NULL,
+      details TEXT,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS patterns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL DEFAULT 'main',
+      tag TEXT,
+      lesson TEXT NOT NULL,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS requiem (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      personality TEXT,
+      cause_of_death TEXT,
+      lessons TEXT,
+      trade_count INTEGER,
+      final_pnl REAL,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_decisions_symbol ON decisions(symbol);
+    CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(ts);
+    CREATE INDEX IF NOT EXISTS idx_decisions_agent ON decisions(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_decisions_executed ON decisions(executed);
+    CREATE INDEX IF NOT EXISTS idx_options_underlying ON options_log(underlying);
+    CREATE INDEX IF NOT EXISTS idx_patterns_tag ON patterns(tag);
+
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      personality TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'alive',
+      capital_start REAL NOT NULL,
+      capital_current REAL NOT NULL,
+      peak_capital REAL NOT NULL,
+      trade_count INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      died_at INTEGER,
+      death_reason TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_positions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL,
+      qty REAL NOT NULL,
+      entry_price REAL NOT NULL,
+      current_price REAL,
+      opened_at INTEGER NOT NULL,
+      closed_at INTEGER,
+      exit_price REAL,
+      realized_pnl REAL,
+      close_reason TEXT,
+      status TEXT NOT NULL DEFAULT 'open'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+    CREATE INDEX IF NOT EXISTS idx_agent_positions_agent ON agent_positions(agent_id, status);
+
+    CREATE TABLE IF NOT EXISTS backtests (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      personality TEXT NOT NULL,
+      symbols TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      initial_capital REAL NOT NULL DEFAULT 10000,
+      status TEXT NOT NULL DEFAULT 'running',
+      results TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS backtest_trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      backtest_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL,
+      qty REAL NOT NULL,
+      entry_date TEXT NOT NULL,
+      exit_date TEXT,
+      entry_price REAL NOT NULL,
+      exit_price REAL,
+      pnl REAL,
+      return_pct REAL,
+      exit_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_backtest_trades ON backtest_trades(backtest_id);
+
+    CREATE TABLE IF NOT EXISTS macro_brief (
+      date TEXT PRIMARY KEY,
+      central_banks TEXT,
+      markets       TEXT,
+      geopolitics   TEXT,
+      generated_at  INTEGER NOT NULL
+    );
+  `);
+}
+
+// ─── Session Persistence ──────────────────────────────────────────────────────
+function loadSessions() {
+  try {
+    const now = Date.now();
+    // Load from DB
+    const rows = db.prepare('SELECT digest, expires_at FROM sessions WHERE expires_at > ?').all(now);
+    for (const row of rows) sessions.set(row.digest, { expiresAt: row.expires_at });
+    // One-time migration from legacy JSON
+    if (fs.existsSync(SESSIONS_FILE)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+        const ins = db.prepare('INSERT OR IGNORE INTO sessions (digest, expires_at) VALUES (?, ?)');
+        const tx = db.transaction(() => {
+          for (const [digest, entry] of Object.entries(raw)) {
+            if (entry.expiresAt > now) { sessions.set(digest, { expiresAt: entry.expiresAt }); ins.run(digest, entry.expiresAt); }
+          }
+        });
+        tx();
+        fs.renameSync(SESSIONS_FILE, SESSIONS_FILE + '.migrated');
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+function saveSessions() {
+  try {
+    const now = Date.now();
+    const ins = db.prepare('INSERT OR REPLACE INTO sessions (digest, expires_at) VALUES (?, ?)');
+    const del = db.prepare('DELETE FROM sessions WHERE expires_at <= ?');
+    const tx = db.transaction(() => {
+      del.run(now);
+      for (const [digest, entry] of sessions.entries()) {
+        if (entry.expiresAt > now) ins.run(digest, entry.expiresAt);
+      }
+    });
+    tx();
+  } catch (_) {}
+}
+
+// Windows-safe atomic write (kept for any future file ops)
+function safeRename(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (_) {
+    try { fs.unlinkSync(dest); } catch (__) {}
+    fs.renameSync(src, dest);
+  }
+}
+
+initDb();
+loadSessions();
 
 // ─── Auth Helpers ─────────────────────────────────────────────────────────────
 function isAllowedOrigin(origin) {
@@ -61,6 +255,7 @@ function createSession() {
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = Date.now() + SESSION_TTL_MS;
   sessions.set(tokenDigest(token), { expiresAt });
+  saveSessions();
   return { token, expiresAt };
 }
 
@@ -123,7 +318,7 @@ function rateLimit(req, res, next) {
     return next();
   }
   entry.count++;
-  if (entry.count > 30) return res.status(429).json({ error: 'Too many requests.' });
+  if (entry.count > 1000) return res.status(429).json({ error: 'Too many requests.' });
   next();
 }
 
@@ -171,8 +366,10 @@ setInterval(() => {
     if (now - e.windowStart > 120000) rateLimitMap.delete(ip);
   for (const [ip, e] of authAttemptMap.entries())
     if (now - e.windowStart > 15 * 60 * 1000) authAttemptMap.delete(ip);
+  let sessionCleaned = false;
   for (const [digest, s] of sessions.entries())
-    if (s.expiresAt <= now) sessions.delete(digest);
+    if (s.expiresAt <= now) { sessions.delete(digest); sessionCleaned = true; }
+  if (sessionCleaned) saveSessions();
 }, 60000);
 
 // ─── Alpaca Helpers ───────────────────────────────────────────────────────────
@@ -405,7 +602,7 @@ app.get('/api/alpaca/assets/:symbol', async (req, res) => {
 app.get('/api/alpaca/bars/:symbol', async (req, res) => {
   try {
     const sym = req.params.symbol;
-    const qs = new URLSearchParams({ timeframe: '1Day', limit: '30', feed: 'iex' });
+    const qs = new URLSearchParams({ timeframe: '1Day', limit: '30' });
     const upstream = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(sym)}/bars?${qs}`);
     const bd = await upstream.json();
     // Normalise to multi-symbol format expected by frontend: { bars: { SYM: [...] } }
@@ -488,7 +685,7 @@ Schema: { "ticker":"", "name":"", "country":"", "sector":"", "isFX":false, "rati
 "pe":null, "pb":null, "cr":null, "fcf":null, "div":null, "cap":"", "analysis":"<h3>...</h3>..." }
 Values pe/pb/cr/fcf/div must be decimal numbers or null. analysis must be HTML string on one logical line.`;
 
-const AUTOTRADER_RESEARCH_PROMPT = `You are a quantitative trading engine. Analyze the provided market data and output ONLY a valid JSON object — no text, no markdown, no code fences.
+const AUTOTRADER_RESEARCH_PROMPT = `You are a selective quantitative trading engine. Analyze the provided market data and output ONLY a valid JSON object — no text, no markdown, no code fences.
 
 Schema: {"symbol":"","action":"BUY|SELL|SHORT|COVER|HOLD|REPLACE","confidence":0.0,"reasoning":"","suggestedNotional":0,"replaceSymbol":""}
 
@@ -497,20 +694,82 @@ Action definitions:
 - SELL: close an existing long position (only when positionSide is long)
 - SHORT: open a new short position (only when hasPosition is false and allowShort is true)
 - COVER: close an existing short position (only when positionSide is short)
-- HOLD: take no action
-- REPLACE: sector rotation — close replaceSymbol (weakest in sector) and open this symbol instead. Only when SECTOR ROTATION AVAILABLE is shown and the new setup is clearly superior.
+- HOLD: take no action — this is the DEFAULT when conviction is insufficient
+- REPLACE: close replaceSymbol (weakest in sector) and open this symbol. Only when SECTOR ROTATION AVAILABLE is shown and new setup is clearly superior.
+
+MANDATORY RULES — apply strictly:
+
+TREND & MOMENTUM (required for entry):
+- BUY requires: price above SMA20, AND (SMA20 > SMA50 OR 20d return > 0). Never buy a stock in a confirmed downtrend.
+- BUY requires: 5d return > -3% (avoid catching falling knives). If 5d return ≤ -3%, confidence cap = 0.70.
+- If price > 52W high × 0.95 (near breakout zone): acceptable to BUY with other signals.
+- If price < SMA20 AND SMA20 < SMA50 AND 20d return < -8%: only HOLD or SHORT, never BUY.
+- SHORT requires: price below SMA20, negative MACD, RSI < 52, 5d return < 0, AND 20d return < -3%. All conditions mandatory — short selling carries unlimited loss risk.
+- SHORT: never short a stock with annualized vol > 120% (short squeeze risk on high-vol names). Never short leveraged ETFs.
+- SHORT: confidence floor is 0.78 minimum (higher than BUY) — asymmetric risk requires higher conviction.
+
+MOMENTUM QUALITY:
+- Relative Volume < 0.7×: weak entry signal — cap confidence at 0.72 for new positions.
+- Relative Volume > 1.5×: strong confirmation — can raise confidence by up to 0.05.
+- MACD narrowing (positive but decreasing): momentum fading — prefer HOLD over new BUY.
+
+GEOPOLITICS & MACRO OVERRIDE:
+- If macro context shows active geopolitical risk directly affecting this sector: reduce confidence by 0.08–0.12, but do NOT force HOLD unless risk is extreme (active war, imminent sanctions on the stock's core market).
+- Fed/ECB rate policy: rising rates = headwind for growth/tech (reduce confidence by 0.05). Falling rates = tailwind.
+- RISK-OFF macro regime: avoid high-beta speculative names (MSTR, MARA, RIOT, leveraged ETFs). Defensives, energy, gold, utilities, healthcare, and mega-cap quality tech (AAPL, MSFT, GOOGL) are still valid BUY candidates.
+- RISK-ON regime: full latitude on growth and momentum names.
+- NEUTRAL regime: normal analysis applies — do not apply blanket restrictions.
+
+BLACK-SCHOLES:
+- P(TP) > 1.5× P(SL) required to justify BUY or SHORT. Below this ratio: HOLD.
+- If EV (expected value) < 0%: HOLD for new positions.
+
+CONVICTION THRESHOLD:
+- confidence ≥ 0.82: strong setup — act.
+- confidence 0.72–0.81: acceptable setup — act if technicals and macro align.
+- confidence < 0.72: return HOLD — do not trade.
+- reasoning: 2 sentences max — (1) key technical signal with values, (2) macro context and final verdict vs HOLD.
+- suggestedNotional: USD ≤ maxBudgetForThisTrade. Use 0 for HOLD/SELL/COVER.
+- replaceSymbol: only for REPLACE action, else omit.
+- Diversification: prefer sectors not yet in portfolio. Concentration only with confidence ≥ 0.85.`;
+
+const EOD_RECAP_PROMPT = `You are an AutoTrader post-market analyst. Today's trading session has just closed. Produce a rigorous internal daily recap.
+
+Output ONLY a valid JSON object (no markdown, no explanation, no code fences):
+{
+  "date": "",
+  "regime": "RISK-ON|RISK-OFF|NEUTRAL",
+  "session_pnl": "positive|negative|flat",
+  "summary": "",
+  "decisions": [],
+  "what_worked": "",
+  "what_failed": "",
+  "missed_opportunities": "",
+  "tomorrow_bias": "BULLISH|BEARISH|NEUTRAL",
+  "tomorrow_watchlist": [],
+  "tomorrow_reasoning": ""
+}
+
+Each item in decisions array:
+{"symbol":"","action":"","outcome":"profitable|losing|neutral|open","pl_pct":null,"analysis":"","lesson":"","situation_tags":[]}
+
+situation_tags: 1-5 tags from this exact list that describe the CONTEXT of this trade (not the outcome):
+  Position side: SHORT, LONG, COVER, DRAWDOWN
+  Sector: TECH, ENERGY, FINANCIALS, HEALTHCARE, CONSUMER, INDUSTRIALS, UTILITIES, COMMS, MATERIALS
+  Regime: RISK_ON, RISK_OFF, NEUTRAL_REGIME
+  Technical state: OVERSOLD, OVERBOUGHT, TRENDING_UP, TRENDING_DOWN, HIGH_VOL, NEAR_52W_HIGH, NEAR_52W_LOW
+  Setup: NEW_POSITION, EARNINGS_RISK, SECTOR_ROTATION, MEGA_CAP
 
 Rules:
-- confidence: 0.0–1.0. Use ≥0.85 only when multiple signals strongly align.
-- reasoning: 2-3 sentences combining technical + macro + Black-Scholes rationale. Be specific.
-- suggestedNotional: USD amount ≤ maxBudgetForThisTrade shown in prompt. Use 0 for HOLD/SELL/COVER.
-- replaceSymbol: only required for REPLACE action, otherwise omit or use "".
-- RSI: <30 oversold (bullish bias), >70 overbought (bearish/short bias).
-- MACD: positive = bullish momentum, negative = bearish.
-- Black-Scholes: P(TP) vs P(SL) ratio guides conviction. Favor setups where P(TP) > 2× P(SL).
-- Diversification: prefer sectors not yet in portfolio. Accept concentration only with very high conviction.
-- ALWAYS integrate macro context. CB/geopolitical events override technicals.
-- Prefer HOLD over low-conviction trades. A missed opportunity is better than a forced loss.`;
+- summary: 2-3 sentences covering overall session P&L, market context, and portfolio impact.
+- For each trade today: was the thesis correct? Did the AI miss signals that should have changed the decision?
+- what_worked: 1-2 sentences on signals/patterns that predicted outcomes correctly.
+- what_failed: 1-2 sentences on errors — bad timing, missed momentum reversal, geopolitical blindspot, overconfidence.
+- missed_opportunities: 1 sentence on stocks that moved significantly that the AI skipped or didn't analyse.
+- tomorrow_bias: directional view for next session based on today's price action + macro.
+- tomorrow_watchlist: 3-5 symbols to prioritize next cycle.
+- tomorrow_reasoning: 1-2 sentences explaining the bias and watchlist rationale.
+- Be brutally honest. The purpose is self-improvement, not self-justification.`;
 
 const POSITION_REVIEW_PROMPT = `You are a risk manager reviewing a losing position. Given technicals, volatility, and macro context, decide what to do.
 
@@ -566,9 +825,47 @@ app.post('/api/screen', async (req, res) => {
 // ─── Market Data ──────────────────────────────────────────────────────────────
 app.get('/api/fx', async (req, res) => {
   try {
-    const upstream = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,SEK,KRW,SGD');
-    res.status(upstream.status).json(await upstream.json());
+    const upstream = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,CHF,AUD,CAD,CNY,HKD,SEK,NOK');
+    if (!upstream.ok) return res.status(upstream.status).json({ error: 'FX upstream error' });
+    res.json(await upstream.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/macro-brief', requireAuth, async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const force = req.query.force === '1';
+  const cached = !force && db.prepare('SELECT * FROM macro_brief WHERE date=?').get(today);
+  if (cached) return res.json({ date: today, central_banks: cached.central_banks, markets: cached.markets, geopolitics: cached.geopolitics, cached: true });
+
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  if (!anthropicKey) return res.status(503).json({ error: 'ANTHROPIC_API_KEY non configurata' });
+
+  try {
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 900,
+        messages: [{ role: 'user', content: `Sei un analista macro senior. Oggi è ${today}. Genera un brief giornaliero sui mercati finanziari globali in italiano. Rispondi SOLO con JSON valido, nessun testo fuori dal JSON:
+{
+  "central_banks": "2-3 frasi su Fed/BCE/BoJ/BoE: decisioni recenti sui tassi, forward guidance, e impatto atteso sui mercati azionari e obbligazionari.",
+  "markets": "2-3 frasi sulle principali mosse di mercato: equity, bond, commodity, volatilità. Focus su driver macro e settori in evidenza.",
+  "geopolitics": "2-3 frasi sul principale rischio geopolitico attivo e come si riflette sui mercati (petrolio, difesa, supply chain, valute rifugio)."
+}` }],
+      }),
+    });
+    const d = await aiRes.json();
+    const text = d.content?.[0]?.text || '';
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('JSON non estratto dalla risposta AI');
+    const brief = JSON.parse(m[0]);
+    db.prepare('INSERT OR REPLACE INTO macro_brief (date,central_banks,markets,geopolitics,generated_at) VALUES (?,?,?,?,?)')
+      .run(today, brief.central_banks, brief.markets, brief.geopolitics, Date.now());
+    res.json({ date: today, ...brief, cached: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── Health ───────────────────────────────────────────────────────────────────
@@ -712,11 +1009,18 @@ function normalCDF(x) {
   return x >= 0 ? cdf : 1 - cdf;
 }
 
-// Adaptive bracket orders scaled to 60-day expected move
-// TP = 1.5× expected move, SL = 0.55× expected move
-function computeAdaptiveBrackets(annVol, defaultTP = AT.takeProfitPct, defaultSL = AT.stopLossPct) {
+// Adaptive bracket orders scaled to 60-day expected move.
+// Longs:  TP = 1.5× expected move, SL = 0.55× expected move
+// Shorts: TP = 0.55× expected move (smaller, achievable fall),
+//         SL = 0.40× expected move (tighter — shorts are punished fast on reversals)
+function computeAdaptiveBrackets(annVol, defaultTP = AT.takeProfitPct, defaultSL = AT.stopLossPct, side = 'long') {
   if (!annVol || annVol <= 0) return { tpPct: defaultTP, slPct: defaultSL, adaptive: false };
   const expectedMove60d = annVol * Math.sqrt(60 / 252) * 100; // in %
+  if (side === 'short') {
+    const tpPct = Math.min(25, Math.max(5,  Math.round(expectedMove60d * 0.55)));
+    const slPct = Math.min(15, Math.max(3,  Math.round(expectedMove60d * 0.40)));
+    return { tpPct, slPct, adaptive: true };
+  }
   const tpPct = Math.min(80, Math.max(8,  Math.round(expectedMove60d * 1.5)));
   const slPct = Math.min(25, Math.max(3,  Math.round(expectedMove60d * 0.55)));
   return { tpPct, slPct, adaptive: true };
@@ -750,6 +1054,322 @@ function computeBlackScholes(S, sigma, tpPct, slPct, T = 60 / 252, r = 0.043) {
     probSL:    Math.round(probSL * 100),         // % P(hit stop-loss)
     callDelta: Math.round(callDelta * 100) / 100,
   };
+}
+
+// ─── Options Trading System ────────────────────────────────────────────────────
+
+const OPTIONS_ENABLED = process.env.NEXUS_OPTIONS_ENABLED === 'true';
+
+function computeOptionGreeks(S, K, T, r, sigma, type) {
+  if (T <= 0 || sigma <= 0) return null;
+  const sqrtT = Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+  const d2 = d1 - sigma * sqrtT;
+  const Nd1  = normalCDF(d1);
+  const Nd2  = normalCDF(d2);
+  const Nnd1 = normalCDF(-d1);
+  const Nnd2 = normalCDF(-d2);
+  const phi  = Math.exp(-0.5 * d1 * d1) / Math.sqrt(2 * Math.PI);
+
+  let delta, theta, price;
+  if (type === 'call') {
+    price = S * Nd1 - K * Math.exp(-r * T) * Nd2;
+    delta = Nd1;
+    theta = (-(S * phi * sigma) / (2 * sqrtT) - r * K * Math.exp(-r * T) * Nd2) / 365;
+  } else {
+    price = K * Math.exp(-r * T) * Nnd2 - S * Nnd1;
+    delta = Nd1 - 1;
+    theta = (-(S * phi * sigma) / (2 * sqrtT) + r * K * Math.exp(-r * T) * Nnd2) / 365;
+  }
+  const gamma = phi / (S * sigma * sqrtT);
+  const vega  = S * phi * sqrtT / 100;
+
+  return { price, delta, gamma, theta, vega };
+}
+
+function parseOccSymbol(occ) {
+  try {
+    for (let i = 1; i <= 5; i++) {
+      if (occ.length >= i + 15 && occ.slice(i, i + 6).match(/^\d{6}$/)) {
+        const ticker = occ.slice(0, i);
+        const dateStr = occ.slice(i, i + 6);
+        const cp = occ[i + 6];
+        const strikeRaw = occ.slice(i + 7);
+        if (!['C', 'P'].includes(cp)) return null;
+        return {
+          ticker,
+          expiration: `20${dateStr.slice(0,2)}-${dateStr.slice(2,4)}-${dateStr.slice(4,6)}`,
+          type: cp === 'C' ? 'call' : 'put',
+          strike: parseInt(strikeRaw, 10) / 1000,
+        };
+      }
+    }
+    return null;
+  } catch { return null; }
+}
+
+async function fetchOptionsChain(symbol, dteMin = 14, dteMax = 40, limit = 500) {
+  const today = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const addDays = d => {
+    const dt = new Date(today);
+    dt.setDate(dt.getDate() + d);
+    return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`;
+  };
+  const params = new URLSearchParams({
+    feed: 'indicative',
+    limit: String(Math.min(limit, 1000)),
+    expiration_date_gte: addDays(dteMin),
+    expiration_date_lte: addDays(dteMax),
+  });
+  try {
+    const res = await alpacaDataFetch(`/v1beta1/options/snapshots/${encodeURIComponent(symbol)}?${params}`);
+    const data = await res.json();
+    const snapshots = data.snapshots || {};
+    const results = [];
+    for (const [occ, snap] of Object.entries(snapshots)) {
+      const contract = parseOccSymbol(occ);
+      if (!contract) continue;
+      const quote = snap.latestQuote || {};
+      const bid = parseFloat(quote.bp || 0);
+      const ask = parseFloat(quote.ap || 0);
+      if (bid <= 0 && ask <= 0) continue;
+      results.push({
+        symbol: occ,
+        underlying: symbol,
+        type: contract.type,
+        strike: contract.strike,
+        expiration: contract.expiration,
+        bid,
+        ask,
+        mid: (bid + ask) / 2,
+        iv: snap.impliedVolatility || null,
+        greeks: snap.greeks || {},
+        dte: Math.round((new Date(contract.expiration) - today) / 86400000),
+      });
+    }
+    return results;
+  } catch (e) {
+    console.error(`[Options] fetchOptionsChain ${symbol} error:`, e.message);
+    return [];
+  }
+}
+
+function enrichWithGreeks(contracts, spot, annVol, r = 0.053) {
+  return contracts.map(c => {
+    const T = c.dte / 365;
+    if (T <= 0) return null;
+    const sigma = c.iv && c.iv > 0 ? c.iv : annVol;
+    if (!sigma || sigma <= 0) return null;
+    const g = (c.greeks && c.greeks.delta != null)
+      ? { delta: +c.greeks.delta, gamma: +(c.greeks.gamma||0), theta: +(c.greeks.theta||0)/365, vega: +(c.greeks.vega||0)/100 }
+      : computeOptionGreeks(spot, c.strike, T, r, sigma, c.type);
+    if (!g) return null;
+    const spreadPct = c.mid > 0 ? (c.ask - c.bid) / c.mid : 999;
+    return { ...c, sigma, ...g, spreadPct };
+  }).filter(Boolean);
+}
+
+function findBestCSP(contracts, spot, annVol) {
+  const puts = enrichWithGreeks(
+    contracts.filter(c => c.type === 'put' && c.strike < spot),
+    spot, annVol
+  );
+  // Target Δ ~−0.30: short put, delta between −0.15 and −0.40
+  const candidates = puts.filter(c =>
+    Math.abs(c.delta) >= 0.15 &&
+    Math.abs(c.delta) <= 0.40 &&
+    c.spreadPct <= 0.15 &&
+    c.mid >= 0.05
+  );
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => Math.abs(Math.abs(a.delta) - 0.30) - Math.abs(Math.abs(b.delta) - 0.30));
+  return candidates[0];
+}
+
+function findBestCoveredCall(contracts, spot, avgEntry, annVol) {
+  const calls = enrichWithGreeks(
+    contracts.filter(c => c.type === 'call' && c.strike > avgEntry),
+    spot, annVol
+  );
+  // Target Δ ~0.30: short call above avg entry
+  const candidates = calls.filter(c =>
+    c.delta >= 0.15 &&
+    c.delta <= 0.40 &&
+    c.spreadPct <= 0.15 &&
+    c.mid >= 0.05
+  );
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => Math.abs(a.delta - 0.30) - Math.abs(b.delta - 0.30));
+  return candidates[0];
+}
+
+async function optionsCycle(account, openPositions, anthropicKey) {
+  if (!OPTIONS_ENABLED) return;
+
+  const equity = parseFloat(account.equity || 0);
+  const buyingPower = parseFloat(account.buying_power || 0);
+  const today = easternDateKey();
+
+  const optLog = (msg, data = {}) => {
+    const entry = { ts: new Date().toISOString(), msg, ...data };
+    AT.optionsLog.push(entry);
+    if (AT.optionsLog.length > 500) AT.optionsLog.splice(0, AT.optionsLog.length - 500);
+    console.log(`[Options] ${msg}`, data);
+    broadcast({ type: 'options_log', entry });
+    // Persist to DB
+    try {
+      const underlying = data.underlying || (msg.includes(':') ? msg.split(':')[0].trim() : null);
+      const strategy = data.strategy || (msg.toLowerCase().includes('csp') ? 'CSP' : msg.toLowerCase().includes('covered') ? 'CC' : null);
+      db.prepare('INSERT INTO options_log (agent_id,underlying,strategy,action,details,ts) VALUES (?,?,?,?,?,?)')
+        .run('main', underlying, strategy, msg, JSON.stringify(entry), Date.now());
+    } catch (_) {}
+  };
+
+  // 1. Covered Calls — overlay on existing long positions with P&L > 2%
+  for (const pos of openPositions) {
+    if (pos.side !== 'long') continue;
+    const plPct = parseFloat(pos.unrealized_plpc || 0) * 100;
+    if (plPct < 2) continue;
+    if (AT.activeOptions[pos.symbol]) continue; // already have an option on this
+
+    const spot = parseFloat(pos.current_price || 0);
+    const avgEntry = parseFloat(pos.avg_entry_price || spot);
+    if (spot <= 0) continue;
+
+    // Get 20d historical vol for this symbol
+    let annVol = 0.25; // default fallback
+    try {
+      const bRes = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?timeframe=1Day&limit=25&adjustment=split&feed=iex`);
+      const bd = await bRes.json();
+      if (bd.bars && bd.bars.length >= 10) {
+        const closes = bd.bars.map(b => b.c);
+        const rets = closes.slice(1).map((c, i) => Math.log(c / closes[i]));
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length;
+        annVol = Math.sqrt(variance * 252);
+      }
+    } catch (_) {}
+
+    const chain = await fetchOptionsChain(pos.symbol, 14, 40);
+    if (!chain.length) continue;
+
+    const bestCall = findBestCoveredCall(chain, spot, avgEntry, annVol);
+    if (!bestCall) { optLog(`${pos.symbol}: no suitable covered call found`); continue; }
+
+    const qty = parseInt(pos.qty || 0);
+    const contracts = Math.floor(qty / 100);
+    if (contracts < 1) { optLog(`${pos.symbol}: position < 100 shares, skip CC`); continue; }
+
+    optLog(`${pos.symbol}: Covered Call candidate`, {
+      strike: bestCall.strike, expiration: bestCall.expiration,
+      delta: bestCall.delta?.toFixed(2), mid: bestCall.mid, dte: bestCall.dte,
+    });
+
+    // Submit sell-to-open limit order at mid price
+    try {
+      const order = {
+        symbol: bestCall.symbol,
+        qty: String(contracts),
+        side: 'sell',
+        type: 'limit',
+        time_in_force: 'day',
+        limit_price: String(bestCall.mid.toFixed(2)),
+        order_class: 'simple',
+      };
+      const oRes = await alpacaFetch('/v2/orders', { method: 'POST', body: JSON.stringify(order) });
+      const oData = await oRes.json();
+      if (oData.id) {
+        AT.activeOptions[pos.symbol] = {
+          orderId: oData.id, symbol: bestCall.symbol, type: 'covered_call',
+          strike: bestCall.strike, expiration: bestCall.expiration,
+          qty: contracts, premium: bestCall.mid, openedAt: today,
+        };
+        optLog(`${pos.symbol}: Covered Call SOLD`, { orderId: oData.id, strike: bestCall.strike, premium: bestCall.mid });
+        await sendTelegram(`📋 <b>Opzioni — Covered Call</b> — <b>${pos.symbol}</b>\nK=${bestCall.strike} exp=${bestCall.expiration} | Premium $${bestCall.mid.toFixed(2)} | Δ${bestCall.delta?.toFixed(2)} | DTE=${bestCall.dte}\nContratti: ${contracts}`);
+      } else {
+        optLog(`${pos.symbol}: CC order rejected`, { error: oData.message || JSON.stringify(oData) });
+      }
+    } catch (e) {
+      optLog(`${pos.symbol}: CC submit error`, { error: e.message });
+    }
+  }
+
+  // 2. Cash-Secured Puts — on bullish watchlist symbols not already held or optioned
+  const heldSymbols = new Set(openPositions.map(p => p.symbol));
+  const cspBudget = Math.min(buyingPower * 0.10, equity * 0.05); // max 10% BP or 5% equity per CSP
+  if (cspBudget < 500) { optLog('CSP: buying power too low, skip'); return; }
+
+  // Use AI-selected watchlist; filter to symbols not already held and not already optioned
+  const cspCandidates = (AT.aiSelectedWatchlist.length ? AT.aiSelectedWatchlist : AT.watchlist)
+    .filter(sym => !heldSymbols.has(sym) && !AT.activeOptions[sym])
+    .slice(0, 5); // check max 5 per cycle
+
+  for (const symbol of cspCandidates) {
+    let spot = 0;
+    let annVol = 0.25;
+    try {
+      const bRes = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=1Day&limit=25&adjustment=split&feed=iex`);
+      const bd = await bRes.json();
+      if (bd.bars && bd.bars.length >= 10) {
+        const closes = bd.bars.map(b => b.c);
+        spot = closes[closes.length - 1];
+        const rets = closes.slice(1).map((c, i) => Math.log(c / closes[i]));
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length;
+        annVol = Math.sqrt(variance * 252);
+      }
+    } catch (_) {}
+    if (spot <= 0) continue;
+
+    // CSP requires cash collateral = strike × 100 per contract
+    const maxContracts = Math.floor(cspBudget / (spot * 100));
+    if (maxContracts < 1) { optLog(`${symbol}: spot $${spot.toFixed(0)} too high for CSP budget`); continue; }
+
+    const chain = await fetchOptionsChain(symbol, 14, 40);
+    if (!chain.length) continue;
+
+    const bestPut = findBestCSP(chain, spot, annVol);
+    if (!bestPut) { optLog(`${symbol}: no suitable CSP found`); continue; }
+
+    // IV/HV filter: IV should be >= 0.90× HV (at least near-parity) so we collect fair premium
+    const ivHvRatio = annVol > 0 ? (bestPut.sigma / annVol) : 1;
+    if (ivHvRatio < 0.90) { optLog(`${symbol}: IV/HV ${ivHvRatio.toFixed(2)} too low for CSP`); continue; }
+
+    const qty = Math.min(maxContracts, 2); // cap at 2 contracts per symbol
+
+    optLog(`${symbol}: CSP candidate`, {
+      strike: bestPut.strike, expiration: bestPut.expiration,
+      delta: bestPut.delta?.toFixed(2), mid: bestPut.mid, dte: bestPut.dte, ivHv: ivHvRatio.toFixed(2),
+    });
+
+    try {
+      const order = {
+        symbol: bestPut.symbol,
+        qty: String(qty),
+        side: 'sell',
+        type: 'limit',
+        time_in_force: 'day',
+        limit_price: String(bestPut.mid.toFixed(2)),
+        order_class: 'simple',
+      };
+      const oRes = await alpacaFetch('/v2/orders', { method: 'POST', body: JSON.stringify(order) });
+      const oData = await oRes.json();
+      if (oData.id) {
+        AT.activeOptions[symbol] = {
+          orderId: oData.id, symbol: bestPut.symbol, type: 'cash_secured_put',
+          strike: bestPut.strike, expiration: bestPut.expiration,
+          qty, premium: bestPut.mid, openedAt: today,
+        };
+        optLog(`${symbol}: CSP SOLD`, { orderId: oData.id, strike: bestPut.strike, premium: bestPut.mid });
+        await sendTelegram(`💰 <b>Opzioni — Cash-Secured Put</b> — <b>${symbol}</b>\nK=${bestPut.strike} exp=${bestPut.expiration} | Premium $${bestPut.mid.toFixed(2)} | Δ${bestPut.delta?.toFixed(2)} | DTE=${bestPut.dte}\nContratti: ${qty} | IV/HV: ${ivHvRatio.toFixed(2)}x`);
+      } else {
+        optLog(`${symbol}: CSP order rejected`, { error: oData.message || JSON.stringify(oData) });
+      }
+    } catch (e) {
+      optLog(`${symbol}: CSP submit error`, { error: e.message });
+    }
+  }
 }
 
 // ─── Telegram Notifications ───────────────────────────────────────────────────
@@ -802,39 +1422,30 @@ async function refreshRiskFreeRate() {
 // Universe of US-listed stocks Claude can pick from when aiManagedWatchlist is enabled.
 // Covers mega-cap anchors + mid/small-cap growth. Supplemented each cycle by live market movers.
 const STOCK_UNIVERSE = [
-  // Mega-cap tech
-  'AAPL','MSFT','NVDA','GOOGL','AMZN','META','TSLA','AVGO','ORCL','AMD',
-  // Financials (large)
-  'JPM','BAC','GS','MS','BLK','AXP','V','MA','PYPL','SCHW',
-  // Healthcare & pharma (large)
-  'UNH','JNJ','LLY','PFE','ABBV','MRK','CVS','AMGN','GILD','ISRG',
-  // Energy & industrials
-  'XOM','CVX','COP','LMT','RTX','CAT','HON','GE','BA','UPS',
-  // Consumer & retail
-  'WMT','COST','HD','TGT','NKE','SBUX','MCD','PG','KO','PEP',
-  // ETFs for broad exposure
-  'SPY','QQQ','IWM','XLK','XLF','XLE','XLV','XLI','GLD','TLT',
-  // Growth / high-momentum (large)
-  'PLTR','COIN','CRWD','NET','DDOG','SNOW','ZS','MSTR','RBLX','HOOD',
-  // ── Mid-cap growth ──────────────────────────────────────────────────────────
-  // AI & Quantum computing (liquid, Alpaca IEX-covered)
-  'IONQ','RGTI','QUBT','SOUN','AI','PATH',
-  // Fintech & neobanks
-  'SQ','AFRM','SOFI','UPST','NU',
-  // SaaS & software
-  'SHOP','HUBS','BILL','GTLB','MNDY','BRZE','APP',
-  // Biotech & health innovation
-  'MRNA','BNTX','RXRX','BEAM','EDIT','NTLA','HIMS','TDOC',
-  // Clean energy & EV
-  'FSLR','ENPH','PLUG','RIVN','LCID','QS','BE','RUN','CHPT',
-  // Space & defense innovation
-  'RKLB','ASTS','PL',
-  // Retail & consumer tech
-  'ETSY','W','CHWY','CPNG','GRAB',
-  // Semiconductors (mid)
-  'SMCI','AMBA','CRUS','LSCC',
-  // Media & streaming
-  'NFLX','DIS','PARA','WBD','SPOT','ROKU',
+  // ── Mega-cap tech ────────────────────────────────────────────────────
+  'AAPL','MSFT','NVDA','GOOGL','AMZN','META','TSLA','AVGO','ORCL','AMD','CRM','INTU','NOW','ADBE','PANW','FTNT','KLAC','LRCX','AMAT','MU','QCOM','TXN','ADI','MCHP','ON','NXPI','INTC','IBM',
+  // ── Financials ───────────────────────────────────────────────────────
+  'JPM','BAC','GS','MS','BLK','AXP','V','MA','PYPL','SCHW','C','WFC','USB','COF','ICE','CME','SPGI','MCO','CB','PGR','MET','PRU',
+  // ── Healthcare & pharma ──────────────────────────────────────────────
+  'UNH','JNJ','LLY','PFE','ABBV','MRK','CVS','AMGN','GILD','ISRG','TMO','DHR','SYK','MDT','VRTX','REGN','BIIB','BMY','ALNY','DXCM','EW',
+  // ── Energy ───────────────────────────────────────────────────────────
+  'XOM','CVX','COP','SLB','HAL','MPC','VLO','OXY','PSX','DVN',
+  // ── Industrials & Defense ────────────────────────────────────────────
+  'LMT','RTX','CAT','HON','GE','BA','UPS','MMM','EMR','NOC','GD','LDOS','SAIC',
+  // ── Consumer ─────────────────────────────────────────────────────────
+  'WMT','COST','HD','TGT','HSY',
+  // ── Broad & sector ETFs ──────────────────────────────────────────────
+  'XLK',
+  // ── Leveraged ETFs ───────────────────────────────────────────────────
+  'LABU',
+  // ── AI & Quantum ─────────────────────────────────────────────────────
+  'RGTI',
+  // ── SaaS & cloud ─────────────────────────────────────────────────────
+  'DOCN',
+  // ── Clean energy & EV ────────────────────────────────────────────────
+  'RIVN',
+  // ── International ADRs ───────────────────────────────────────────────
+  'JD',
 ];
 
 // Sector mapping for diversification — 'Other' is assigned to dynamic movers not in this map
@@ -842,55 +1453,99 @@ const SYMBOL_SECTOR = {
   // Tech (large)
   AAPL:'Tech', MSFT:'Tech', NVDA:'Tech', GOOGL:'Tech', AMZN:'Tech',
   META:'Tech', TSLA:'Tech', AVGO:'Tech', ORCL:'Tech', AMD:'Tech', XLK:'Tech',
+  CRM:'Tech', INTU:'Tech', NOW:'Tech', ADBE:'Tech', PANW:'Tech', FTNT:'Tech',
+  KLAC:'Semiconductors', LRCX:'Semiconductors', AMAT:'Semiconductors', MU:'Semiconductors',
+  QCOM:'Semiconductors', TXN:'Semiconductors', ADI:'Semiconductors', MCHP:'Semiconductors',
+  ON:'Semiconductors', NXPI:'Semiconductors', INTC:'Semiconductors',
+  IBM:'Tech',
   // Financials
   JPM:'Financials', BAC:'Financials', GS:'Financials', MS:'Financials',
   BLK:'Financials', AXP:'Financials', V:'Financials', MA:'Financials',
   PYPL:'Financials', SCHW:'Financials', XLF:'Financials',
+  C:'Financials', WFC:'Financials', USB:'Financials', COF:'Financials',
+  ICE:'Financials', CME:'Financials', SPGI:'Financials', MCO:'Financials',
+  CB:'Financials', PGR:'Financials', MET:'Financials', PRU:'Financials',
   SQ:'Fintech', AFRM:'Fintech', SOFI:'Fintech', UPST:'Fintech',
-  NU:'Fintech', OPEN:'Fintech', RELY:'Fintech', DAVE:'Fintech',
+  NU:'Fintech', RELY:'Fintech', SMAR:'Fintech',
   // Healthcare
   UNH:'Healthcare', JNJ:'Healthcare', LLY:'Healthcare', PFE:'Healthcare',
   ABBV:'Healthcare', MRK:'Healthcare', CVS:'Healthcare', AMGN:'Healthcare',
   GILD:'Healthcare', ISRG:'Healthcare', XLV:'Healthcare',
+  TMO:'Healthcare', DHR:'Healthcare', SYK:'Healthcare', MDT:'Healthcare',
+  VRTX:'Healthcare', REGN:'Healthcare', BIIB:'Healthcare', BMY:'Healthcare',
+  ALNY:'Healthcare', DXCM:'Healthcare', EW:'Healthcare',
   MRNA:'Biotech', BNTX:'Biotech', RXRX:'Biotech', BEAM:'Biotech',
-  EDIT:'Biotech', NTLA:'Biotech', HIMS:'Biotech', TDOC:'Biotech', ACMR:'Biotech',
+  EDIT:'Biotech', NTLA:'Biotech', HIMS:'Biotech', TDOC:'Biotech',
+  NVAX:'Biotech', SRPT:'Biotech', CRSP:'Biotech', ILMN:'Biotech',
+  PACB:'Biotech', FATE:'Biotech',
   // Energy
   XOM:'Energy', CVX:'Energy', COP:'Energy', XLE:'Energy',
+  SLB:'Energy', HAL:'Energy', MPC:'Energy', VLO:'Energy',
+  OXY:'Energy', PSX:'Energy', DVN:'Energy',
   FSLR:'CleanEnergy', ENPH:'CleanEnergy', PLUG:'CleanEnergy',
   BE:'CleanEnergy', RUN:'CleanEnergy', CHPT:'CleanEnergy',
   // EV
-  RIVN:'EV', LCID:'EV', QS:'EV',
+  RIVN:'EV', LCID:'EV', QS:'EV', NIO:'EV', XPEV:'EV', LI:'EV',
   // Industrials & Defense
   LMT:'Industrials', RTX:'Industrials', CAT:'Industrials', HON:'Industrials',
   GE:'Industrials', BA:'Industrials', UPS:'Industrials', XLI:'Industrials',
+  MMM:'Industrials', EMR:'Industrials', NOC:'Industrials', GD:'Industrials',
+  LDOS:'Industrials', SAIC:'Industrials',
   // Space & Aerospace
-  RKLB:'Space', LUNR:'Space', PL:'Space', ASTS:'Space',
-  RDW:'Space', JOBY:'Space', ACHR:'Space', LILM:'Space',
+  RKLB:'Space', LUNR:'Space', PL:'Space', ASTS:'Space', JOBY:'Space', ACHR:'Space',
+  // Materials
+  LIN:'Materials', FCX:'Materials', NEM:'Materials', AA:'Materials',
+  CLF:'Materials', NUE:'Materials', ALB:'Materials', XLB:'Materials',
+  // Utilities
+  NEE:'Utilities', DUK:'Utilities', SO:'Utilities', D:'Utilities',
+  AEP:'Utilities', EXC:'Utilities', XLU:'Utilities',
+  // REITs
+  SPG:'REIT', PLD:'REIT', AMT:'REIT', EQIX:'REIT', O:'REIT', VICI:'REIT', CCI:'REIT',
+  XLRE:'REIT',
   // Consumer
   WMT:'Consumer', COST:'Consumer', HD:'Consumer', TGT:'Consumer',
   NKE:'Consumer', SBUX:'Consumer', MCD:'Consumer', PG:'Consumer',
   KO:'Consumer', PEP:'Consumer',
-  ETSY:'Consumer', W:'Consumer', CHWY:'Consumer', WISH:'Consumer',
-  CPNG:'Consumer', GRAB:'Consumer',
-  // ETF
-  SPY:'ETF', QQQ:'ETF', IWM:'ETF',
+  LOW:'Consumer', TJX:'Consumer', ROST:'Consumer', CL:'Consumer',
+  PM:'Consumer', STZ:'Consumer', HSY:'Consumer', EL:'Consumer',
+  YUM:'Consumer', CMG:'Consumer',
+  ETSY:'Consumer', W:'Consumer', CHWY:'Consumer', CPNG:'Consumer',
+  GRAB:'Consumer', MTCH:'Consumer', ZG:'Consumer', IAC:'Consumer',
+  // Broad ETFs
+  SPY:'ETF', QQQ:'ETF', IWM:'ETF', DIA:'ETF',
+  XLK:'Tech', XLF:'Financials', XLE:'Energy', XLV:'Healthcare',
+  XLI:'Industrials', XLC:'Tech', XLP:'Consumer',
   // Bonds & Commodities
-  GLD:'Commodities', TLT:'Bonds',
+  GLD:'Commodities', SLV:'Commodities', TLT:'Bonds', HYG:'Bonds', LQD:'Bonds',
+  GDX:'Commodities', GDXJ:'Commodities', USO:'Commodities', UNG:'Commodities',
+  // Leveraged ETFs
+  TQQQ:'LeveragedETF', SQQQ:'LeveragedETF', UPRO:'LeveragedETF', SPXU:'LeveragedETF',
+  SOXL:'LeveragedETF', SOXS:'LeveragedETF', UVXY:'LeveragedETF',
+  LABU:'LeveragedETF', LABD:'LeveragedETF',
   // Growth / Speculative
   PLTR:'Growth', COIN:'Growth', CRWD:'Growth', NET:'Growth',
   DDOG:'Growth', SNOW:'Growth', ZS:'Growth', MSTR:'Growth',
   RBLX:'Growth', HOOD:'Growth',
+  UBER:'Growth', LYFT:'Growth', ABNB:'Growth', DASH:'Growth',
+  DKNG:'Growth', RDDT:'Growth', SNAP:'Growth', PINS:'Growth',
+  // Crypto-adjacent
+  MARA:'Crypto', RIOT:'Crypto', CLSK:'Crypto', BTBT:'Crypto', HUT:'Crypto', CIFR:'Crypto',
   // AI & Quantum
   IONQ:'AIQuantum', RGTI:'AIQuantum', QUBT:'AIQuantum', SOUN:'AIQuantum',
   AI:'AIQuantum', PATH:'AIQuantum', BBAI:'AIQuantum', ARQQ:'AIQuantum',
   // SaaS
   SHOP:'SaaS', HUBS:'SaaS', BILL:'SaaS', GTLB:'SaaS',
-  MNDY:'SaaS', BRZE:'SaaS', DOMO:'SaaS', APP:'SaaS',
+  MNDY:'SaaS', BRZE:'SaaS', APP:'SaaS', WDAY:'SaaS', OKTA:'SaaS',
+  MDB:'SaaS', VEEV:'SaaS', SPLK:'SaaS', COUR:'SaaS', U:'SaaS',
+  ASAN:'SaaS', DOCN:'SaaS', ESTC:'SaaS', CFLT:'SaaS',
   // Semiconductors (mid)
   SMCI:'Semiconductors', WOLF:'Semiconductors', AMBA:'Semiconductors',
   FORM:'Semiconductors', CRUS:'Semiconductors', LSCC:'Semiconductors',
+  MPWR:'Semiconductors', SWKS:'Semiconductors',
   // Media & streaming
-  NFLX:'Media', DIS:'Media', PARA:'Media', WBD:'Media', SPOT:'Media', ROKU:'Media',
+  NFLX:'Media', DIS:'Media', PARA:'Media', WBD:'Media', SPOT:'Media', ROKU:'Media', TTD:'Media',
+  // International ADRs
+  TSM:'Semiconductors', BABA:'Tech', BIDU:'Tech', JD:'Consumer', PDD:'Consumer', SE:'Tech',
 };
 
 function getSector(symbol) { return SYMBOL_SECTOR[symbol] || 'Other'; }
@@ -905,22 +1560,38 @@ function sectorExposure(openPositions) {
   return map;
 }
 
-const AT_WATCHLIST_DEFAULT = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'AMZN', 'GOOGL', 'JPM', 'XOM'];
+const AT_WATCHLIST_DEFAULT = [
+  // ── Tech / Semiconductors ──────────────────────────────────────────────────
+  'AAPL','MSFT','NVDA','AMD','GOOGL','META','AMZN','TSLA','NFLX','CRM',
+  'ADBE','INTC','QCOM','MU','PLTR',
+  // ── Financials ────────────────────────────────────────────────────────────
+  'JPM','BAC','GS','MS','WFC','V','MA','AXP','BLK','C',
+  // ── Healthcare ────────────────────────────────────────────────────────────
+  'JNJ','UNH','PFE','MRK','ABBV','LLY','TMO','ABT','CVS','BMY',
+  // ── Energy / Utilities ────────────────────────────────────────────────────
+  'XOM','CVX','COP','SLB','NEE',
+  // ── Consumer / Retail ─────────────────────────────────────────────────────
+  'WMT','COST','MCD','SBUX','NKE','TGT','HD','PG','KO','PEP',
+  // ── Industrials / Transport ───────────────────────────────────────────────
+  'CAT','BA','GE','HON','UPS','DAL','F','DE',
+  // ── Broad Market ETF ──────────────────────────────────────────────────────
+  'SPY','QQQ','IWM','XLF','XLE',
+];
 
 const AT = {
   enabled: false,
   intervalMs: 30 * 60 * 1000,
-  confidenceThreshold: 0.75,
+  confidenceThreshold: 0.72,
   maxPositions: 20,
   maxPositionPct: 15,
   maxPositionsPerSector: 3,   // soft guideline — AT can exceed via REPLACE action
   stopLossPct: 8,
   takeProfitPct: 30,
   drawdownLimit: 0.15,
-  allowShort: false,
+  allowShort: true,
   targetVolatility: 0.20,
   aiManagedWatchlist: true,   // Claude picks symbols each cycle from STOCK_UNIVERSE
-  watchlistSize: 30,          // how many symbols Claude picks per cycle
+  watchlistSize: 50,          // how many symbols Claude picks per cycle
   watchlist: [...AT_WATCHLIST_DEFAULT],
   aiSelectedWatchlist: [],    // what Claude picked last cycle
   log: [],
@@ -940,6 +1611,14 @@ const AT = {
   running: false,
   lastMacroBrief: '',
   lastMacroTs: null,
+  currentRegime: 'NEUTRAL',  // updated each cycle from macro brief
+  dailyRecaps: {},        // { 'YYYY-MM-DD': { text, ts, generatedAt } }
+  lastRecapDate: '',      // which trading day recap was last generated for
+  patternMemory: [],      // chronological flat log of all lessons (full history)
+  tradeHistory: {},       // { [symbol]: [{date, action, outcome, pl_pct, lesson, tags}] }
+  lessonsByTag: {},       // { [tag]: [{date, symbol, lesson}] } — indexed for fast retrieval
+  activeOptions: {},      // { [underlying]: { symbol, type, strike, expiration, qty, premium } }
+  optionsLog: [],         // chronological log of options actions
 };
 
 function ensureAtDayState() {
@@ -972,11 +1651,10 @@ function markAutoTrade(symbol, action) {
 function saveAtState() {
   try {
     ensureAtDayState();
-    fs.mkdirSync(DATA_DIR, { recursive: true });
     const todayTradesObj = {};
     for (const [sym, actions] of AT.todayTrades.entries()) todayTradesObj[sym] = actions;
     const state = {
-      version: 2,
+      version: 3,
       savedAt: Date.now(),
       config: {
         enabled: AT.enabled,
@@ -1005,11 +1683,16 @@ function saveAtState() {
       haltReason: AT.haltReason,
       lastMacroBrief: AT.lastMacroBrief,
       lastMacroTs: AT.lastMacroTs,
-      log: AT.log.slice(0, 100),
+      dailyRecaps: AT.dailyRecaps,
+      lastRecapDate: AT.lastRecapDate,
+      patternMemory: AT.patternMemory,
+      tradeHistory: AT.tradeHistory,
+      lessonsByTag: AT.lessonsByTag,
+      activeOptions: AT.activeOptions,
+      // decisions and options_log now stored in dedicated DB tables
     };
-    const tmp = `${AT_STATE_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, AT_STATE_FILE);
+    db.prepare('INSERT OR REPLACE INTO at_state (key, value, updated_at) VALUES (?, ?, ?)')
+      .run('main', JSON.stringify(state), Date.now());
   } catch (err) {
     console.error('[AutoTrader] Failed to persist state:', err.message);
   }
@@ -1030,8 +1713,31 @@ async function sendTelegram(text) {
 
 function loadAtState() {
   try {
-    if (!fs.existsSync(AT_STATE_FILE)) { ensureAtDayState(); return; }
-    const state = JSON.parse(fs.readFileSync(AT_STATE_FILE, 'utf8'));
+    let state = null;
+    const row = db.prepare('SELECT value FROM at_state WHERE key = ?').get('main');
+    if (row) {
+      state = JSON.parse(row.value);
+    } else if (fs.existsSync(AT_STATE_FILE)) {
+      // One-time migration from legacy JSON file
+      state = JSON.parse(fs.readFileSync(AT_STATE_FILE, 'utf8'));
+      console.log('[AutoTrader] Migrating state from JSON to SQLite...');
+      // Seed decisions table from old log
+      const ins = db.prepare(`INSERT INTO decisions (agent_id,symbol,action,confidence,reasoning,executed,order_id,suggested_notional,executed_action,ts) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+      const tx = db.transaction(() => {
+        for (const e of (state.log || [])) {
+          ins.run('main', e.symbol, e.action, e.confidence ?? null, e.reasoning ?? null,
+            e.executed ? 1 : 0, e.orderId ?? null, e.suggestedNotional ?? null, e.executedAction ?? null, e.ts ?? Date.now());
+        }
+        for (const e of (state.optionsLog || [])) {
+          db.prepare('INSERT INTO options_log (agent_id,underlying,strategy,action,details,ts) VALUES (?,?,?,?,?,?)')
+            .run('main', e.underlying ?? null, e.strategy ?? null, e.msg ?? 'LOG', JSON.stringify(e), e.ts ? new Date(e.ts).getTime() : Date.now());
+        }
+      });
+      tx();
+      try { fs.renameSync(AT_STATE_FILE, AT_STATE_FILE + '.migrated'); } catch (_) {}
+      console.log('[AutoTrader] Migration complete.');
+    }
+    if (!state) { ensureAtDayState(); return; }
     const cfg = state.config || {};
     if (typeof cfg.enabled === 'boolean') AT.enabled = cfg.enabled;
     if (Number.isFinite(+cfg.intervalMs)) AT.intervalMs = Math.max(5 * 60 * 1000, +cfg.intervalMs);
@@ -1044,7 +1750,7 @@ function loadAtState() {
     if (typeof cfg.allowShort === 'boolean') AT.allowShort = cfg.allowShort;
     if (Number.isFinite(+cfg.targetVolatility)) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +cfg.targetVolatility));
     if (typeof cfg.aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = cfg.aiManagedWatchlist;
-    if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(50, +cfg.watchlistSize));
+    if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(100, +cfg.watchlistSize));
     if (Array.isArray(cfg.watchlist) && cfg.watchlist.length) AT.watchlist = cfg.watchlist;
     AT.lastRunAt = state.lastRunAt || null;
     AT.nextRunAt = null;
@@ -1063,7 +1769,19 @@ function loadAtState() {
     AT.haltReason = state.haltReason || '';
     AT.lastMacroBrief = state.lastMacroBrief || '';
     AT.lastMacroTs = state.lastMacroTs || null;
-    AT.log = Array.isArray(state.log) ? state.log.slice(0, 100) : [];
+    AT.dailyRecaps = (state.dailyRecaps && typeof state.dailyRecaps === 'object') ? state.dailyRecaps : {};
+    AT.lastRecapDate = state.lastRecapDate || '';
+    AT.patternMemory = Array.isArray(state.patternMemory) ? state.patternMemory : [];
+    AT.tradeHistory = (state.tradeHistory && typeof state.tradeHistory === 'object') ? state.tradeHistory : {};
+    AT.lessonsByTag = (state.lessonsByTag && typeof state.lessonsByTag === 'object') ? state.lessonsByTag : {};
+    AT.activeOptions = (state.activeOptions && typeof state.activeOptions === 'object') ? state.activeOptions : {};
+    // Hydrate in-memory buffers from DB tables (full history lives in DB)
+    AT.log = db.prepare('SELECT * FROM decisions WHERE agent_id = ? ORDER BY ts DESC LIMIT 50').all('main')
+      .map(r => ({ symbol: r.symbol, action: r.action, confidence: r.confidence, reasoning: r.reasoning,
+        executed: !!r.executed, orderId: r.order_id, suggestedNotional: r.suggested_notional,
+        executedAction: r.executed_action, ts: r.ts }));
+    AT.optionsLog = db.prepare('SELECT action, details, ts FROM options_log WHERE agent_id = ? ORDER BY ts DESC LIMIT 100').all('main')
+      .map(r => { try { return JSON.parse(r.details); } catch (_) { return { msg: r.action, ts: new Date(r.ts).toISOString() }; } });
     ensureAtDayState();
   } catch (err) {
     console.error('[AutoTrader] Failed to load state:', err.message);
@@ -1076,6 +1794,13 @@ function atLog(entry) {
   const e = { ...entry, ts: Date.now() };
   AT.log.unshift(e);
   if (AT.log.length > 50) AT.log.pop();
+  // Persist to DB (non-blocking — synchronous but fast)
+  try {
+    db.prepare(`INSERT INTO decisions (agent_id,symbol,action,confidence,reasoning,executed,order_id,suggested_notional,executed_action,ts)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('main', e.symbol, e.action, e.confidence ?? null, e.reasoning ?? null,
+        e.executed ? 1 : 0, e.orderId ?? null, e.suggestedNotional ?? null, e.executedAction ?? null, e.ts);
+  } catch (_) {}
   if (e.executed && e.symbol && !['SYSTEM', 'MACRO'].includes(e.symbol)) {
     AT.dailyTradeHistory[AT.todayKey].unshift({
       ts: e.ts, symbol: e.symbol, action: e.action,
@@ -1120,7 +1845,38 @@ function atPublicState() {
     openPositionsCount: latestPositions.length,
     lastMacroBrief: AT.lastMacroBrief,
     lastMacroTs: AT.lastMacroTs,
+    currentRegime: AT.currentRegime,
+    regimeConfig: REGIME_CONFIG[AT.currentRegime] || REGIME_CONFIG['NEUTRAL'],
+    recapDates: Object.keys(AT.dailyRecaps).sort().reverse().slice(0, 30),
+    lastRecapDate: AT.lastRecapDate,
+    patternMemory: AT.patternMemory,
+    lessonsByTag: AT.lessonsByTag,
+    tradeHistorySymbols: Object.keys(AT.tradeHistory),
+    activeOptions: AT.activeOptions,
+    optionsEnabled: OPTIONS_ENABLED,
+    optionsLog: AT.optionsLog.slice(-50),
   };
+}
+
+async function fetchAlpacaNews(limit = 20) {
+  try {
+    const dataUrl = process.env.ALPACA_DATA_URL || 'https://data.alpaca.markets';
+    const qs = new URLSearchParams({ limit: String(limit), sort: 'desc' });
+    const res = await fetch(`${dataUrl}/v1beta1/news?${qs}`, {
+      headers: {
+        'APCA-API-KEY-ID':     process.env.ALPACA_API_KEY     || '',
+        'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY  || '',
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const articles = data.news || [];
+    return articles
+      .map(a => `• [${new Date(a.created_at).toUTCString()}] ${a.headline}`)
+      .join('\n');
+  } catch (_) {
+    return null;
+  }
 }
 
 async function fetchMacroContext(anthropicKey) {
@@ -1132,19 +1888,24 @@ async function fetchMacroContext(anthropicKey) {
     fxStr = `EUR/USD ${r.EUR||'?'} · GBP/USD ${r.GBP||'?'} · USD/JPY ${r.JPY||'?'} · USD/CHF ${r.CHF||'?'} · USD/CNY ${r.CNY||'?'} · AUD/USD ${r.AUD||'?'} · USD/CAD ${r.CAD||'?'}`;
   } catch (_) {}
 
+  const newsHeadlines = await fetchAlpacaNews(20);
+  const newsSection = newsHeadlines
+    ? `\nLIVE MARKET NEWS (last 20 headlines, newest first):\n${newsHeadlines}`
+    : '';
+
   const dateStr = new Date().toUTCString();
   const macroPrompt = `Today: ${dateStr}
-Live FX rates: ${fxStr}
+Live FX rates: ${fxStr}${newsSection}
 
-Return a JSON object (no markdown, no explanation) with exactly these keys:
+Based on the above real-time data, return a JSON object (no markdown, no explanation) with exactly these keys:
 {
   "regime": "RISK-ON" | "RISK-OFF" | "NEUTRAL",
-  "regime_reason": "one sentence why",
+  "regime_reason": "one sentence why, citing specific news if available",
   "equity": "US/EU/Asia equity sentiment in 1-2 sentences",
   "central_banks": "Fed/ECB/BoJ/PBoC policy direction in 1-2 sentences",
   "yields": "US 2Y and 10Y levels, curve shape, credit spreads in 1 sentence",
   "commodities": "WTI, Gold, key commodity moves in 1 sentence",
-  "geopolitical": "top 2-3 risks, specific countries/events in 1-2 sentences",
+  "geopolitical": "top 2-3 risks, specific countries/events in 1-2 sentences, citing headlines where relevant",
   "sectors": "which sectors seeing inflows/outflows and why in 1 sentence",
   "events": "critical macro events next 48-72h (FOMC, CPI, NFP, earnings) in 1 sentence"
 }`;
@@ -1154,7 +1915,7 @@ Return a JSON object (no markdown, no explanation) with exactly these keys:
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 800, messages: [{ role: 'user', content: macroPrompt }] }),
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1000, messages: [{ role: 'user', content: macroPrompt }] }),
     });
     const d = await res.json();
     let raw = (d.content?.[0]?.text || '').trim();
@@ -1166,6 +1927,208 @@ Return a JSON object (no markdown, no explanation) with exactly these keys:
   return { brief, fxStr, dateStr };
 }
 
+// ─── End-of-Day Recap ─────────────────────────────────────────────────────────
+// Rule-based fallback tagger — used when AI doesn't return situation_tags
+function ruleBasedTags(d, regime, sector) {
+  const tags = new Set();
+  const action = (d.action || '').toUpperCase();
+  if (['SHORT','COVER'].includes(action)) tags.add('SHORT');
+  if (['BUY','ADD'].includes(action)) tags.add('LONG');
+  if (action === 'COVER') tags.add('DRAWDOWN');
+  if (d.outcome === 'losing') tags.add('DRAWDOWN');
+  // Sector
+  const sectorTag = {
+    'Technology': 'TECH', 'Energy': 'ENERGY', 'Financial Services': 'FINANCIALS',
+    'Healthcare': 'HEALTHCARE', 'Consumer Cyclical': 'CONSUMER', 'Consumer Defensive': 'CONSUMER',
+    'Industrials': 'INDUSTRIALS', 'Utilities': 'UTILITIES', 'Communication Services': 'COMMS',
+    'Basic Materials': 'MATERIALS', 'Real Estate': 'REALESTATE',
+  }[sector] || null;
+  if (sectorTag) tags.add(sectorTag);
+  // Regime
+  if (regime === 'RISK-ON') tags.add('RISK_ON');
+  else if (regime === 'RISK-OFF') tags.add('RISK_OFF');
+  else tags.add('NEUTRAL_REGIME');
+  return [...tags];
+}
+
+// Retrieve lessons relevant to a set of situation tags — max maxPerTag per tag, totalMax overall
+function getRelevantLessons(situationTags, maxPerTag = 3, totalMax = 12) {
+  const seen = new Set();
+  const results = [];
+  for (const tag of situationTags) {
+    const entries = (AT.lessonsByTag[tag] || []);
+    // Take the most recent maxPerTag entries for this tag
+    for (const e of entries.slice(-maxPerTag)) {
+      const key = `${e.date}|${e.symbol}|${e.lesson}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(`[${e.date}] ${e.symbol} ${e.action} → ${e.outcome}${e.pl_pct != null ? ' (' + (e.pl_pct >= 0 ? '+' : '') + (+e.pl_pct).toFixed(1) + '%)' : ''}: ${e.lesson}`);
+        if (results.length >= totalMax) return results;
+      }
+    }
+  }
+  return results;
+}
+
+// Compute situation tags from current analysis context
+function computeSituationTags({ sector, regime, rsi, annVol, trend20d, pctFrom52wHigh, pctFrom52wLow, hasPos, isShort, isLong }) {
+  const tags = [];
+  if (isShort) tags.push('SHORT');
+  if (isLong) tags.push('LONG');
+  if (!hasPos) tags.push('NEW_POSITION');
+  // Sector
+  const sectorTag = {
+    'Technology': 'TECH', 'Energy': 'ENERGY', 'Financial Services': 'FINANCIALS',
+    'Healthcare': 'HEALTHCARE', 'Consumer Cyclical': 'CONSUMER', 'Consumer Defensive': 'CONSUMER',
+    'Industrials': 'INDUSTRIALS', 'Utilities': 'UTILITIES', 'Communication Services': 'COMMS',
+    'Basic Materials': 'MATERIALS', 'Real Estate': 'REALESTATE',
+  }[sector] || null;
+  if (sectorTag) tags.push(sectorTag);
+  // Regime
+  if (regime === 'RISK-ON') tags.push('RISK_ON');
+  else if (regime === 'RISK-OFF') tags.push('RISK_OFF');
+  else tags.push('NEUTRAL_REGIME');
+  // Technicals
+  if (rsi != null) {
+    if (rsi < 35) tags.push('OVERSOLD');
+    else if (rsi > 65) tags.push('OVERBOUGHT');
+  }
+  if (trend20d != null) {
+    if (trend20d > 3) tags.push('TRENDING_UP');
+    else if (trend20d < -3) tags.push('TRENDING_DOWN');
+  }
+  if (annVol != null && annVol > 0.35) tags.push('HIGH_VOL');
+  if (pctFrom52wHigh != null && pctFrom52wHigh > -5) tags.push('NEAR_52W_HIGH');
+  if (pctFrom52wLow != null && pctFrom52wLow < 10) tags.push('NEAR_52W_LOW');
+  return tags;
+}
+
+async function generateDailyRecap(anthropicKey, dateKey) {
+  const trades = (AT.dailyTradeHistory[dateKey] || []);
+  const macroCtx = AT.lastMacroBrief || '{}';
+
+  // Build positions P&L snapshot
+  const positionsSummary = latestPositions.map(p => {
+    const pl = +(p.unrealized_plpc || 0) * 100;
+    return `${p.symbol} (${p.side}): ${p.qty} shares @ $${p.avg_entry_price} | current $${p.current_price} | P&L ${pl.toFixed(2)}%`;
+  }).join('\n') || 'No open positions';
+
+  const tradesSummary = trades.length
+    ? trades.map(t => `${new Date(t.ts).toISOString()} — ${t.symbol} ${t.action} (conf ${(t.confidence*100).toFixed(0)}%) — ${t.reasoning}`).join('\n')
+    : 'No trades executed today';
+
+  const accountSummary = latestAccount
+    ? `Equity: $${(+latestAccount.equity).toFixed(2)} | Buying power: $${(+latestAccount.buying_power).toFixed(2)} | Day P&L: $${(+latestAccount.equity - +latestAccount.last_equity).toFixed(2)}`
+    : 'Account data unavailable';
+
+  const prompt = `DATE: ${dateKey}
+MACRO CONTEXT:
+${macroCtx}
+
+ACCOUNT SUMMARY:
+${accountSummary}
+
+TRADES EXECUTED TODAY (${trades.length}):
+${tradesSummary}
+
+OPEN POSITIONS AT CLOSE:
+${positionsSummary}
+
+Generate the end-of-day recap JSON as instructed.`;
+
+  let recap = null;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1200, system: EOD_RECAP_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const d = await res.json();
+    let raw = (d.content?.[0]?.text || '').trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+    recap = JSON.parse(raw);
+  } catch (_) {
+    recap = {
+      date: dateKey,
+      regime: 'NEUTRAL',
+      session_pnl: trades.length ? 'flat' : 'flat',
+      summary: 'Recap generation failed — raw data preserved.',
+      decisions: trades.slice(0, 10).map(t => ({ symbol: t.symbol, action: t.action, outcome: 'open', pl_pct: null, analysis: t.reasoning, lesson: '' })),
+      what_worked: '',
+      what_failed: '',
+      missed_opportunities: '',
+      tomorrow_bias: 'NEUTRAL',
+      tomorrow_watchlist: [],
+      tomorrow_reasoning: '',
+    };
+  }
+
+  AT.dailyRecaps[dateKey] = { recap, ts: Date.now() };
+  AT.lastRecapDate = dateKey;
+  // Keep only last 30 days of recaps
+  const recapKeys = Object.keys(AT.dailyRecaps).sort();
+  while (recapKeys.length > 30) delete AT.dailyRecaps[recapKeys.shift()];
+
+  // ── Extract lessons → patternMemory (flat log) + lessonsByTag (index) ────────
+  const newLessons = [];
+  for (const d of (recap.decisions || [])) {
+    if (!d.lesson || !d.symbol) continue;
+    const entry = { date: dateKey, symbol: d.symbol, action: d.action, outcome: d.outcome, pl_pct: d.pl_pct, lesson: d.lesson };
+    const flatLine = `[${dateKey}] ${d.symbol} ${d.action} → ${d.outcome}${d.pl_pct != null ? ' (' + (d.pl_pct >= 0 ? '+' : '') + (+d.pl_pct).toFixed(1) + '%)' : ''}: ${d.lesson}`;
+    newLessons.push(flatLine);
+    // Per-symbol history (unlimited)
+    if (!AT.tradeHistory[d.symbol]) AT.tradeHistory[d.symbol] = [];
+    AT.tradeHistory[d.symbol].push({ ...entry, tags: d.situation_tags || [] });
+    // Tag index — use AI tags if valid, else rule-based fallback
+    const tags = Array.isArray(d.situation_tags) && d.situation_tags.length
+      ? d.situation_tags
+      : ruleBasedTags(d, recap.regime, getSector(d.symbol));
+    for (const tag of tags) {
+      if (!AT.lessonsByTag[tag]) AT.lessonsByTag[tag] = [];
+      AT.lessonsByTag[tag].push(entry);
+    }
+  }
+  if (recap.what_failed) newLessons.push(`[${dateKey}] SESSION FAILURE: ${recap.what_failed}`);
+  if (recap.what_worked) newLessons.push(`[${dateKey}] SESSION SUCCESS: ${recap.what_worked}`);
+  AT.patternMemory = [...AT.patternMemory, ...newLessons];
+  saveAtState();
+
+  broadcast({ type: 'autotrader_recap', date: dateKey, recap, ts: Date.now() });
+  const pnlIcon = recap.session_pnl === 'positive' ? '🟢' : recap.session_pnl === 'negative' ? '🔴' : '⚪';
+  await sendTelegram(`${pnlIcon} <b>AutoTrader — Resoconto EOD ${dateKey}</b>\n${recap.summary}\n\n📅 Trades: ${trades.length} | Bias domani: ${recap.tomorrow_bias}\n🔍 Domani: ${recap.tomorrow_watchlist.join(', ') || '—'}`);
+  atLog({ symbol: 'SYSTEM', action: 'EOD_RECAP', confidence: 1, reasoning: `Daily recap generated: ${recap.session_pnl} session. ${recap.summary?.slice(0, 120)}`, executed: false });
+
+  return recap;
+}
+
+// Runs every minute — triggers EOD recap once per trading day at 16:05–16:30 ET
+function scheduleEodRecap() {
+  setInterval(async () => {
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (!anthropicKey) return;
+    const now = new Date();
+    const utcMs = now.getTime();
+    const year = now.getUTCFullYear();
+    const dstStart = getNthDayOfMonth(year, 2, 0, 2);
+    const dstEnd = getNthDayOfMonth(year, 10, 0, 1);
+    const isDST = utcMs >= dstStart && utcMs < dstEnd;
+    const et = new Date(utcMs + (isDST ? -4 : -5) * 3600000);
+    const day = et.getUTCDay();
+    // Only Mon–Fri, not holidays
+    if (day === 0 || day === 6) return;
+    const mins = et.getUTCHours() * 60 + et.getUTCMinutes();
+    // Window: 16:05–16:30 ET (965–990 minutes)
+    if (mins < 965 || mins > 990) return;
+    const dateKey = easternDateKey();
+    if (isHoliday()) return;
+    // Only generate once per trading day
+    if (AT.lastRecapDate === dateKey) return;
+    // Only if there's anything to recap (market must have been open today)
+    if (!AT.dailyTradeHistory[dateKey] && !latestPositions.length) return;
+    await generateDailyRecap(anthropicKey, dateKey);
+  }, 60000);
+}
+
 // Fetch top movers and most-active from Alpaca screener — dynamic market discovery
 async function fetchMarketMovers() {
   const VALID = /^[A-Z][A-Z0-9]{0,8}$/; // no dots — avoids preferred shares, ETNs
@@ -1175,13 +2138,13 @@ async function fetchMarketMovers() {
 
   let movers = [];
   try {
-    const r1 = await alpacaDataFetch('/v1beta1/screener/stocks/most-active?top=30&by=volume');
+    const r1 = await alpacaDataFetch('/v1beta1/screener/stocks/most-active?top=100&by=volume');
     const d1 = await r1.json();
     const active = (d1.most_actives || []).map(x => x.symbol);
     movers.push(...active);
   } catch (_) {}
   try {
-    const r2 = await alpacaDataFetch('/v1beta1/screener/stocks/movers?top=20');
+    const r2 = await alpacaDataFetch('/v1beta1/screener/stocks/movers?top=50');
     const d2 = await r2.json();
     const gainers = (d2.gainers || []).map(x => x.symbol);
     const losers  = (d2.losers  || []).map(x => x.symbol);
@@ -1192,30 +2155,30 @@ async function fetchMarketMovers() {
 }
 
 async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
-  const n = Math.max(5, Math.min(50, AT.watchlistSize || 30));
+  const n = Math.max(5, Math.min(100, AT.watchlistSize || 50));
 
   // Combine static universe with live market movers
   const dynamicMovers = await fetchMarketMovers();
   const universe = [...new Set([...STOCK_UNIVERSE, ...dynamicMovers, ...openSymbols])];
 
   const moversLabel = dynamicMovers.length
-    ? `\n\nLIVE MARKET MOVERS (most active + top gainers/losers today): ${dynamicMovers.slice(0, 30).join(', ')}`
+    ? `\n\nLIVE MARKET MOVERS (most active + top gainers/losers today): ${dynamicMovers.slice(0, 80).join(', ')}`
     : '';
 
-  const prompt = `MACRO CONTEXT:\n${macroBrief}${moversLabel}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades in the next session. Prioritize: live movers with momentum, mean-reversion candidates, sector rotation leaders, mid/small-cap growth with catalysts. Do NOT invent tickers not in the list.\n\nFULL UNIVERSE (${universe.length} symbols): ${universe.join(', ')}\n\nMust include open positions: ${openSymbols.join(', ') || 'none'}.\n\nRespond ONLY with a JSON array. Example: ["NVDA","IONQ","RKLB"]`;
+  const prompt = `MACRO CONTEXT:\n${macroBrief}${moversLabel}\n\nYou are a quantitative portfolio manager. From the universe below, select exactly ${n} symbols most likely to produce actionable trades in the next session.\n\nALWAYS include BOTH:\n- Long candidates: momentum leaders, breakouts, sector rotation inflows, live movers with volume\n- Short candidates: confirmed downtrends (price < SMA20, negative MACD), sector rotation outflows, weak sectors (e.g. clean energy, biotech, REITs when rates high, Chinese ADRs with regulatory risk, overleveraged names). At least 20% of picks should be short candidates regardless of regime.\n\nDo NOT invent tickers not in the list.\n\nFULL UNIVERSE (${universe.length} symbols): ${universe.join(', ')}\n\nMust include open positions: ${openSymbols.join(', ') || 'none'}.\n\nRespond ONLY with a JSON array of exactly ${n} symbols. Example: ["NVDA","IONQ","RKLB"]`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 200, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 400, messages: [{ role: 'user', content: prompt }] }),
     });
     const d = await res.json();
     let raw = (d.content?.[0]?.text || '[]').trim();
     if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
     const picks = JSON.parse(raw);
     if (Array.isArray(picks) && picks.length) {
-      const validated = picks.map(s => String(s).toUpperCase().replace(/[^A-Z0-9.]/g, '')).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s)).slice(0, 30);
+      const validated = picks.map(s => String(s).toUpperCase().replace(/[^A-Z0-9.]/g, '')).filter(s => /^[A-Z][A-Z0-9.]{0,9}$/.test(s)).slice(0, 100);
       const merged = [...new Set([...openSymbols, ...validated])];
       return { targets: merged, dynamicMovers };
     }
@@ -1239,7 +2202,8 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     let lastPrice = +pos.current_price || +pos.avg_entry_price;
     try {
       const qs = dailyBarsParams(365, 300);
-      const bd = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
+      const bRes = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(pos.symbol)}/bars?${qs}`);
+      const bd = await bRes.json();
       if (Array.isArray(bd.bars) && bd.bars.length) {
         closes = bd.bars.map(b => b.c);
         lastPrice = closes[closes.length - 1] || lastPrice;
@@ -1252,7 +2216,8 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     } catch (_) {}
 
     const brackets = computeAdaptiveBrackets(annVol);
-    const reviewThreshold = -(brackets.slPct * 0.6); // trigger at 60% of adaptive SL
+    const regimeCfg = REGIME_CONFIG[AT.currentRegime] || REGIME_CONFIG['NEUTRAL'];
+    const reviewThreshold = -(brackets.slPct * regimeCfg.reviewPct);
     if (plPct > reviewThreshold) continue;
 
     // Emergency hard close at 2.2× adaptive SL — immediate, no AI
@@ -1309,17 +2274,56 @@ ATM call delta: ${bs ? bs.callDelta : '?'}
 Position side: ${isLongPos ? 'LONG (price fell)' : 'SHORT (price rose against us)'}
 REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brackets.slPct}% | hard stop: -${(brackets.slPct*2.2).toFixed(0)}%
 ${canAdd ? '' : 'NOTE: ADD not available (max 1 ADD already used or insufficient buying power)'}
-Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}`;
+Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}${
+  (() => {
+    const symHist = AT.tradeHistory[pos.symbol];
+    const histBlock = symHist?.length
+      ? '\n\nTRADE HISTORY FOR ' + pos.symbol + ':\n' +
+        symHist.map(h => `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + (+h.pl_pct).toFixed(1) + '%)' : ''} | ${h.lesson}`).join('\n')
+      : '';
+    const reviewTags = computeSituationTags({
+      sector: getSector(pos.symbol), regime: AT.currentRegime, rsi, annVol,
+      trend20d: null, pctFrom52wHigh: null, pctFrom52wLow: null,
+      hasPos: true, isShort: isShortPos, isLong: isLongPos,
+    });
+    reviewTags.push('DRAWDOWN');
+    const reviewLessons = getRelevantLessons(reviewTags);
+    const lessonsBlock = reviewLessons.length
+      ? '\n\nSITUATION-RELEVANT LESSONS [tags: ' + reviewTags.join(', ') + ']:\n' +
+        reviewLessons.map(l => `• ${l}`).join('\n')
+      : '';
+    return histBlock + lessonsBlock;
+  })()
+}`;
 
+    let reviewResult = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 250, system: POSITION_REVIEW_PROMPT, messages: [{ role: 'user', content: reviewPrompt }] }),
+        });
+        const d = await res.json();
+        if (d.error) {
+          const retryable = d.error.type === 'overloaded_error' || d.error.type === 'rate_limit_error' || res.status === 529 || res.status === 429;
+          if (retryable && attempt < 3) { await new Promise(r => setTimeout(r, attempt * 8000)); continue; }
+          throw new Error(`Anthropic API error: ${d.error.message || d.error.type}`);
+        }
+        let raw = (d.content?.[0]?.text || '{}').trim().replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+        reviewResult = JSON.parse(raw);
+        break;
+      } catch (e) {
+        if (attempt >= 3) {
+          atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: 'Review AI error: ' + e.message, executed: false });
+        } else {
+          await new Promise(r => setTimeout(r, attempt * 4000));
+        }
+      }
+    }
+    if (!reviewResult) continue;
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, system: POSITION_REVIEW_PROMPT, messages: [{ role: 'user', content: reviewPrompt }] }),
-      });
-      const d = await res.json();
-      let raw = (d.content?.[0]?.text || '{}').trim().replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
-      const review = JSON.parse(raw);
+      const review = reviewResult;
       const { action: rAction, confidence: rConf, reasoning: rReason, addNotional } = review;
 
       AT.lastReviewDate[pos.symbol] = todayDate;
@@ -1456,6 +2460,12 @@ async function atCycle() {
     AT.lastMacroTs = Date.now();
     saveAtState();
     broadcast({ type: 'autotrader_macro', brief: macroBrief, ts: AT.lastMacroTs });
+
+    // Adjust cycle speed + position sizing based on macro regime
+    try {
+      const macroData = JSON.parse(macroBrief);
+      if (macroData.regime) applyRegimeAdjustments(macroData.regime);
+    } catch (_) {}
     atLog({ symbol: 'MACRO', action: 'RESEARCH', confidence: 1, reasoning: macroBrief.slice(0, 200) + (macroBrief.length > 200 ? '…' : ''), executed: false });
 
     // Phase 2: symbol selection
@@ -1527,6 +2537,21 @@ async function atCycle() {
       const sma50 = computeSMA(closes, 50);
       const annVol = computeEWMAVol(closes);
       const brackets = computeAdaptiveBrackets(annVol);
+      const shortBrackets = computeAdaptiveBrackets(annVol, AT.takeProfitPct, AT.stopLossPct, 'short');
+      const shortBs = computeBlackScholes(lastPrice, annVol, shortBrackets.tpPct, shortBrackets.slPct, 60 / 252, riskFreeRate);
+
+      // Trend & momentum metrics
+      const price5dAgo = closes.length >= 6 ? closes[closes.length - 6] : null;
+      const price20dAgo = closes.length >= 21 ? closes[closes.length - 21] : null;
+      const trend5d = price5dAgo && price5dAgo > 0 ? ((lastPrice - price5dAgo) / price5dAgo) * 100 : null;
+      const trend20d = price20dAgo && price20dAgo > 0 ? ((lastPrice - price20dAgo) / price20dAgo) * 100 : null;
+      const pctVsSMA20 = sma20 && sma20 > 0 ? ((lastPrice - sma20) / sma20) * 100 : null;
+      const pctVsSMA50 = sma50 && sma50 > 0 ? ((lastPrice - sma50) / sma50) * 100 : null;
+      const closes252 = closes.slice(-252);
+      const high52w = closes252.length ? Math.max(...closes252) : null;
+      const low52w = closes252.length ? Math.min(...closes252) : null;
+      const pctFrom52wHigh = high52w && high52w > 0 ? ((lastPrice - high52w) / high52w) * 100 : null;
+      const pctFrom52wLow = low52w && low52w > 0 ? ((lastPrice - low52w) / low52w) * 100 : null;
       const bs = computeBlackScholes(lastPrice, annVol, brackets.tpPct, brackets.slPct, 60 / 252, riskFreeRate);
       const sector = getSector(symbol);
       const secExp = sectorExposure(openPositions);
@@ -1558,6 +2583,23 @@ SECTOR ROTATION AVAILABLE: ${sector} is at soft limit (${sectorCount}/${AT.maxPo
 You may use action=REPLACE and replaceSymbol="${weakestInSector.symbol}" to close it (P&L: ${(+(weakestInSector.unrealized_plpc||0)*100).toFixed(1)}%) and open ${symbol} instead.
 Only do this if ${symbol} setup is clearly superior. Otherwise HOLD.` : '';
 
+      // ── Build learned-knowledge blocks (RAG: only relevant lessons) ─────────
+      const symbolHistory = AT.tradeHistory[symbol]?.length
+        ? `\nTRADE HISTORY FOR ${symbol} (past outcomes — learn from these):\n` +
+          AT.tradeHistory[symbol].map(h =>
+            `• ${h.date}: ${h.action} → ${h.outcome}${h.pl_pct != null ? ' (' + (h.pl_pct >= 0 ? '+' : '') + (+h.pl_pct).toFixed(1) + '%)' : ''} | ${h.lesson}`
+          ).join('\n')
+        : '';
+      const situationTags = computeSituationTags({
+        sector, regime: AT.currentRegime, rsi, annVol, trend20d,
+        pctFrom52wHigh, pctFrom52wLow, hasPos, isShort, isLong,
+      });
+      const relevantLessons = getRelevantLessons(situationTags);
+      const memoryBlock = relevantLessons.length
+        ? `\nSITUATION-RELEVANT LESSONS [tags: ${situationTags.join(', ')}]:\n` +
+          relevantLessons.map(l => `• ${l}`).join('\n')
+        : '';
+
       const prompt = `MACRO CONTEXT:
 ${macroBrief}
 FX: ${fxStr}
@@ -1565,6 +2607,14 @@ FX: ${fxStr}
 SYMBOL: ${symbol} | SECTOR: ${sector}
 Last price: $${lastPrice.toFixed(2)}
 30d closes (latest 10): [${closes.slice(-10).map(c => c.toFixed(2)).join(', ')}]
+
+TREND & MOMENTUM:
+5d return: ${trend5d != null ? trend5d.toFixed(2) + '%' : '?'}
+20d return: ${trend20d != null ? trend20d.toFixed(2) + '%' : '?'}
+Price vs SMA20: ${pctVsSMA20 != null ? (pctVsSMA20 >= 0 ? '+' : '') + pctVsSMA20.toFixed(2) + '%' : '?'}
+Price vs SMA50: ${pctVsSMA50 != null ? (pctVsSMA50 >= 0 ? '+' : '') + pctVsSMA50.toFixed(2) + '%' : '?'}
+52W High: ${high52w != null ? '$' + high52w.toFixed(2) + ' (' + (pctFrom52wHigh >= 0 ? '+' : '') + pctFrom52wHigh.toFixed(1) + '%)' : '?'}
+52W Low: ${low52w != null ? '$' + low52w.toFixed(2) + ' (+' + pctFrom52wLow.toFixed(1) + '% above)' : '?'}
 
 TECHNICALS:
 RSI(14): ${rsi != null ? rsi.toFixed(1) : '?'}
@@ -1575,9 +2625,8 @@ Annualized Volatility: ${annVol != null ? (annVol * 100).toFixed(1) + '%' : '?'}
 
 BLACK-SCHOLES (60-day horizon, r=${(riskFreeRate*100).toFixed(2)}% FRED DGS3MO, σ=EWMA vol):
 P(price > current in 60d): ${bs ? bs.probAbove + '%' : '?'}
-P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP + '%' : '?'}
-P(hit SL -${brackets.slPct}%): ${bs ? bs.probSL + '%' : '?'}
-Adaptive brackets: ${brackets.adaptive ? `TP +${brackets.tpPct}% / SL -${brackets.slPct}% (σ-scaled)` : 'default'}
+If BUY  — TP +${brackets.tpPct}%: P=${bs ? bs.probTP + '%' : '?'} | SL -${brackets.slPct}%: P=${bs ? bs.probSL + '%' : '?'}
+If SHORT — TP -${shortBs ? shortBrackets.tpPct + '%' : '?'}: P=${shortBs ? shortBs.probTP + '%' : '?'} | SL +${shortBs ? shortBrackets.slPct + '%' : '?'}: P=${shortBs ? shortBs.probSL + '%' : '?'}
 ATM call delta: ${bs ? bs.callDelta : '?'}
 
 POSITION:
@@ -1591,24 +2640,40 @@ sectorExposure: ${sectorSummary}
 ${sector} positions: ${sectorCount} (soft guideline: ${AT.maxPositionsPerSector}/sector)
 maxBudgetForThisTrade: $${maxBudget.toFixed(0)} (${AT.maxPositionPct}% of $${equity.toFixed(0)} equity, vol-adjusted)
 buyingPower: $${buyingPower.toFixed(0)} | allowShort: ${AT.allowShort}
-${replaceBlock}`;
+${replaceBlock}${symbolHistory}${memoryBlock}`;
 
       let decision;
-      try {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 300, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
-        });
-        const d = await res.json();
-        let raw = (d.content?.[0]?.text || '{}').trim();
-        if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
-        decision = JSON.parse(raw);
-      } catch (e) {
-        atLog({ symbol, action: 'ERROR', confidence: 0, reasoning: 'AI parse error: ' + e.message, executed: false });
-        await new Promise(r => setTimeout(r, 1000));
-        continue;
+      let aiAttempt = 0;
+      while (aiAttempt < 3) {
+        aiAttempt++;
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 600, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+          });
+          const d = await res.json();
+          if (d.error) {
+            const errType = d.error.type || '';
+            const retryable = errType === 'overloaded_error' || errType === 'rate_limit_error' || res.status === 529 || res.status === 429;
+            if (retryable && aiAttempt < 3) {
+              await new Promise(r => setTimeout(r, aiAttempt * 8000));
+              continue;
+            }
+            throw new Error(`Anthropic API error: ${d.error.message || errType}`);
+          }
+          let raw = (d.content?.[0]?.text || '{}').trim();
+          if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+          decision = JSON.parse(raw);
+          break;
+        } catch (e) {
+          if (aiAttempt >= 3) {
+            atLog({ symbol, action: 'ERROR', confidence: 0, reasoning: 'AI error: ' + e.message, executed: false });
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        }
       }
+      if (!decision) continue;
 
       const { action, confidence, reasoning, suggestedNotional, replaceSymbol } = decision;
       const logEntry = { symbol, action, confidence, reasoning, suggestedNotional, executed: false };
@@ -1707,8 +2772,11 @@ ${replaceBlock}`;
         }
         // ── SHORT (open short) ─────────────────────────────────────────────────
         else if (action === 'SHORT' && AT.allowShort && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
+          // Recompute brackets with short-specific multipliers (smaller TP, tighter SL)
+          const shortBrackets = computeAdaptiveBrackets(annVol, AT.takeProfitPct, AT.stopLossPct, 'short');
+          const shortBs = computeBlackScholes(lastPrice, annVol, shortBrackets.tpPct, shortBrackets.slPct, 60 / 252, riskFreeRate);
           const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct)
-            * bsSizing(bs, brackets.tpPct, brackets.slPct);
+            * bsSizing(shortBs, shortBrackets.tpPct, shortBrackets.slPct);
           const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
           const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
           if (estQty >= 1 && tradeNotional >= 10) {
@@ -1716,12 +2784,12 @@ ${replaceBlock}`;
               const order = await submitValidatedOrder({
                 symbol, qty: estQty, side: 'sell', type: 'market', time_in_force: 'day',
                 order_class: 'oto',
-                take_profit: { limit_price: +(lastPrice * (1 - brackets.tpPct / 100)).toFixed(2) },
+                take_profit: { limit_price: +(lastPrice * (1 - shortBrackets.tpPct / 100)).toFixed(2) },
                 // No bracket stop_loss — AI position review handles drawdown intelligently
                 client_order_id: `nexus_at_short_${symbol}_${Date.now()}`,
               });
               logEntry.executed = true;
-              logEntry.executedAction = `SHORT ${estQty} shares | SL: +${brackets.slPct}% | TP: -${brackets.tpPct}%`;
+              logEntry.executedAction = `SHORT ${estQty} shares | SL: +${shortBrackets.slPct}% | TP: -${shortBrackets.tpPct}%`;
               logEntry.orderId = order.id;
               markAutoTrade(symbol, 'SHORT');
               try {
@@ -1731,7 +2799,7 @@ ${replaceBlock}`;
                 buyingPower = +account.buying_power;
               } catch (_) { buyingPower = Math.max(0, buyingPower - Math.floor(tradeNotional)); }
               broadcast({ type: 'autotrader_trade', symbol, action: 'SHORT', qty: estQty, reasoning });
-              await sendTelegram(`🩳 <b>AutoTrader SHORT</b> — <b>${symbol}</b>\n📉 ${estQty} shares | SL: +${brackets.slPct}% | TP: -${brackets.tpPct}%${brackets.adaptive ? ' (σ-adaptive)' : ''}\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'}\n🧠 ${reasoning}`);
+              await sendTelegram(`🩳 <b>AutoTrader SHORT</b> — <b>${symbol}</b>\n📉 ${estQty} shares | SL: +${shortBrackets.slPct}% | TP: -${shortBrackets.tpPct}% (σ-adaptive short)\n📊 RSI: ${rsi?.toFixed(1)||'?'} | MACD: ${macd?.toFixed(3)||'?'}\n🧠 ${reasoning}`);
             } catch (e) { logEntry.error = e.message; }
           }
         }
@@ -1763,6 +2831,13 @@ ${replaceBlock}`;
       atLog(logEntry);
       await new Promise(r => setTimeout(r, 1500));
     }
+
+    // Options cycle runs after main equity loop
+    try {
+      await optionsCycle(account, openPositions, anthropicKey);
+    } catch (e) {
+      console.error('[Options] optionsCycle error:', e.message);
+    }
   } finally {
     AT.running = false;
     if (AT.enabled && AT.timer) AT.nextRunAt = Date.now() + AT.intervalMs;
@@ -1781,6 +2856,38 @@ function atSchedule() {
   }
   saveAtState();
   broadcast({ type: 'autotrader_status', state: atPublicState() });
+}
+
+// Regime-aware dynamic risk adjustment — called after each macro fetch
+// RISK-ON  → 30 min cycle, 15% max position, review at 60% SL
+// NEUTRAL  → 20 min cycle, 12% max position, review at 50% SL
+// RISK-OFF → 10 min cycle,  8% max position, review at 40% SL
+const REGIME_CONFIG = {
+  'RISK-ON':  { intervalMins: 30, maxPositionPct: 15, reviewPct: 0.60 },
+  'NEUTRAL':  { intervalMins: 20, maxPositionPct: 12, reviewPct: 0.50 },
+  'RISK-OFF': { intervalMins: 10, maxPositionPct:  8, reviewPct: 0.40 },
+};
+
+function applyRegimeAdjustments(regime) {
+  const cfg = REGIME_CONFIG[regime] || REGIME_CONFIG['NEUTRAL'];
+  const prev = AT.currentRegime;
+  AT.currentRegime = regime;
+
+  const newIntervalMs = cfg.intervalMins * 60 * 1000;
+  const intervalChanged = newIntervalMs !== AT.intervalMs;
+
+  AT.maxPositionPct = cfg.maxPositionPct;
+
+  if (intervalChanged) {
+    AT.intervalMs = newIntervalMs;
+    if (AT.enabled) atSchedule(); // restart timer with new cadence
+    atLog({
+      symbol: 'SYSTEM', action: 'REGIME', confidence: 1,
+      reasoning: `Regime ${prev}→${regime}: ciclo ${cfg.intervalMins}min, maxPos ${cfg.maxPositionPct}%, SL review ${(cfg.reviewPct*100).toFixed(0)}% threshold`,
+      executed: false,
+    });
+    broadcast({ type: 'autotrader_regime', regime, intervalMins: cfg.intervalMins, maxPositionPct: cfg.maxPositionPct });
+  }
 }
 
 // ─── AutoTrader Endpoints ─────────────────────────────────────────────────────
@@ -1824,7 +2931,7 @@ app.post('/api/autotrader/config', (req, res) => {
   // Watchlist/AI-managed settings
   const { aiManagedWatchlist, watchlistSize } = req.body;
   if (typeof aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = aiManagedWatchlist;
-  if (watchlistSize != null && Number.isFinite(+watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(50, +watchlistSize));
+  if (watchlistSize != null && Number.isFinite(+watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(100, +watchlistSize));
 
   saveAtState();
   atSchedule();
@@ -1884,6 +2991,37 @@ app.get('/api/autotrader/intraday/:symbol', async (req, res) => {
     res.json({ symbol, bars });
   } catch (_) {
     res.json({ symbol, bars: [] });
+  }
+});
+
+// GET /api/autotrader/recap?date=YYYY-MM-DD
+app.get('/api/autotrader/news', async (req, res) => {
+  const limit = Math.min(50, parseInt(req.query.limit) || 20);
+  const headlines = await fetchAlpacaNews(limit);
+  res.json({ headlines: headlines || '', ts: Date.now() });
+});
+
+app.get('/api/autotrader/recap', (req, res) => {
+  const date = req.query.date || AT.lastRecapDate || easternDateKey();
+  const entry = AT.dailyRecaps[date];
+  res.json({
+    date,
+    recap: entry ? entry.recap : null,
+    ts: entry ? entry.ts : null,
+    available: Object.keys(AT.dailyRecaps).sort().reverse(),
+  });
+});
+
+// POST /api/autotrader/recap/generate — force-generate recap for a given date
+app.post('/api/autotrader/recap/generate', async (req, res) => {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) return res.status(500).json({ error: 'No Anthropic key' });
+  const date = req.body.date || easternDateKey();
+  try {
+    const recap = await generateDailyRecap(anthropicKey, date);
+    res.json({ ok: true, date, recap });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -1998,6 +3136,750 @@ function connectAlpacaTradingWs() {
   } catch (_) { alpacaConnected = false; setTimeout(connectAlpacaTradingWs, 5000); }
 }
 
+// ─── Options Endpoints ───────────────────────────────────────────────────────
+
+app.get('/api/alpaca/options/chain/:symbol', requireAuth, async (req, res) => {
+  const { symbol } = req.params;
+  const dteMin = parseInt(req.query.dte_min || '14', 10);
+  const dteMax = parseInt(req.query.dte_max || '40', 10);
+  try {
+    const chain = await fetchOptionsChain(symbol.toUpperCase(), dteMin, dteMax, 500);
+    res.json({ symbol: symbol.toUpperCase(), count: chain.length, contracts: chain });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/autotrader/options', requireAuth, (req, res) => {
+  res.json({
+    enabled: OPTIONS_ENABLED,
+    activeOptions: AT.activeOptions,
+    log: AT.optionsLog.slice(-100),
+  });
+});
+
+app.delete('/api/autotrader/options/:underlying', requireAuth, (req, res) => {
+  const { underlying } = req.params;
+  delete AT.activeOptions[underlying.toUpperCase()];
+  saveAtState();
+  res.json({ ok: true, message: `Cleared active option tracking for ${underlying.toUpperCase()}` });
+});
+
+// ─── Multi-Agent Evolution System ────────────────────────────────────────────
+
+const MAX_AGENTS = 8;
+
+const AGENT_PERSONALITIES = {
+  hawk: { id: 'hawk', name: 'Hawk', description: 'Aggressivo, tech-focused, cicli rapidi, alta soglia di rischio', riskPerTrade: 0.15, entryThreshold: 0.65, stopLoss: 0.06, takeProfit: 0.15, allowShort: false, cycleMs: 25 * 60000, killDrawdown: 0.30, capitalAllocation: 10000 },
+  owl:  { id: 'owl',  name: 'Owl',  description: 'Conservativo, diversificato, predilige qualità e dividendi',    riskPerTrade: 0.08, entryThreshold: 0.80, stopLoss: 0.04, takeProfit: 0.10, allowShort: false, cycleMs: 60 * 60000, killDrawdown: 0.20, capitalAllocation: 10000 },
+  fox:  { id: 'fox',  name: 'Fox',  description: 'Contrarian, cerca titoli oversold, opera contro il trend',     riskPerTrade: 0.12, entryThreshold: 0.70, stopLoss: 0.07, takeProfit: 0.20, allowShort: true,  cycleMs: 45 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
+  bull: { id: 'bull', name: 'Bull', description: 'Momentum puro, segue il trend, no short',                     riskPerTrade: 0.12, entryThreshold: 0.68, stopLoss: 0.05, takeProfit: 0.18, allowShort: false, cycleMs: 35 * 60000, killDrawdown: 0.28, capitalAllocation: 10000 },
+  bear: { id: 'bear', name: 'Bear', description: 'Macro/ribassista, specializzato in short e protezione',       riskPerTrade: 0.10, entryThreshold: 0.75, stopLoss: 0.05, takeProfit: 0.20, allowShort: true,  cycleMs: 50 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
+};
+
+const agentTimers = new Map(); // agentId -> NodeJS.Timer
+const agentRunning = new Set(); // race condition guard: cycles in progress
+const agentPrevPrices = new Map(); // agentId -> {symbol: lastPrice} for direction context
+
+function isMarketHours() {
+  const now = new Date();
+  const day = now.getUTCDay();
+  if (day === 0 || day === 6) return false; // weekend
+  const min = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return min >= 13 * 60 + 30 && min < 21 * 60; // 13:30-21:00 UTC covers 9:30-17:00 ET all year
+}
+
+function agentCapital(agentId, capitalStart) {
+  const { total: realized } = db.prepare('SELECT COALESCE(SUM(realized_pnl),0) AS total FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'closed');
+  const open = db.prepare('SELECT entry_price, current_price, qty, side FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
+  const unrealized = open.reduce((sum, p) => {
+    if (!p.current_price) return sum;
+    return sum + (p.side === 'long' ? (p.current_price - p.entry_price) : (p.entry_price - p.current_price)) * p.qty;
+  }, 0);
+  return capitalStart + realized + unrealized;
+}
+
+async function agentUpdatePrices(agentId, symbols) {
+  if (!symbols.length) return {};
+  try {
+    const r = await alpacaDataFetch(`/v2/stocks/bars?symbols=${symbols.join(',')}&timeframe=1Min&limit=1`);
+    if (!r.ok) return {};
+    const data = await r.json();
+    const prices = {};
+    for (const [sym, bars] of Object.entries(data.bars || {})) {
+      if (bars?.length) prices[sym] = bars[bars.length - 1].c;
+    }
+    const stmt = db.prepare('UPDATE agent_positions SET current_price=? WHERE agent_id=? AND symbol=? AND status=?');
+    for (const [sym, price] of Object.entries(prices)) stmt.run(price, agentId, sym, 'open');
+    return prices;
+  } catch (_) { return {}; }
+}
+
+async function agentFetchTechIndicators(symbols) {
+  if (!symbols.length) return {};
+  try {
+    const params = new URLSearchParams({ symbols: symbols.join(','), timeframe: '1Day', limit: '30', sort: 'asc' });
+    const r = await alpacaDataFetch(`/v2/stocks/bars?${params}`);
+    if (!r.ok) return {};
+    const data = await r.json();
+    const indicators = {};
+    for (const [sym, bars] of Object.entries(data.bars || {})) {
+      const closes = bars.map(b => b.c);
+      indicators[sym] = { rsi: computeRSI(closes, 14) };
+    }
+    return indicators;
+  } catch (_) { return {}; }
+}
+
+function agentClosePosition(agentId, symbol, exitPrice, reason) {
+  const pos = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND symbol=? AND status=?').get(agentId, symbol, 'open');
+  if (!pos) return null;
+  const pnl = (pos.side === 'long' ? (exitPrice - pos.entry_price) : (pos.entry_price - exitPrice)) * pos.qty;
+  db.prepare('UPDATE agent_positions SET status=?,exit_price=?,realized_pnl=?,closed_at=?,close_reason=? WHERE id=?')
+    .run('closed', exitPrice, pnl, Date.now(), reason, pos.id);
+  return pnl;
+}
+
+async function generateRequiem(agentRow, anthropicKey) {
+  const personality = JSON.parse(agentRow.personality);
+  const decisions = db.prepare('SELECT symbol,action,confidence,ts FROM decisions WHERE agent_id=? ORDER BY ts DESC LIMIT 30').all(agentRow.id);
+  const positions = db.prepare('SELECT symbol,side,realized_pnl,close_reason FROM agent_positions WHERE agent_id=? ORDER BY opened_at DESC LIMIT 15').all(agentRow.id);
+  const summary = `${personality.name} (${agentRow.id}) | Causa: ${agentRow.death_reason} | Capitale: $${agentRow.capital_start}→$${agentRow.capital_current?.toFixed(0)} | Trade: ${agentRow.trade_count}`;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: `Analizza il fallimento di questo agente di trading algoritmico e scrivi un REQUIEM — memoria di 3-4 frasi per gli agenti futuri.
+
+${summary}
+
+Ultime decisioni: ${JSON.stringify(decisions.slice(0, 15).map(d => ({ s: d.symbol, a: d.action, c: d.confidence })))}
+Posizioni chiuse: ${JSON.stringify(positions.map(p => ({ s: p.symbol, side: p.side, pnl: p.realized_pnl?.toFixed(1), why: p.close_reason })))}
+
+Scrivi 3-4 frasi che catturino: perché è fallito, in quali condizioni, quali pattern decisionali erano sbagliati, cosa evitare. Tono conciso e diretto.` }]
+      }),
+    });
+    const d = await res.json();
+    return d.content?.[0]?.text || `${personality.name} eliminato: ${agentRow.death_reason}`;
+  } catch (_) { return `${personality.name} eliminato: ${agentRow.death_reason}`; }
+}
+
+async function killAgent(agentId, reason, anthropicKey) {
+  const agentRow = db.prepare('SELECT * FROM agents WHERE id=?').get(agentId);
+  if (!agentRow || agentRow.status === 'dead') return;
+  // Mark to market all open positions
+  const open = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
+  for (const p of open) { if (p.current_price) agentClosePosition(agentId, p.symbol, p.current_price, 'agent_death'); }
+  const finalCapital = agentCapital(agentId, agentRow.capital_start);
+  db.prepare('UPDATE agents SET status=?,died_at=?,death_reason=?,capital_current=? WHERE id=?')
+    .run('dead', Date.now(), reason, finalCapital, agentId);
+  const timer = agentTimers.get(agentId);
+  if (timer) { clearInterval(timer); agentTimers.delete(agentId); }
+  const personality = JSON.parse(agentRow.personality);
+  console.log(`[Agent:${agentId}] 💀 MORTO — ${reason} | $${finalCapital.toFixed(0)}`);
+  const updatedRow = db.prepare('SELECT * FROM agents WHERE id=?').get(agentId);
+  const lessons = await generateRequiem(updatedRow, anthropicKey);
+  db.prepare('INSERT INTO requiem (agent_id,personality,cause_of_death,lessons,trade_count,final_pnl,ts) VALUES (?,?,?,?,?,?,?)')
+    .run(agentId, agentRow.personality, reason, lessons, agentRow.trade_count, finalCapital - agentRow.capital_start, Date.now());
+  broadcast({ type: 'agent_died', agentId, name: personality.name, reason, lessons, finalCapital });
+  await sendTelegram(`💀 <b>Agente Morto: ${personality.name}</b>\nMotivo: ${reason}\nCapitale: $${finalCapital.toFixed(0)} (${((finalCapital / agentRow.capital_start - 1) * 100).toFixed(1)}%)\n\n📜 <i>${lessons.slice(0, 300)}</i>`);
+}
+
+async function agentCycle(agentId, anthropicKey) {
+  if (agentRunning.has(agentId)) return; // skip if previous cycle still running
+  if (!isMarketHours()) return; // no decisions outside market hours
+  agentRunning.add(agentId);
+  try { await _agentCycleInner(agentId, anthropicKey); } finally { agentRunning.delete(agentId); }
+}
+
+async function _agentCycleInner(agentId, anthropicKey) {
+  const agentRow = db.prepare('SELECT * FROM agents WHERE id=? AND status=?').get(agentId, 'alive');
+  if (!agentRow) return;
+  const personality = JSON.parse(agentRow.personality);
+
+  // 1. Refresh prices + check stop loss / take profit
+  const openPositions = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
+  const watchSymbols = AT.watchlist.slice(0, 20);
+  const allSymbols = [...new Set([...openPositions.map(p => p.symbol), ...watchSymbols])];
+  const prices = await agentUpdatePrices(agentId, allSymbols);
+  const indicators = await agentFetchTechIndicators(watchSymbols);
+
+  let closedThisCycle = 0;
+  for (const pos of openPositions) {
+    const price = prices[pos.symbol];
+    if (!price) continue;
+    const pct = pos.side === 'long' ? (price - pos.entry_price) / pos.entry_price : (pos.entry_price - price) / pos.entry_price;
+    if (pct <= -personality.stopLoss) { agentClosePosition(agentId, pos.symbol, price, 'stop_loss'); closedThisCycle++; }
+    else if (pct >= personality.takeProfit) { agentClosePosition(agentId, pos.symbol, price, 'take_profit'); closedThisCycle++; }
+  }
+  if (closedThisCycle > 0) db.prepare('UPDATE agents SET trade_count=trade_count+?, capital_current=? WHERE id=?').run(closedThisCycle, agentCapital(agentId, agentRow.capital_start), agentId);
+
+  // 2. Check kill condition
+  const currentCapital = agentCapital(agentId, agentRow.capital_start);
+  const peakCapital = Math.max(agentRow.peak_capital, currentCapital);
+  db.prepare('UPDATE agents SET capital_current=?,peak_capital=? WHERE id=?').run(currentCapital, peakCapital, agentId);
+  const drawdown = peakCapital > 0 ? (peakCapital - currentCapital) / peakCapital : 0;
+  if (drawdown >= personality.killDrawdown) {
+    await killAgent(agentId, `Drawdown ${(drawdown * 100).toFixed(1)}% supera soglia ${(personality.killDrawdown * 100).toFixed(0)}%`, anthropicKey);
+    return;
+  }
+
+  // 3. AI decision — open new position if slot available
+  const openCount = db.prepare('SELECT COUNT(*) AS n FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'open').n;
+  if (openCount >= 3) return;
+
+  const personalityType = agentId.split('_')[0];
+  const requiems = db.prepare('SELECT lessons FROM requiem WHERE agent_id LIKE ? ORDER BY ts DESC LIMIT 5').all(personalityType + '_%');
+  const requiemCtx = requiems.length ? requiems.map(r => r.lessons).join('\n---\n') : 'Nessun requiem ancora. Sei un pioniere.';
+  const prevPrices = agentPrevPrices.get(agentId) || {};
+  const priceList = Object.entries(prices).map(([s, p]) => {
+    const prev = prevPrices[s];
+    const chg = prev ? ((p - prev) / prev * 100).toFixed(1) : null;
+    const rsi = indicators[s]?.rsi;
+    const rsiStr = rsi !== null && rsi !== undefined ? ` RSI${rsi}` : '';
+    return chg !== null
+      ? `${s}:$${p.toFixed(2)}(${chg >= 0 ? '+' : ''}${chg}%)${rsiStr}`
+      : `${s}:$${p.toFixed(2)}${rsiStr}`;
+  }).join(' ');
+  agentPrevPrices.set(agentId, { ...prices });
+  const posStr = openPositions.filter(p => p.status === 'open').map(p => `${p.symbol}(${p.side})`).join(',') || 'nessuna';
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 350,
+        messages: [{ role: 'user', content: `Sei l'agente "${personality.name}": ${personality.description}
+Params: riskPerTrade=${(personality.riskPerTrade * 100).toFixed(0)}% stopLoss=${(personality.stopLoss * 100).toFixed(0)}% takeProfit=${(personality.takeProfit * 100).toFixed(0)}% short=${personality.allowShort ? 'sì' : 'no'}
+Capitale: $${currentCapital.toFixed(0)}/$${agentRow.capital_start} | Drawdown: ${(drawdown * 100).toFixed(1)}% | Posizioni: ${posStr}
+Prezzi: ${priceList}
+
+REQUIEM — memoria agenti morti:
+${requiemCtx}
+
+Scegli UN'operazione o passa. Rispondi SOLO JSON:
+{"symbol":"AAPL","side":"long","confidence":0.75,"reasoning":"..."} oppure {"symbol":null,"reasoning":"..."}` }],
+      }),
+    });
+    const d = await res.json();
+    const text = d.content?.[0]?.text || '';
+    const m = text.match(/\{[\s\S]*?\}/);
+    if (!m) return;
+    const dec = JSON.parse(m[0]);
+
+    db.prepare('INSERT INTO decisions (agent_id,symbol,action,confidence,reasoning,executed,ts) VALUES (?,?,?,?,?,?,?)')
+      .run(agentId, dec.symbol || 'NONE', dec.side === 'long' ? 'BUY' : dec.side === 'short' ? 'SHORT' : 'HOLD', dec.confidence || 0, dec.reasoning || '', dec.symbol ? 1 : 0, Date.now());
+
+    if (!dec.symbol || (dec.confidence || 0) < personality.entryThreshold) return;
+    if (dec.side === 'short' && !personality.allowShort) return;
+    const price = prices[dec.symbol];
+    if (!price) return;
+    const alreadyOpen = db.prepare('SELECT id FROM agent_positions WHERE agent_id=? AND symbol=? AND status=?').get(agentId, dec.symbol, 'open');
+    if (alreadyOpen) return; // no duplicate positions on same symbol
+    const qty = Math.floor((currentCapital * personality.riskPerTrade) / price);
+    if (qty < 1) return;
+
+    db.prepare('INSERT INTO agent_positions (agent_id,symbol,side,qty,entry_price,current_price,opened_at,status) VALUES (?,?,?,?,?,?,?,?)')
+      .run(agentId, dec.symbol, dec.side, qty, price, price, Date.now(), 'open');
+    db.prepare('UPDATE agents SET trade_count=trade_count+1 WHERE id=?').run(agentId);
+    broadcast({ type: 'agent_trade', agentId, name: personality.name, symbol: dec.symbol, side: dec.side, qty, price, confidence: dec.confidence });
+    console.log(`[Agent:${agentId}] ${dec.side?.toUpperCase()} ${dec.symbol} ×${qty} @$${price} conf=${dec.confidence}`);
+  } catch (e) { console.error(`[Agent:${agentId}] cycle error:`, e.message); }
+}
+
+function spawnAgent(personalityId) {
+  const template = AGENT_PERSONALITIES[personalityId];
+  if (!template) throw new Error(`Personalità sconosciuta: ${personalityId}`);
+  const alive = db.prepare('SELECT COUNT(*) AS n FROM agents WHERE status=?').get('alive').n;
+  if (alive >= MAX_AGENTS) throw new Error(`Massimo ${MAX_AGENTS} agenti simultanei raggiunto`);
+  const agentId = `${personalityId}_${Date.now()}`;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  db.prepare('INSERT INTO agents (id,personality,status,capital_start,capital_current,peak_capital,trade_count,created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .run(agentId, JSON.stringify(template), 'alive', template.capitalAllocation, template.capitalAllocation, template.capitalAllocation, 0, Date.now());
+  const timer = setInterval(() => agentCycle(agentId, anthropicKey).catch(e => console.error(`[Agent:${agentId}]`, e.message)), template.cycleMs);
+  agentTimers.set(agentId, timer);
+  console.log(`[Agent:${agentId}] ✅ AVVIATO — ${template.name} | $${template.capitalAllocation}`);
+  broadcast({ type: 'agent_started', agentId, personality: template });
+  setTimeout(() => agentCycle(agentId, anthropicKey).catch(() => {}), 8000);
+  return agentId;
+}
+
+function restoreAgentsFromDb() {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  const alive = db.prepare('SELECT * FROM agents WHERE status=?').all('alive');
+  for (const agent of alive) {
+    const personality = JSON.parse(agent.personality);
+    const timer = setInterval(() => agentCycle(agent.id, anthropicKey).catch(e => console.error(`[Agent:${agent.id}]`, e.message)), personality.cycleMs);
+    agentTimers.set(agent.id, timer);
+    console.log(`[Agent:${agent.id}] ♻️  RIPRISTINATO — ${personality.name}`);
+  }
+}
+
+// ─── Agent API Endpoints ──────────────────────────────────────────────────────
+
+app.get('/api/agents', requireAuth, (req, res) => {
+  const agents = db.prepare('SELECT * FROM agents ORDER BY created_at DESC LIMIT 50').all()
+    .map(a => ({ ...a, personality: JSON.parse(a.personality), currentCapital: agentCapital(a.id, a.capital_start) }));
+  const requiems = db.prepare('SELECT * FROM requiem ORDER BY ts DESC LIMIT 20').all();
+  res.json({ agents, requiems, personalities: AGENT_PERSONALITIES, maxAgents: MAX_AGENTS, alive: agents.filter(a => a.status === 'alive').length });
+});
+
+app.post('/api/agents', requireAuth, (req, res) => {
+  const { personalityId } = req.body || {};
+  if (!personalityId || !AGENT_PERSONALITIES[personalityId])
+    return res.status(400).json({ error: 'personalityId non valido. Valori: ' + Object.keys(AGENT_PERSONALITIES).join(', ') });
+  try {
+    const agentId = spawnAgent(personalityId);
+    res.json({ ok: true, agentId });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/agents/:id', requireAuth, async (req, res) => {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  try {
+    await killAgent(req.params.id, 'Terminato manualmente', anthropicKey);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/agents/:id/positions', requireAuth, (req, res) => {
+  const agent = db.prepare('SELECT * FROM agents WHERE id=?').get(req.params.id);
+  if (!agent) return res.status(404).json({ error: 'Agente non trovato' });
+  const positions = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? ORDER BY opened_at DESC LIMIT 50').all(req.params.id);
+  res.json({ agent: { ...agent, personality: JSON.parse(agent.personality), currentCapital: agentCapital(agent.id, agent.capital_start) }, positions });
+});
+
+app.get('/api/agents/requiem', requireAuth, (req, res) => {
+  const requiems = db.prepare('SELECT * FROM requiem ORDER BY ts DESC LIMIT 50').all();
+  res.json({ count: requiems.length, requiems });
+});
+
+// ─── TECHNICAL INDICATORS ─────────────────────────────────────────────────────
+
+function computeRSI(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d > 0) gains += d; else losses -= d;
+  }
+  if (losses === 0) return 100;
+  return Math.round(100 - 100 / (1 + gains / losses));
+}
+
+function computeEMASeries(closes, period) {
+  if (closes.length < period) return new Array(closes.length).fill(null);
+  const k = 2 / (period + 1);
+  const result = new Array(closes.length).fill(null);
+  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  result[period - 1] = ema;
+  for (let i = period; i < closes.length; i++) {
+    ema = closes[i] * k + ema * (1 - k);
+    result[i] = ema;
+  }
+  return result;
+}
+
+function computeMACDSignal(closes) {
+  if (closes.length < 35) return null;
+  const ema12 = computeEMASeries(closes, 12);
+  const ema26 = computeEMASeries(closes, 26);
+  const macdArr = [];
+  for (let i = 25; i < closes.length; i++) macdArr.push(ema12[i] - ema26[i]);
+  if (macdArr.length < 10) return null;
+  const sigArr = computeEMASeries(macdArr, 9);
+  const n = sigArr.length;
+  if (sigArr[n - 1] === null || sigArr[n - 2] === null) return null;
+  const ml = macdArr[macdArr.length - 1], mlp = macdArr[macdArr.length - 2];
+  const sl = sigArr[n - 1], slp = sigArr[n - 2];
+  if (mlp < slp && ml > sl) return 'cross_up';
+  if (mlp > slp && ml < sl) return 'cross_down';
+  return null;
+}
+
+// ─── BACKTEST ENGINE ──────────────────────────────────────────────────────────
+
+const BACKTEST_STRATEGIES = {
+  hawk: {
+    name: 'Hawk — Breakout Momentum', lookback: 20, tp: 0.08, sl: 0.04, maxHold: 15, maxConc: 3,
+    entry(bars, i) {
+      if (i < 21) return null;
+      const hi20 = Math.max(...bars.slice(i - 20, i).map(b => b.h));
+      if (bars[i].c > hi20 && bars[i].v > bars[i - 1].v) return 'long';
+      return null;
+    }
+  },
+  owl: {
+    name: 'Owl — Mean Reversion', lookback: 20, tp: 0.06, sl: 0.04, maxHold: 10, maxConc: 4,
+    entry(bars, i) {
+      if (i < 21) return null;
+      const slice = bars.slice(i - 20, i).map(b => b.c);
+      const sma = slice.reduce((a, b) => a + b, 0) / 20;
+      const std = Math.sqrt(slice.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
+      if (std === 0) return null;
+      if ((bars[i].c - sma) / std < -1.8) return 'long';
+      return null;
+    }
+  },
+  fox: {
+    name: 'Fox — Contrarian', lookback: 10, tp: 0.07, sl: 0.04, maxHold: 8, maxConc: 4,
+    entry(bars, i) {
+      if (i < 11) return null;
+      const ret10 = (bars[i].c - bars[i - 10].c) / bars[i - 10].c;
+      if (ret10 < -0.08) return 'long';
+      if (ret10 > 0.10) return 'short';
+      return null;
+    }
+  },
+  bull: {
+    name: 'Bull — Golden Cross', lookback: 50, tp: 0.15, sl: 0.06, maxHold: 40, maxConc: 3,
+    entry(bars, i) {
+      if (i < 52) return null;
+      const sma10 = bars.slice(i - 10, i).reduce((a, b) => a + b.c, 0) / 10;
+      const sma50 = bars.slice(i - 50, i).reduce((a, b) => a + b.c, 0) / 50;
+      const pSma10 = bars.slice(i - 11, i - 1).reduce((a, b) => a + b.c, 0) / 10;
+      const pSma50 = bars.slice(i - 51, i - 1).reduce((a, b) => a + b.c, 0) / 50;
+      if (pSma10 <= pSma50 && sma10 > sma50) return 'long';
+      return null;
+    }
+  },
+  bear: {
+    name: 'Bear — Death Cross', lookback: 50, tp: 0.12, sl: 0.05, maxHold: 30, maxConc: 3,
+    entry(bars, i) {
+      if (i < 52) return null;
+      const sma10 = bars.slice(i - 10, i).reduce((a, b) => a + b.c, 0) / 10;
+      const sma50 = bars.slice(i - 50, i).reduce((a, b) => a + b.c, 0) / 50;
+      const pSma10 = bars.slice(i - 11, i - 1).reduce((a, b) => a + b.c, 0) / 10;
+      const pSma50 = bars.slice(i - 51, i - 1).reduce((a, b) => a + b.c, 0) / 50;
+      if (pSma10 >= pSma50 && sma10 < sma50) return 'short';
+      return null;
+    }
+  },
+  rsi: {
+    name: 'RSI — Oversold Bounce', lookback: 20, tp: 0.07, sl: 0.04, maxHold: 12, maxConc: 4,
+    entry(bars, i) {
+      if (i < 15) return null;
+      const closes = bars.slice(i - 14, i + 1).map(b => b.c);
+      const rsi = computeRSI(closes, 14);
+      if (rsi === null) return null;
+      if (rsi < 30) return 'long';
+      if (rsi > 70) return 'short';
+      return null;
+    }
+  },
+  macd: {
+    name: 'MACD — Momentum Cross', lookback: 36, tp: 0.10, sl: 0.05, maxHold: 20, maxConc: 3,
+    entry(bars, i) {
+      if (i < 36) return null;
+      const closes = bars.slice(Math.max(0, i - 60), i + 1).map(b => b.c);
+      const signal = computeMACDSignal(closes);
+      if (signal === 'cross_up') return 'long';
+      if (signal === 'cross_down') return 'short';
+      return null;
+    }
+  },
+  bb: {
+    name: 'Bollinger — Band Reversion', lookback: 22, tp: 0.06, sl: 0.03, maxHold: 10, maxConc: 4,
+    entry(bars, i) {
+      if (i < 21) return null;
+      const closes = bars.slice(i - 19, i + 1).map(b => b.c);
+      const sma = closes.reduce((a, b) => a + b, 0) / 20;
+      const std = Math.sqrt(closes.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
+      if (std === 0) return null;
+      const price = bars[i].c;
+      if (price < sma - 2 * std) return 'long';
+      if (price > sma + 2 * std) return 'short';
+      return null;
+    }
+  },
+  momentum: {
+    name: 'Momentum — 12-1 Factor', lookback: 253, tp: 0.20, sl: 0.08, maxHold: 60, maxConc: 3,
+    entry(bars, i) {
+      if (i < 253) return null;
+      const ret = (bars[i - 21].c - bars[i - 252].c) / bars[i - 252].c;
+      if (ret > 0.15) return 'long';
+      if (ret < -0.15) return 'short';
+      return null;
+    }
+  }
+};
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function fetchBarsForBacktest(symbol, startDate, endDate) {
+  const params = new URLSearchParams({ timeframe: '1Day', start: startDate, end: endDate, limit: '1000', adjustment: 'split', sort: 'asc' });
+  const resp = await alpacaDataFetch(`/v2/stocks/${encodeURIComponent(symbol)}/bars?${params}`);
+  if (!resp.ok) throw new Error(`Alpaca bars ${symbol}: ${resp.status}`);
+  const data = await resp.json();
+  return (data.bars || []).map(b => ({ t: b.t.substring(0, 10), o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }));
+}
+
+async function alpacaDataFetchWithRetry(path, maxRetries = 4) {
+  let delay = 1000;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await alpacaDataFetch(path);
+    if (resp.status !== 429) return resp;
+    if (attempt < maxRetries) {
+      console.warn(`[Backtest] 429 rate limit — retry ${attempt + 1}/${maxRetries} in ${delay}ms`);
+      await sleep(delay);
+      delay *= 2;
+    }
+  }
+  throw new Error('Alpaca rate limit: troppe richieste. Attendi qualche secondo e riprova.');
+}
+
+// Fetch bars for multiple symbols in batches using the multi-symbol endpoint
+async function fetchBarsBatch(symbols, startDate, endDate, batchSize = 10) {
+  const allBars = {};
+  for (let i = 0; i < symbols.length; i += batchSize) {
+    const batch = symbols.slice(i, i + batchSize);
+    const params = new URLSearchParams({
+      symbols: batch.join(','), timeframe: '1Day',
+      start: startDate, end: endDate,
+      limit: '1000', adjustment: 'split', sort: 'asc',
+    });
+    let next_page_token = null;
+    const batchBars = {};
+    do {
+      if (next_page_token) params.set('page_token', next_page_token);
+      const resp = await alpacaDataFetchWithRetry(`/v2/stocks/bars?${params}`);
+      if (!resp.ok) throw new Error(`Alpaca multi-bars batch ${i / batchSize + 1}: ${resp.status}`);
+      const data = await resp.json();
+      for (const [sym, bars] of Object.entries(data.bars || {})) {
+        if (!batchBars[sym]) batchBars[sym] = [];
+        batchBars[sym].push(...bars.map(b => ({ t: b.t.substring(0, 10), o: b.o, h: b.h, l: b.l, c: b.c, v: b.v })));
+      }
+      next_page_token = data.next_page_token || null;
+    } while (next_page_token);
+    Object.assign(allBars, batchBars);
+    if (i + batchSize < symbols.length) await sleep(600);
+  }
+  return allBars;
+}
+
+async function runBacktest(btId) {
+  const row = db.prepare('SELECT * FROM backtests WHERE id = ?').get(btId);
+  if (!row || row.status !== 'running') return;
+  try {
+    const strat = BACKTEST_STRATEGIES[row.personality];
+    if (!strat) throw new Error('Unknown personality: ' + row.personality);
+    const symbols = row.symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    const allBars = await fetchBarsBatch(symbols, row.start_date, row.end_date);
+
+    const dateSet = new Set();
+    for (const bars of Object.values(allBars)) bars.forEach(b => dateSet.add(b.t));
+    const dates = [...dateSet].sort();
+
+    // Build date→index maps for O(1) bar lookups
+    const barMaps = {};
+    for (const [sym, bars] of Object.entries(allBars)) {
+      barMaps[sym] = new Map(bars.map((b, i) => [b.t, i]));
+    }
+
+    let cash = row.initial_capital;
+    const positions = {};
+    const closedTrades = [];
+    const equityCurve = [];
+
+    for (const date of dates) {
+      // Exit checks on existing positions
+      for (const sym of Object.keys(positions)) {
+        const pos = positions[sym];
+        const bIdx = barMaps[sym]?.get(date);
+        const bar = bIdx !== undefined ? allBars[sym][bIdx] : undefined;
+        if (!bar) { pos.days++; continue; }
+        pos.days++;
+        const price = bar.c;
+        const ret = pos.side === 'long'
+          ? (price - pos.entry_price) / pos.entry_price
+          : (pos.entry_price - price) / pos.entry_price;
+        let exitReason = null;
+        if (ret >= strat.tp) exitReason = 'take_profit';
+        else if (ret <= -strat.sl) exitReason = 'stop_loss';
+        else if (pos.days >= strat.maxHold) exitReason = 'max_hold';
+        if (exitReason) {
+          const pnl = pos.side === 'long'
+            ? (price - pos.entry_price) * pos.qty
+            : (pos.entry_price - price) * pos.qty;
+          cash += pos.qty * pos.entry_price + pnl;
+          closedTrades.push({ btId, sym, side: pos.side, qty: pos.qty, entry_date: pos.entry_date, exit_date: date, entry_price: pos.entry_price, exit_price: price, pnl, ret_pct: ret * 100, exit_reason: exitReason });
+          delete positions[sym];
+        }
+      }
+      // New entries — signal on bar[i], execute at OPEN of bar[i+1] (no look-ahead bias)
+      if (Object.keys(positions).length < strat.maxConc) {
+        for (const sym of symbols) {
+          if (positions[sym] || Object.keys(positions).length >= strat.maxConc) continue;
+          const bars = allBars[sym] || [];
+          const idx = barMaps[sym]?.get(date);
+          if (idx === undefined || idx < 0) continue;
+          const signal = strat.entry(bars, idx);
+          if (!signal) continue;
+          const nextBar = bars[idx + 1];
+          if (!nextBar) continue; // can't enter on last available bar
+          const alloc = Math.min(cash * (1 / strat.maxConc), cash * 0.95);
+          const price = nextBar.o; // entry at next bar's open, not current bar's close
+          const qty = Math.floor(alloc / price);
+          if (qty < 1) continue;
+          cash -= qty * price;
+          positions[sym] = { side: signal, qty, entry_price: price, entry_date: nextBar.t, days: 0 };
+        }
+      }
+      // MTM equity snapshot
+      let posValue = 0;
+      for (const [sym, pos] of Object.entries(positions)) {
+        const bIdx2 = barMaps[sym]?.get(date);
+        const bar = bIdx2 !== undefined ? allBars[sym][bIdx2] : undefined;
+        const price = bar ? bar.c : pos.entry_price;
+        const pnl = pos.side === 'long'
+          ? (price - pos.entry_price) * pos.qty
+          : (pos.entry_price - price) * pos.qty;
+        posValue += pos.qty * pos.entry_price + pnl;
+      }
+      equityCurve.push({ date, equity: Math.round((cash + posValue) * 100) / 100 });
+    }
+
+    // Force-close remaining at last date
+    for (const [sym, pos] of Object.entries(positions)) {
+      const bars = allBars[sym] || [];
+      const lastBar = bars[bars.length - 1];
+      if (!lastBar) continue;
+      const price = lastBar.c;
+      const ret = pos.side === 'long'
+        ? (price - pos.entry_price) / pos.entry_price
+        : (pos.entry_price - price) / pos.entry_price;
+      const pnl = pos.side === 'long'
+        ? (price - pos.entry_price) * pos.qty
+        : (pos.entry_price - price) * pos.qty;
+      cash += pos.qty * pos.entry_price + pnl;
+      closedTrades.push({ btId, sym, side: pos.side, qty: pos.qty, entry_date: pos.entry_date, exit_date: dates[dates.length - 1] || '', entry_price: pos.entry_price, exit_price: price, pnl, ret_pct: ret * 100, exit_reason: 'eop' });
+    }
+
+    const finalEq = equityCurve.length ? equityCurve[equityCurve.length - 1].equity : cash;
+    const totalReturn = +(((finalEq - row.initial_capital) / row.initial_capital) * 100).toFixed(2);
+    const years = dates.length / 252;
+    const annReturn = years > 0 ? +((Math.pow(finalEq / row.initial_capital, 1 / years) - 1) * 100).toFixed(2) : 0;
+
+    let peak = row.initial_capital, maxDD = 0;
+    for (const pt of equityCurve) {
+      if (pt.equity > peak) peak = pt.equity;
+      const dd = peak > 0 ? (peak - pt.equity) / peak * 100 : 0;
+      if (dd > maxDD) maxDD = dd;
+    }
+    const dailyRets = equityCurve.slice(1).map((pt, i) => equityCurve[i].equity > 0 ? (pt.equity - equityCurve[i].equity) / equityCurve[i].equity : 0);
+    const mu = dailyRets.length ? dailyRets.reduce((a, b) => a + b, 0) / dailyRets.length : 0;
+    const sigma = dailyRets.length > 1 ? Math.sqrt(dailyRets.reduce((a, b) => a + (b - mu) ** 2, 0) / dailyRets.length) : 0;
+    const sharpe = sigma > 0 ? +((((mu - 0.045 / 252) / sigma) * Math.sqrt(252))).toFixed(3) : 0;
+    const wins = closedTrades.filter(t => t.pnl > 0);
+    const losses = closedTrades.filter(t => t.pnl <= 0);
+    const grossProfit = +wins.reduce((a, t) => a + t.pnl, 0).toFixed(2);
+    const grossLoss = +Math.abs(losses.reduce((a, t) => a + t.pnl, 0)).toFixed(2);
+
+    const results = {
+      totalReturn, annReturn, maxDrawdown: +maxDD.toFixed(2), sharpe,
+      winRate: closedTrades.length ? +(wins.length / closedTrades.length * 100).toFixed(1) : 0,
+      profitFactor: grossLoss > 0 ? +(grossProfit / grossLoss).toFixed(3) : grossProfit > 0 ? 999 : 0,
+      totalTrades: closedTrades.length, grossProfit, grossLoss,
+      finalEquity: +finalEq.toFixed(2), tradingDays: dates.length,
+      equityCurve
+    };
+
+    const ins = db.prepare('INSERT INTO backtest_trades (backtest_id,symbol,side,qty,entry_date,exit_date,entry_price,exit_price,pnl,return_pct,exit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+    db.transaction(trs => trs.forEach(t => ins.run(t.btId, t.sym, t.side, t.qty, t.entry_date, t.exit_date, t.entry_price, t.exit_price, t.pnl, t.ret_pct, t.exit_reason)))(closedTrades);
+    db.prepare('UPDATE backtests SET status=?,results=? WHERE id=?').run('done', JSON.stringify(results), btId);
+    broadcast({ type: 'backtest_done', backtestId: btId, results });
+  } catch (e) {
+    db.prepare('UPDATE backtests SET status=?,results=? WHERE id=?').run('error', JSON.stringify({ error: e.message }), btId);
+    broadcast({ type: 'backtest_error', backtestId: btId, error: e.message });
+  }
+}
+
+app.post('/api/backtest', requireAuth, (req, res) => {
+  const { personality, symbols, start_date, end_date, initial_capital = 10000, name } = req.body || {};
+  if (!personality || !symbols || !start_date || !end_date)
+    return res.status(400).json({ error: 'personality, symbols, start_date, end_date required' });
+  if (!BACKTEST_STRATEGIES[personality])
+    return res.status(400).json({ error: `Unknown personality: ${personality}` });
+  const syms = (Array.isArray(symbols) ? symbols : symbols.split(',')).map(s => s.trim().toUpperCase()).filter(Boolean);
+  if (!syms.length) return res.status(400).json({ error: 'No symbols' });
+  const id = `bt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  db.prepare('INSERT INTO backtests (id,name,personality,symbols,start_date,end_date,initial_capital,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(id, name || `${personality} ${start_date}→${end_date}`, personality, syms.join(','), start_date, end_date, +initial_capital, 'running', Date.now());
+  res.json({ backtestId: id });
+  runBacktest(id).catch(() => {});
+});
+
+app.get('/api/backtest', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM backtests ORDER BY created_at DESC LIMIT 50').all();
+  res.json(rows.map(r => {
+    let parsed = null;
+    try { if (r.results) parsed = JSON.parse(r.results); } catch(_) {}
+    return { id: r.id, name: r.name, personality: r.personality, symbols: r.symbols, start_date: r.start_date, end_date: r.end_date, initial_capital: r.initial_capital, status: r.status, created_at: r.created_at, totalReturn: parsed?.totalReturn ?? null, sharpe: parsed?.sharpe ?? null, maxDrawdown: parsed?.maxDrawdown ?? null, totalTrades: parsed?.totalTrades ?? null };
+  }));
+});
+
+app.get('/api/backtest/:id', requireAuth, (req, res) => {
+  const bt = db.prepare('SELECT * FROM backtests WHERE id=?').get(req.params.id);
+  if (!bt) return res.status(404).json({ error: 'Not found' });
+  let results = null;
+  try { if (bt.results) results = JSON.parse(bt.results); } catch(_) {}
+  const trades = db.prepare('SELECT * FROM backtest_trades WHERE backtest_id=? ORDER BY entry_date ASC').all(req.params.id);
+  res.json({ ...bt, results, trades });
+});
+
+app.delete('/api/backtest/:id', requireAuth, (req, res) => {
+  db.prepare('DELETE FROM backtest_trades WHERE backtest_id=?').run(req.params.id);
+  db.prepare('DELETE FROM backtests WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── DB Query Endpoints ───────────────────────────────────────────────────────
+
+// GET /api/autotrader/db/decisions?limit=100&symbol=AAPL&executed=1&agent=main
+app.get('/api/autotrader/db/decisions', requireAuth, (req, res) => {
+  try {
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10)));
+    const conditions = ['agent_id = ?'];
+    const params = [req.query.agent || 'main'];
+    if (req.query.symbol) { conditions.push('symbol = ?'); params.push(req.query.symbol.toUpperCase()); }
+    if (req.query.executed !== undefined) { conditions.push('executed = ?'); params.push(req.query.executed === '1' ? 1 : 0); }
+    params.push(limit);
+    const rows = db.prepare(`SELECT * FROM decisions WHERE ${conditions.join(' AND ')} ORDER BY ts DESC LIMIT ?`).all(...params);
+    res.json({ count: rows.length, rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/autotrader/db/options?limit=100&underlying=SPY&agent=main
+app.get('/api/autotrader/db/options', requireAuth, (req, res) => {
+  try {
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10)));
+    const conditions = ['agent_id = ?'];
+    const params = [req.query.agent || 'main'];
+    if (req.query.underlying) { conditions.push('underlying = ?'); params.push(req.query.underlying.toUpperCase()); }
+    params.push(limit);
+    const rows = db.prepare(`SELECT * FROM options_log WHERE ${conditions.join(' AND ')} ORDER BY ts DESC LIMIT ?`).all(...params);
+    res.json({ count: rows.length, rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/autotrader/db/stats — aggregate stats from DB
+app.get('/api/autotrader/db/stats', requireAuth, (req, res) => {
+  try {
+    const agent = req.query.agent || 'main';
+    const totalDecisions = db.prepare('SELECT COUNT(*) as n FROM decisions WHERE agent_id = ?').get(agent).n;
+    const totalExecuted  = db.prepare('SELECT COUNT(*) as n FROM decisions WHERE agent_id = ? AND executed = 1').get(agent).n;
+    const totalOptions   = db.prepare('SELECT COUNT(*) as n FROM options_log WHERE agent_id = ?').get(agent).n;
+    const byAction = db.prepare(`SELECT action, COUNT(*) as n FROM decisions WHERE agent_id = ? AND executed = 1 GROUP BY action ORDER BY n DESC`).all(agent);
+    const bySymbol = db.prepare(`SELECT symbol, COUNT(*) as n FROM decisions WHERE agent_id = ? AND executed = 1 GROUP BY symbol ORDER BY n DESC LIMIT 10`).all(agent);
+    res.json({ agent, totalDecisions, totalExecuted, totalOptions, byAction, bySymbol });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── nexus_quant Bridge Endpoints ────────────────────────────────────────────
 // Receive structured signals, risk snapshots, regime, and monitoring from Python
 
@@ -2080,6 +3962,23 @@ server.listen(PORT, () => {
   connectAlpacaDataWs();
   connectAlpacaTradingWs();
   atSchedule();
+  scheduleEodRecap();
+  restoreAgentsFromDb();
 });
+
+// ─── Graceful Shutdown ────────────────────────────────────────────────────────
+function shutdown(signal) {
+  console.log(`[Portfolio Nexus] ${signal} — shutting down…`);
+  for (const [, timer] of agentTimers) clearInterval(timer);
+  agentTimers.clear();
+  server.close(() => {
+    try { if (db) db.close(); } catch (_) {}
+    console.log('[Portfolio Nexus] DB closed. Bye.');
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
 
 module.exports = { app, server, broadcast, subscribeSymbols };

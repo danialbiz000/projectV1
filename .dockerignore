@@ -1,0 +1,13 @@
+.env
+.env.*
+node_modules/
+data/
+.git/
+.claude/
+*.zip
+*.md
+diagnose.js
+dry-run.js
+patch.js
+validate-universe.js
+nexus_quant/
