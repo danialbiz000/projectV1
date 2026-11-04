@@ -3215,6 +3215,22 @@ async function agentUpdatePrices(agentId, symbols) {
   } catch (_) { return {}; }
 }
 
+async function agentFetchTechIndicators(symbols) {
+  if (!symbols.length) return {};
+  try {
+    const params = new URLSearchParams({ symbols: symbols.join(','), timeframe: '1Day', limit: '30', sort: 'asc' });
+    const r = await alpacaDataFetch(`/v2/stocks/bars?${params}`);
+    if (!r.ok) return {};
+    const data = await r.json();
+    const indicators = {};
+    for (const [sym, bars] of Object.entries(data.bars || {})) {
+      const closes = bars.map(b => b.c);
+      indicators[sym] = { rsi: computeRSI(closes, 14) };
+    }
+    return indicators;
+  } catch (_) { return {}; }
+}
+
 function agentClosePosition(agentId, symbol, exitPrice, reason) {
   const pos = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND symbol=? AND status=?').get(agentId, symbol, 'open');
   if (!pos) return null;
@@ -3289,6 +3305,7 @@ async function _agentCycleInner(agentId, anthropicKey) {
   const watchSymbols = AT.watchlist.slice(0, 20);
   const allSymbols = [...new Set([...openPositions.map(p => p.symbol), ...watchSymbols])];
   const prices = await agentUpdatePrices(agentId, allSymbols);
+  const indicators = await agentFetchTechIndicators(watchSymbols);
 
   let closedThisCycle = 0;
   for (const pos of openPositions) {
@@ -3321,7 +3338,11 @@ async function _agentCycleInner(agentId, anthropicKey) {
   const priceList = Object.entries(prices).map(([s, p]) => {
     const prev = prevPrices[s];
     const chg = prev ? ((p - prev) / prev * 100).toFixed(1) : null;
-    return chg !== null ? `${s}:$${p.toFixed(2)}(${chg >= 0 ? '+' : ''}${chg}%)` : `${s}:$${p.toFixed(2)}`;
+    const rsi = indicators[s]?.rsi;
+    const rsiStr = rsi !== null && rsi !== undefined ? ` RSI${rsi}` : '';
+    return chg !== null
+      ? `${s}:$${p.toFixed(2)}(${chg >= 0 ? '+' : ''}${chg}%)${rsiStr}`
+      : `${s}:$${p.toFixed(2)}${rsiStr}`;
   }).join(' ');
   agentPrevPrices.set(agentId, { ...prices });
   const posStr = openPositions.filter(p => p.status === 'open').map(p => `${p.symbol}(${p.side})`).join(',') || 'nessuna';
@@ -3438,6 +3459,49 @@ app.get('/api/agents/requiem', requireAuth, (req, res) => {
   res.json({ count: requiems.length, requiems });
 });
 
+// ─── TECHNICAL INDICATORS ─────────────────────────────────────────────────────
+
+function computeRSI(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d > 0) gains += d; else losses -= d;
+  }
+  if (losses === 0) return 100;
+  return Math.round(100 - 100 / (1 + gains / losses));
+}
+
+function computeEMASeries(closes, period) {
+  if (closes.length < period) return new Array(closes.length).fill(null);
+  const k = 2 / (period + 1);
+  const result = new Array(closes.length).fill(null);
+  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  result[period - 1] = ema;
+  for (let i = period; i < closes.length; i++) {
+    ema = closes[i] * k + ema * (1 - k);
+    result[i] = ema;
+  }
+  return result;
+}
+
+function computeMACDSignal(closes) {
+  if (closes.length < 35) return null;
+  const ema12 = computeEMASeries(closes, 12);
+  const ema26 = computeEMASeries(closes, 26);
+  const macdArr = [];
+  for (let i = 25; i < closes.length; i++) macdArr.push(ema12[i] - ema26[i]);
+  if (macdArr.length < 10) return null;
+  const sigArr = computeEMASeries(macdArr, 9);
+  const n = sigArr.length;
+  if (sigArr[n - 1] === null || sigArr[n - 2] === null) return null;
+  const ml = macdArr[macdArr.length - 1], mlp = macdArr[macdArr.length - 2];
+  const sl = sigArr[n - 1], slp = sigArr[n - 2];
+  if (mlp < slp && ml > sl) return 'cross_up';
+  if (mlp > slp && ml < sl) return 'cross_down';
+  return null;
+}
+
 // ─── BACKTEST ENGINE ──────────────────────────────────────────────────────────
 
 const BACKTEST_STRATEGIES = {
@@ -3493,6 +3557,53 @@ const BACKTEST_STRATEGIES = {
       const pSma10 = bars.slice(i - 11, i - 1).reduce((a, b) => a + b.c, 0) / 10;
       const pSma50 = bars.slice(i - 51, i - 1).reduce((a, b) => a + b.c, 0) / 50;
       if (pSma10 >= pSma50 && sma10 < sma50) return 'short';
+      return null;
+    }
+  },
+  rsi: {
+    name: 'RSI — Oversold Bounce', lookback: 20, tp: 0.07, sl: 0.04, maxHold: 12, maxConc: 4,
+    entry(bars, i) {
+      if (i < 15) return null;
+      const closes = bars.slice(i - 14, i + 1).map(b => b.c);
+      const rsi = computeRSI(closes, 14);
+      if (rsi === null) return null;
+      if (rsi < 30) return 'long';
+      if (rsi > 70) return 'short';
+      return null;
+    }
+  },
+  macd: {
+    name: 'MACD — Momentum Cross', lookback: 36, tp: 0.10, sl: 0.05, maxHold: 20, maxConc: 3,
+    entry(bars, i) {
+      if (i < 36) return null;
+      const closes = bars.slice(Math.max(0, i - 60), i + 1).map(b => b.c);
+      const signal = computeMACDSignal(closes);
+      if (signal === 'cross_up') return 'long';
+      if (signal === 'cross_down') return 'short';
+      return null;
+    }
+  },
+  bb: {
+    name: 'Bollinger — Band Reversion', lookback: 22, tp: 0.06, sl: 0.03, maxHold: 10, maxConc: 4,
+    entry(bars, i) {
+      if (i < 21) return null;
+      const closes = bars.slice(i - 19, i + 1).map(b => b.c);
+      const sma = closes.reduce((a, b) => a + b, 0) / 20;
+      const std = Math.sqrt(closes.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
+      if (std === 0) return null;
+      const price = bars[i].c;
+      if (price < sma - 2 * std) return 'long';
+      if (price > sma + 2 * std) return 'short';
+      return null;
+    }
+  },
+  momentum: {
+    name: 'Momentum — 12-1 Factor', lookback: 253, tp: 0.20, sl: 0.08, maxHold: 60, maxConc: 3,
+    entry(bars, i) {
+      if (i < 253) return null;
+      const ret = (bars[i - 21].c - bars[i - 252].c) / bars[i - 252].c;
+      if (ret > 0.15) return 'long';
+      if (ret < -0.15) return 'short';
       return null;
     }
   }

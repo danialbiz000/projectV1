@@ -1027,7 +1027,7 @@ tr:hover td { background: var(--surface2); }
         <div class="grid-2">
           <div class="card">
             <div class="card-title">🧬 Personalità Strategia</div>
-            <div id="bt-personality-btns" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px"></div>
+            <div id="bt-personality-btns" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px"></div>
             <div class="card" style="margin-top:14px;padding:12px;font-size:0.8rem;line-height:1.7">
               <div><strong style="color:#e94560">🦅 Hawk</strong> — Breakout su max 20gg + vol confirm. TP 8%, SL 4%, max 15gg</div>
               <div><strong style="color:#4fa3e0">🦉 Owl</strong> — Mean reversion: compra a -1.8σ dalla SMA20. TP 6%, SL 4%</div>
@@ -4182,11 +4182,15 @@ async function killAgentConfirm(agentId, label) {
 // ─── BACKTEST ─────────────────────────────────────────────────────────────────
 
 const BT_PERSONALITY_META = {
-  hawk: { icon: '🦅', label: 'Hawk',  color: '#e94560' },
-  owl:  { icon: '🦉', label: 'Owl',   color: '#4fa3e0' },
-  fox:  { icon: '🦊', label: 'Fox',   color: '#f0a500' },
-  bull: { icon: '🐂', label: 'Bull',  color: '#00c853' },
-  bear: { icon: '🐻', label: 'Bear',  color: '#9c27b0' },
+  hawk:     { icon: '🦅', label: 'Hawk',     color: '#e94560' },
+  owl:      { icon: '🦉', label: 'Owl',      color: '#4fa3e0' },
+  fox:      { icon: '🦊', label: 'Fox',      color: '#f0a500' },
+  bull:     { icon: '🐂', label: 'Bull',     color: '#00c853' },
+  bear:     { icon: '🐻', label: 'Bear',     color: '#9c27b0' },
+  rsi:      { icon: '📊', label: 'RSI',      color: '#00bcd4' },
+  macd:     { icon: '📈', label: 'MACD',     color: '#ff9800' },
+  bb:       { icon: '🎯', label: 'Bollinger',color: '#78909c' },
+  momentum: { icon: '🚀', label: 'Momentum', color: '#76ff03' },
 };
 
 let selectedBtPersonality = null;
