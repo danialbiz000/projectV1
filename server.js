@@ -840,18 +840,34 @@ app.get('/api/macro-brief', requireAuth, async (req, res) => {
   const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
   if (!anthropicKey) return res.status(503).json({ error: 'ANTHROPIC_API_KEY non configurata' });
 
+  // Fetch live FX rates and news headlines to ground the AI in current data
+  let fxStr = '';
+  try {
+    const fxRes = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,CHF,AUD,CAD,CNY');
+    const fxData = await fxRes.json();
+    const r = fxData.rates || {};
+    fxStr = `\nFX live: EUR/USD ${r.EUR||'?'} · GBP/USD ${r.GBP||'?'} · USD/JPY ${r.JPY||'?'} · USD/CHF ${r.CHF||'?'} · AUD/USD ${r.AUD||'?'} · USD/CAD ${r.CAD||'?'} · USD/CNY ${r.CNY||'?'}`;
+  } catch (_) {}
+
+  const newsHeadlines = await fetchAlpacaNews(15);
+  const newsSection = newsHeadlines
+    ? `\nUltime notizie di mercato (recenti):\n${newsHeadlines}`
+    : '';
+
   try {
     const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 900,
-        messages: [{ role: 'user', content: `Sei un analista macro senior. Oggi è ${today}. Genera un brief giornaliero sui mercati finanziari globali in italiano. Rispondi SOLO con JSON valido, nessun testo fuori dal JSON:
+        messages: [{ role: 'user', content: `Sei un analista macro senior. Oggi è ${today}.${fxStr}${newsSection}
+
+Basandoti sui dati live sopra, genera un brief giornaliero sui mercati finanziari globali in italiano. Rispondi SOLO con JSON valido, nessun testo fuori dal JSON:
 {
-  "central_banks": "2-3 frasi su Fed/BCE/BoJ/BoE: decisioni recenti sui tassi, forward guidance, e impatto atteso sui mercati azionari e obbligazionari.",
-  "markets": "2-3 frasi sulle principali mosse di mercato: equity, bond, commodity, volatilità. Focus su driver macro e settori in evidenza.",
-  "geopolitics": "2-3 frasi sul principale rischio geopolitico attivo e come si riflette sui mercati (petrolio, difesa, supply chain, valute rifugio)."
+  "central_banks": "2-3 frasi su banche centrali (Fed, BCE, BoJ, BoE): chair attuale, decisioni recenti sui tassi, forward guidance e impatto sui mercati. Cita notizie specifiche se disponibili.",
+  "markets": "2-3 frasi sulle principali mosse di mercato: equity, bond, commodity, volatilità. Focus su driver macro e settori in evidenza. Cita i dati FX live.",
+  "geopolitics": "2-3 frasi sul principale rischio geopolitico attivo e come si riflette sui mercati (petrolio, difesa, supply chain, valute rifugio). Cita notizie specifiche se disponibili."
 }` }],
       }),
     });
@@ -898,6 +914,9 @@ const NYSE_HOLIDAYS = new Set([
   // 2026
   '2026-01-01','2026-01-19','2026-02-16','2026-04-03','2026-05-25',
   '2026-06-19','2026-07-03','2026-09-07','2026-11-26','2026-12-25',
+  // 2027
+  '2027-01-01','2027-01-18','2027-02-15','2027-03-26','2027-05-31',
+  '2027-06-18','2027-07-05','2027-09-06','2027-11-25','2027-12-24',
 ]);
 
 function getNthDayOfMonth(year, month, dayOfWeek, nth) {
@@ -1536,7 +1555,7 @@ const SYMBOL_SECTOR = {
   // SaaS
   SHOP:'SaaS', HUBS:'SaaS', BILL:'SaaS', GTLB:'SaaS',
   MNDY:'SaaS', BRZE:'SaaS', APP:'SaaS', WDAY:'SaaS', OKTA:'SaaS',
-  MDB:'SaaS', VEEV:'SaaS', SPLK:'SaaS', COUR:'SaaS', U:'SaaS',
+  MDB:'SaaS', VEEV:'SaaS', COUR:'SaaS', U:'SaaS',
   ASAN:'SaaS', DOCN:'SaaS', ESTC:'SaaS', CFLT:'SaaS',
   // Semiconductors (mid)
   SMCI:'Semiconductors', WOLF:'Semiconductors', AMBA:'Semiconductors',
