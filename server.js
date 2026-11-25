@@ -310,7 +310,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 const rateLimitMap = new Map();
 
 function rateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
   const now = Date.now();
   const entry = rateLimitMap.get(ip);
   if (!entry || now - entry.windowStart > 60000) {
@@ -1192,7 +1192,7 @@ function enrichWithGreeks(contracts, spot, annVol, r = 0.053) {
 function findBestCSP(contracts, spot, annVol) {
   const puts = enrichWithGreeks(
     contracts.filter(c => c.type === 'put' && c.strike < spot),
-    spot, annVol
+    spot, annVol, riskFreeRate
   );
   // Target Δ ~−0.30: short put, delta between −0.15 and −0.40
   const candidates = puts.filter(c =>
@@ -1209,7 +1209,7 @@ function findBestCSP(contracts, spot, annVol) {
 function findBestCoveredCall(contracts, spot, avgEntry, annVol) {
   const calls = enrichWithGreeks(
     contracts.filter(c => c.type === 'call' && c.strike > avgEntry),
-    spot, annVol
+    spot, annVol, riskFreeRate
   );
   // Target Δ ~0.30: short call above avg entry
   const candidates = calls.filter(c =>
@@ -1389,18 +1389,6 @@ async function optionsCycle(account, openPositions, anthropicKey) {
       optLog(`${symbol}: CSP submit error`, { error: e.message });
     }
   }
-}
-
-// ─── Telegram Notifications ───────────────────────────────────────────────────
-async function sendTelegram(text) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
-    });
-  } catch (_) {}
 }
 
 // ─── Adaptive Position Sizing ─────────────────────────────────────────────────
@@ -3209,14 +3197,6 @@ const agentTimers = new Map(); // agentId -> NodeJS.Timer
 const agentRunning = new Set(); // race condition guard: cycles in progress
 const agentPrevPrices = new Map(); // agentId -> {symbol: lastPrice} for direction context
 
-function isMarketHours() {
-  const now = new Date();
-  const day = now.getUTCDay();
-  if (day === 0 || day === 6) return false; // weekend
-  const min = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return min >= 13 * 60 + 30 && min < 21 * 60; // 13:30-21:00 UTC covers 9:30-17:00 ET all year
-}
-
 function agentCapital(agentId, capitalStart) {
   const { total: realized } = db.prepare('SELECT COALESCE(SUM(realized_pnl),0) AS total FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'closed');
   const open = db.prepare('SELECT entry_price, current_price, qty, side FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
@@ -3278,7 +3258,7 @@ async function generateRequiem(agentRow, anthropicKey) {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 500,
         messages: [{ role: 'user', content: `Analizza il fallimento di questo agente di trading algoritmico e scrivi un REQUIEM — memoria di 3-4 frasi per gli agenti futuri.
 
@@ -3382,7 +3362,7 @@ async function _agentCycleInner(agentId, anthropicKey) {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 350,
         messages: [{ role: 'user', content: `Sei l'agente "${personality.name}": ${personality.description}
 Params: riskPerTrade=${(personality.riskPerTrade * 100).toFixed(0)}% stopLoss=${(personality.stopLoss * 100).toFixed(0)}% takeProfit=${(personality.takeProfit * 100).toFixed(0)}% short=${personality.allowShort ? 'sì' : 'no'}
@@ -3490,17 +3470,6 @@ app.get('/api/agents/requiem', requireAuth, (req, res) => {
 });
 
 // ─── TECHNICAL INDICATORS ─────────────────────────────────────────────────────
-
-function computeRSI(closes, period = 14) {
-  if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
-    if (d > 0) gains += d; else losses -= d;
-  }
-  if (losses === 0) return 100;
-  return Math.round(100 - 100 / (1 + gains / losses));
-}
 
 function computeEMASeries(closes, period) {
   if (closes.length < period) return new Array(closes.length).fill(null);
@@ -3804,7 +3773,7 @@ async function runBacktest(btId) {
     const dailyRets = equityCurve.slice(1).map((pt, i) => equityCurve[i].equity > 0 ? (pt.equity - equityCurve[i].equity) / equityCurve[i].equity : 0);
     const mu = dailyRets.length ? dailyRets.reduce((a, b) => a + b, 0) / dailyRets.length : 0;
     const sigma = dailyRets.length > 1 ? Math.sqrt(dailyRets.reduce((a, b) => a + (b - mu) ** 2, 0) / dailyRets.length) : 0;
-    const sharpe = sigma > 0 ? +((((mu - 0.045 / 252) / sigma) * Math.sqrt(252))).toFixed(3) : 0;
+    const sharpe = sigma > 0 ? +((((mu - riskFreeRate / 252) / sigma) * Math.sqrt(252))).toFixed(3) : 0;
     const wins = closedTrades.filter(t => t.pnl > 0);
     const losses = closedTrades.filter(t => t.pnl <= 0);
     const grossProfit = +wins.reduce((a, t) => a + t.pnl, 0).toFixed(2);
@@ -3923,7 +3892,7 @@ const quantState = {
 
 function quantAuth(req, res, next) {
   const key = req.headers['x-nexus-api-key'];
-  if (ADMIN_TOKEN && key !== ADMIN_TOKEN) {
+  if (!key || key !== ADMIN_TOKEN) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
