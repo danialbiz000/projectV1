@@ -574,6 +574,35 @@ app.post('/api/alpaca/orders', async (req, res) => {
   catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
+// Close one position from the dashboard. Its open take-profit / stop orders reserve the shares at Alpaca,
+// so a plain closing order would be rejected ("insufficient qty available"): cancel them first.
+// The closing order is validated (live gate, caps) BEFORE anything is cancelled, so a blocked close
+// never strips the protection. If the close then fails, the next AutoTrader cycle restores the stop.
+app.post('/api/alpaca/positions/:symbol/close', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.]{0,9}$/.test(symbol)) throw httpError(400, 'Invalid symbol.');
+    const pr = await alpacaFetch(`/v2/positions/${encodeURIComponent(symbol)}`);
+    const pos = await parseJsonResponse(pr);
+    if (!pr.ok || !pos || !pos.qty) throw httpError(pr.status === 404 ? 404 : 502, `No open position for ${symbol}.`);
+    const closeBody = {
+      symbol, qty: Math.abs(+pos.qty), side: pos.side === 'short' ? 'buy' : 'sell', type: 'market',
+      time_in_force: 'day', client_order_id: `nexus_close_${symbol}_${Date.now()}`,
+    };
+    validateOrderBody(closeBody);
+    const cancelledOrders = await cancelOpenOrdersFor(symbol);
+    let order;
+    try {
+      order = await submitValidatedOrder(closeBody);
+    } catch (e) {
+      if (cancelledOrders) e.message += ' — its stop/TP orders were cancelled; the next AutoTrader cycle restores the stop.';
+      throw e;
+    }
+    try { await refreshAccountSnapshot(); } catch (_) {}
+    res.status(201).json({ order, cancelledOrders });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
 app.delete('/api/alpaca/orders/:id', async (req, res) => {
   try {
     const upstream = await alpacaFetch(`/v2/orders/${req.params.id}`, { method: 'DELETE' });
