@@ -2359,12 +2359,9 @@ async function closePosition(symbol, qty) {
   document.getElementById('modal-body').innerHTML = `<p>Vuoi chiudere <b>${qty} ${symbol}</b> a mercato?</p>`;
   document.getElementById('modal-confirm-btn').onclick = async () => {
     closeModal('confirm-modal');
-    const pos = (currentPositions || []).find(p => p.symbol === symbol);
-    const side = (pos && pos.side === 'short') ? 'buy' : 'sell';
     try {
-      await alpacaAPI('/orders', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ symbol, qty, side, type:'market', time_in_force:'day', client_order_id:'nexus_close_'+Date.now() })
-      });
+      // server cancels the position's stop/TP orders first, otherwise Alpaca rejects the close
+      await alpacaAPI('/positions/' + encodeURIComponent(symbol) + '/close', { method:'POST' });
       showToast(`Ordine chiusura ${symbol} inviato`, 'success');
     } catch(e) { showToast('Errore: ' + e.message, 'error'); }
   };
@@ -2379,10 +2376,7 @@ async function closeAllPositions() {
     closeModal('confirm-modal');
     for (const p of currentPositions) {
       try {
-        const side = p.side === 'short' ? 'buy' : 'sell';
-        await alpacaAPI('/orders', { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ symbol:p.symbol, qty:+p.qty, side, type:'market', time_in_force:'day', client_order_id:'nexus_closeall_'+p.symbol+'_'+Date.now() })
-        });
+        await alpacaAPI('/positions/' + encodeURIComponent(p.symbol) + '/close', { method:'POST' });
       } catch(e) { showToast('Errore chiusura ' + p.symbol + ': ' + e.message, 'error'); }
     }
     showToast('Ordini di chiusura inviati', 'success');
