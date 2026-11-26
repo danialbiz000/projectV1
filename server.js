@@ -325,7 +325,7 @@ function rateLimit(req, res, next) {
 // Stricter rate limit for auth endpoint: 10 attempts per 15 minutes per IP
 const authAttemptMap = new Map();
 function authRateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
   const now = Date.now();
   const windowMs = 15 * 60 * 1000;
   const entry = authAttemptMap.get(ip);
@@ -2356,7 +2356,8 @@ Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFix
 
           // Cancel any open TP limit orders for this symbol before placing unified TP
           try {
-            const openOrders = await alpacaFetch(`/v2/orders?status=open&symbols=${pos.symbol}&limit=50`);
+            const openOrdersResp = await alpacaFetch(`/v2/orders?status=open&symbols=${pos.symbol}&limit=50`);
+            const openOrders = await parseJsonResponse(openOrdersResp);
             if (Array.isArray(openOrders)) {
               for (const o of openOrders) {
                 const isTP = (isLongPos && o.side === 'sell' && o.type === 'limit') ||
@@ -2490,7 +2491,7 @@ async function atCycle() {
     }
 
     // Phase 2.5: volatility-aware position review for losing positions
-    if (openPositions.some(p => p.side === 'long' && +(p.unrealized_plpc||0) < 0)) {
+    if (openPositions.some(p => +(p.unrealized_plpc||0) < 0)) {
       atLog({ symbol: 'SYSTEM', action: 'REVIEW', confidence: 1, reasoning: `Reviewing ${openPositions.filter(p=>+(p.unrealized_plpc||0)<0).length} losing position(s) before new trades…`, executed: false });
       buyingPower = await reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, fxStr, equity, buyingPower, posMap);
       // Refresh positions after any closes/adds
