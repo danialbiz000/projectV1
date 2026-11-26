@@ -176,6 +176,9 @@ function initDb() {
       generated_at  INTEGER NOT NULL
     );
   `);
+  // Migration: backtest mode. Rows created before the shared engine ran on the legacy engine.
+  const btCols = db.prepare('PRAGMA table_info(backtests)').all().map(c => c.name);
+  if (!btCols.includes('mode')) db.exec("ALTER TABLE backtests ADD COLUMN mode TEXT NOT NULL DEFAULT 'legacy'");
 }
 
 // ─── Session Persistence ──────────────────────────────────────────────────────
@@ -3503,110 +3506,9 @@ function computeMACDSignal(closes) {
 
 // ─── BACKTEST ENGINE ──────────────────────────────────────────────────────────
 
-const BACKTEST_STRATEGIES = {
-  hawk: {
-    name: 'Hawk — Breakout Momentum', lookback: 20, tp: 0.08, sl: 0.04, maxHold: 15, maxConc: 3,
-    entry(bars, i) {
-      if (i < 21) return null;
-      const hi20 = Math.max(...bars.slice(i - 20, i).map(b => b.h));
-      if (bars[i].c > hi20 && bars[i].v > bars[i - 1].v) return 'long';
-      return null;
-    }
-  },
-  owl: {
-    name: 'Owl — Mean Reversion', lookback: 20, tp: 0.06, sl: 0.04, maxHold: 10, maxConc: 4,
-    entry(bars, i) {
-      if (i < 21) return null;
-      const slice = bars.slice(i - 20, i).map(b => b.c);
-      const sma = slice.reduce((a, b) => a + b, 0) / 20;
-      const std = Math.sqrt(slice.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
-      if (std === 0) return null;
-      if ((bars[i].c - sma) / std < -1.8) return 'long';
-      return null;
-    }
-  },
-  fox: {
-    name: 'Fox — Contrarian', lookback: 10, tp: 0.07, sl: 0.04, maxHold: 8, maxConc: 4,
-    entry(bars, i) {
-      if (i < 11) return null;
-      const ret10 = (bars[i].c - bars[i - 10].c) / bars[i - 10].c;
-      if (ret10 < -0.08) return 'long';
-      if (ret10 > 0.10) return 'short';
-      return null;
-    }
-  },
-  bull: {
-    name: 'Bull — Golden Cross', lookback: 50, tp: 0.15, sl: 0.06, maxHold: 40, maxConc: 3,
-    entry(bars, i) {
-      if (i < 52) return null;
-      const sma10 = bars.slice(i - 10, i).reduce((a, b) => a + b.c, 0) / 10;
-      const sma50 = bars.slice(i - 50, i).reduce((a, b) => a + b.c, 0) / 50;
-      const pSma10 = bars.slice(i - 11, i - 1).reduce((a, b) => a + b.c, 0) / 10;
-      const pSma50 = bars.slice(i - 51, i - 1).reduce((a, b) => a + b.c, 0) / 50;
-      if (pSma10 <= pSma50 && sma10 > sma50) return 'long';
-      return null;
-    }
-  },
-  bear: {
-    name: 'Bear — Death Cross', lookback: 50, tp: 0.12, sl: 0.05, maxHold: 30, maxConc: 3,
-    entry(bars, i) {
-      if (i < 52) return null;
-      const sma10 = bars.slice(i - 10, i).reduce((a, b) => a + b.c, 0) / 10;
-      const sma50 = bars.slice(i - 50, i).reduce((a, b) => a + b.c, 0) / 50;
-      const pSma10 = bars.slice(i - 11, i - 1).reduce((a, b) => a + b.c, 0) / 10;
-      const pSma50 = bars.slice(i - 51, i - 1).reduce((a, b) => a + b.c, 0) / 50;
-      if (pSma10 >= pSma50 && sma10 < sma50) return 'short';
-      return null;
-    }
-  },
-  rsi: {
-    name: 'RSI — Oversold Bounce', lookback: 20, tp: 0.07, sl: 0.04, maxHold: 12, maxConc: 4,
-    entry(bars, i) {
-      if (i < 15) return null;
-      const closes = bars.slice(i - 14, i + 1).map(b => b.c);
-      const rsi = computeRSI(closes, 14);
-      if (rsi === null) return null;
-      if (rsi < 30) return 'long';
-      if (rsi > 70) return 'short';
-      return null;
-    }
-  },
-  macd: {
-    name: 'MACD — Momentum Cross', lookback: 36, tp: 0.10, sl: 0.05, maxHold: 20, maxConc: 3,
-    entry(bars, i) {
-      if (i < 36) return null;
-      const closes = bars.slice(Math.max(0, i - 60), i + 1).map(b => b.c);
-      const signal = computeMACDSignal(closes);
-      if (signal === 'cross_up') return 'long';
-      if (signal === 'cross_down') return 'short';
-      return null;
-    }
-  },
-  bb: {
-    name: 'Bollinger — Band Reversion', lookback: 22, tp: 0.06, sl: 0.03, maxHold: 10, maxConc: 4,
-    entry(bars, i) {
-      if (i < 21) return null;
-      const closes = bars.slice(i - 19, i + 1).map(b => b.c);
-      const sma = closes.reduce((a, b) => a + b, 0) / 20;
-      const std = Math.sqrt(closes.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
-      if (std === 0) return null;
-      const price = bars[i].c;
-      if (price < sma - 2 * std) return 'long';
-      if (price > sma + 2 * std) return 'short';
-      return null;
-    }
-  },
-  momentum: {
-    name: 'Momentum — 12-1 Factor', lookback: 253, tp: 0.20, sl: 0.08, maxHold: 60, maxConc: 3,
-    entry(bars, i) {
-      if (i < 253) return null;
-      const ret = (bars[i - 21].c - bars[i - 252].c) / bars[i - 252].c;
-      if (ret > 0.15) return 'long';
-      if (ret < -0.15) return 'short';
-      return null;
-    }
-  }
-};
+// Strategies + simulator live in lib/backtest/engine.js (shared with scripts/backtest.js and the agents).
+const backtestEngine = require('./lib/backtest/engine');
+const BACKTEST_STRATEGIES = backtestEngine.BACKTEST_STRATEGIES;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -3668,125 +3570,17 @@ async function runBacktest(btId) {
     const strat = BACKTEST_STRATEGIES[row.personality];
     if (!strat) throw new Error('Unknown personality: ' + row.personality);
     const symbols = row.symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-    const allBars = await fetchBarsBatch(symbols, row.start_date, row.end_date);
-
-    const dateSet = new Set();
-    for (const bars of Object.values(allBars)) bars.forEach(b => dateSet.add(b.t));
-    const dates = [...dateSet].sort();
-
-    // Build date→index maps for O(1) bar lookups
-    const barMaps = {};
-    for (const [sym, bars] of Object.entries(allBars)) {
-      barMaps[sym] = new Map(bars.map((b, i) => [b.t, i]));
-    }
-
-    let cash = row.initial_capital;
-    const positions = {};
-    const closedTrades = [];
-    const equityCurve = [];
-
-    for (const date of dates) {
-      // Exit checks on existing positions
-      for (const sym of Object.keys(positions)) {
-        const pos = positions[sym];
-        const bIdx = barMaps[sym]?.get(date);
-        const bar = bIdx !== undefined ? allBars[sym][bIdx] : undefined;
-        if (!bar) { pos.days++; continue; }
-        pos.days++;
-        const price = bar.c;
-        const ret = pos.side === 'long'
-          ? (price - pos.entry_price) / pos.entry_price
-          : (pos.entry_price - price) / pos.entry_price;
-        let exitReason = null;
-        if (ret >= strat.tp) exitReason = 'take_profit';
-        else if (ret <= -strat.sl) exitReason = 'stop_loss';
-        else if (pos.days >= strat.maxHold) exitReason = 'max_hold';
-        if (exitReason) {
-          const pnl = pos.side === 'long'
-            ? (price - pos.entry_price) * pos.qty
-            : (pos.entry_price - price) * pos.qty;
-          cash += pos.qty * pos.entry_price + pnl;
-          closedTrades.push({ btId, sym, side: pos.side, qty: pos.qty, entry_date: pos.entry_date, exit_date: date, entry_price: pos.entry_price, exit_price: price, pnl, ret_pct: ret * 100, exit_reason: exitReason });
-          delete positions[sym];
-        }
-      }
-      // New entries — signal on bar[i], execute at OPEN of bar[i+1] (no look-ahead bias)
-      if (Object.keys(positions).length < strat.maxConc) {
-        for (const sym of symbols) {
-          if (positions[sym] || Object.keys(positions).length >= strat.maxConc) continue;
-          const bars = allBars[sym] || [];
-          const idx = barMaps[sym]?.get(date);
-          if (idx === undefined || idx < 0) continue;
-          const signal = strat.entry(bars, idx);
-          if (!signal) continue;
-          const nextBar = bars[idx + 1];
-          if (!nextBar) continue; // can't enter on last available bar
-          const alloc = Math.min(cash * (1 / strat.maxConc), cash * 0.95);
-          const price = nextBar.o; // entry at next bar's open, not current bar's close
-          const qty = Math.floor(alloc / price);
-          if (qty < 1) continue;
-          cash -= qty * price;
-          positions[sym] = { side: signal, qty, entry_price: price, entry_date: nextBar.t, days: 0 };
-        }
-      }
-      // MTM equity snapshot
-      let posValue = 0;
-      for (const [sym, pos] of Object.entries(positions)) {
-        const bIdx2 = barMaps[sym]?.get(date);
-        const bar = bIdx2 !== undefined ? allBars[sym][bIdx2] : undefined;
-        const price = bar ? bar.c : pos.entry_price;
-        const pnl = pos.side === 'long'
-          ? (price - pos.entry_price) * pos.qty
-          : (pos.entry_price - price) * pos.qty;
-        posValue += pos.qty * pos.entry_price + pnl;
-      }
-      equityCurve.push({ date, equity: Math.round((cash + posValue) * 100) / 100 });
-    }
-
-    // Force-close remaining at last date
-    for (const [sym, pos] of Object.entries(positions)) {
-      const bars = allBars[sym] || [];
-      const lastBar = bars[bars.length - 1];
-      if (!lastBar) continue;
-      const price = lastBar.c;
-      const ret = pos.side === 'long'
-        ? (price - pos.entry_price) / pos.entry_price
-        : (pos.entry_price - price) / pos.entry_price;
-      const pnl = pos.side === 'long'
-        ? (price - pos.entry_price) * pos.qty
-        : (pos.entry_price - price) * pos.qty;
-      cash += pos.qty * pos.entry_price + pnl;
-      closedTrades.push({ btId, sym, side: pos.side, qty: pos.qty, entry_date: pos.entry_date, exit_date: dates[dates.length - 1] || '', entry_price: pos.entry_price, exit_price: price, pnl, ret_pct: ret * 100, exit_reason: 'eop' });
-    }
-
-    const finalEq = equityCurve.length ? equityCurve[equityCurve.length - 1].equity : cash;
-    const totalReturn = +(((finalEq - row.initial_capital) / row.initial_capital) * 100).toFixed(2);
-    const years = dates.length / 252;
-    const annReturn = years > 0 ? +((Math.pow(finalEq / row.initial_capital, 1 / years) - 1) * 100).toFixed(2) : 0;
-
-    let peak = row.initial_capital, maxDD = 0;
-    for (const pt of equityCurve) {
-      if (pt.equity > peak) peak = pt.equity;
-      const dd = peak > 0 ? (peak - pt.equity) / peak * 100 : 0;
-      if (dd > maxDD) maxDD = dd;
-    }
-    const dailyRets = equityCurve.slice(1).map((pt, i) => equityCurve[i].equity > 0 ? (pt.equity - equityCurve[i].equity) / equityCurve[i].equity : 0);
-    const mu = dailyRets.length ? dailyRets.reduce((a, b) => a + b, 0) / dailyRets.length : 0;
-    const sigma = dailyRets.length > 1 ? Math.sqrt(dailyRets.reduce((a, b) => a + (b - mu) ** 2, 0) / dailyRets.length) : 0;
-    const sharpe = sigma > 0 ? +((((mu - riskFreeRate / 252) / sigma) * Math.sqrt(252))).toFixed(3) : 0;
-    const wins = closedTrades.filter(t => t.pnl > 0);
-    const losses = closedTrades.filter(t => t.pnl <= 0);
-    const grossProfit = +wins.reduce((a, t) => a + t.pnl, 0).toFixed(2);
-    const grossLoss = +Math.abs(losses.reduce((a, t) => a + t.pnl, 0)).toFixed(2);
-
-    const results = {
-      totalReturn, annReturn, maxDrawdown: +maxDD.toFixed(2), sharpe,
-      winRate: closedTrades.length ? +(wins.length / closedTrades.length * 100).toFixed(1) : 0,
-      profitFactor: grossLoss > 0 ? +(grossProfit / grossLoss).toFixed(3) : grossProfit > 0 ? 999 : 0,
-      totalTrades: closedTrades.length, grossProfit, grossLoss,
-      finalEquity: +finalEq.toFixed(2), tradingDays: dates.length,
-      equityCurve
-    };
+    // realistic (default): intrabar stops, gaps, costs, equity sizing, warm-up history before start_date
+    const mode = row.mode === 'legacy' ? 'legacy' : 'realistic';
+    const fetchStart = mode === 'realistic'
+      ? new Date(Date.parse(row.start_date) - backtestEngine.warmupDays(strat) * 86400000).toISOString().slice(0, 10)
+      : row.start_date;
+    const allBars = await fetchBarsBatch(symbols, fetchStart, row.end_date);
+    const sim = backtestEngine.simulate(row.personality, symbols, allBars, {
+      mode, initialCapital: row.initial_capital, riskFreeRate, start: row.start_date, btId,
+    });
+    const { closedTrades, ...results } = sim;
+    results.mode = mode;
 
     const ins = db.prepare('INSERT INTO backtest_trades (backtest_id,symbol,side,qty,entry_date,exit_date,entry_price,exit_price,pnl,return_pct,exit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
     db.transaction(trs => trs.forEach(t => ins.run(t.btId, t.sym, t.side, t.qty, t.entry_date, t.exit_date, t.entry_price, t.exit_price, t.pnl, t.ret_pct, t.exit_reason)))(closedTrades);
@@ -3799,7 +3593,7 @@ async function runBacktest(btId) {
 }
 
 app.post('/api/backtest', requireAuth, (req, res) => {
-  const { personality, symbols, start_date, end_date, initial_capital = 10000, name } = req.body || {};
+  const { personality, symbols, start_date, end_date, initial_capital = 10000, name, mode } = req.body || {};
   if (!personality || !symbols || !start_date || !end_date)
     return res.status(400).json({ error: 'personality, symbols, start_date, end_date required' });
   if (!BACKTEST_STRATEGIES[personality])
@@ -3807,8 +3601,8 @@ app.post('/api/backtest', requireAuth, (req, res) => {
   const syms = (Array.isArray(symbols) ? symbols : symbols.split(',')).map(s => s.trim().toUpperCase()).filter(Boolean);
   if (!syms.length) return res.status(400).json({ error: 'No symbols' });
   const id = `bt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  db.prepare('INSERT INTO backtests (id,name,personality,symbols,start_date,end_date,initial_capital,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(id, name || `${personality} ${start_date}→${end_date}`, personality, syms.join(','), start_date, end_date, +initial_capital, 'running', Date.now());
+  db.prepare('INSERT INTO backtests (id,name,personality,symbols,start_date,end_date,initial_capital,status,created_at,mode) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id, name || `${personality} ${start_date}→${end_date}`, personality, syms.join(','), start_date, end_date, +initial_capital, 'running', Date.now(), mode === 'legacy' ? 'legacy' : 'realistic');
   res.json({ backtestId: id });
   runBacktest(id).catch(() => {});
 });

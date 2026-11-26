@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node scripts/backtest.js:*)",
+      "Bash(node scripts/paper-health.js:*)",
+      "Bash(node test/backtest-engine.test.js:*)",
+      "Bash(node --check server.js)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Read(reports/**)",
+      "Write(reports/**)",
+      "Edit(reports/**)",
+      "Edit(docs/RISK_REGISTER.md)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Edit(.env)",
+      "Write(.env)",
+      "Read(data/**)",
+      "Bash(node server.js:*)",
+      "Bash(npm start:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(git push:*)",
+      "Bash(git merge:*)"
+    ]
+  }
+}
