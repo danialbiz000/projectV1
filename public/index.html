@@ -315,7 +315,6 @@ tr:hover td { background: var(--surface2); }
 .price-change-pos { color: var(--green); font-size: 0.88rem; font-weight: 600; }
 .price-change-neg { color: var(--red); font-size: 0.88rem; font-weight: 600; }
 /* Macro brief */
-.macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
 .macro-brief-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--gold); border-radius: var(--radius); padding: 16px; font-size: 0.82rem; line-height: 1.75; color: var(--text-muted); }
 /* AutoTrader toggle */
 .toggle-switch { position: relative; display: inline-block; width: 48px; height: 26px; cursor: pointer; }
@@ -1220,7 +1219,7 @@ tr:hover td { background: var(--surface2); }
 // DATA & STATE
 // ============================================================
 
-// Fundamental data — updated Q1 2026 (PE/PB/FCF trailing, div yield, CR = current ratio)
+// Fundamental data — last updated Q1 2026 (PE/PB/FCF trailing, div yield, CR = current ratio) — verify before relying on scores
 const STOCKS = [
   // Mega-cap Tech
   { ticker:'AAPL',  name:'Apple Inc.',              country:'US', sector:'Tech',         pe:33.4, pb:52.1, cr:0.92, fcf:27.8, div:0.5,  cap:'$3.4T',  rating:'BUY',  tradeable:true },
@@ -2044,10 +2043,8 @@ function renderOptionsTab(data) {
 
 async function clearActiveOption(underlying) {
   try {
-    const tok = sessionStorage.getItem('nexus_auth_token');
-    await fetch(`/api/autotrader/options/${encodeURIComponent(underlying)}`, {
+    await secureFetch(`/api/autotrader/options/${encodeURIComponent(underlying)}`, {
       method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${tok}` },
     });
     loadAutoTraderStatus();
   } catch (e) { console.error('clearActiveOption error', e); }
@@ -2359,12 +2356,14 @@ function closeOrderPanel() {
 
 async function closePosition(symbol, qty) {
   document.getElementById('modal-title').textContent = 'Chiudi Posizione';
-  document.getElementById('modal-body').innerHTML = `<p>Vuoi vendere <b>${qty} ${symbol}</b> a mercato?</p>`;
+  document.getElementById('modal-body').innerHTML = `<p>Vuoi chiudere <b>${qty} ${symbol}</b> a mercato?</p>`;
   document.getElementById('modal-confirm-btn').onclick = async () => {
     closeModal('confirm-modal');
+    const pos = (currentPositions || []).find(p => p.symbol === symbol);
+    const side = (pos && pos.side === 'short') ? 'buy' : 'sell';
     try {
       await alpacaAPI('/orders', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ symbol, qty, side:'sell', type:'market', time_in_force:'day', client_order_id:'nexus_close_'+Date.now() })
+        body: JSON.stringify({ symbol, qty, side, type:'market', time_in_force:'day', client_order_id:'nexus_close_'+Date.now() })
       });
       showToast(`Ordine chiusura ${symbol} inviato`, 'success');
     } catch(e) { showToast('Errore: ' + e.message, 'error'); }
@@ -2380,8 +2379,9 @@ async function closeAllPositions() {
     closeModal('confirm-modal');
     for (const p of currentPositions) {
       try {
+        const side = p.side === 'short' ? 'buy' : 'sell';
         await alpacaAPI('/orders', { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ symbol:p.symbol, qty:+p.qty, side:'sell', type:'market', time_in_force:'day', client_order_id:'nexus_closeall_'+p.symbol+'_'+Date.now() })
+          body: JSON.stringify({ symbol:p.symbol, qty:+p.qty, side, type:'market', time_in_force:'day', client_order_id:'nexus_closeall_'+p.symbol+'_'+Date.now() })
         });
       } catch(e) { showToast('Errore chiusura ' + p.symbol + ': ' + e.message, 'error'); }
     }
@@ -2974,33 +2974,6 @@ async function runScreener() {
 // ============================================================
 // MACRO
 // ============================================================
-function renderMacroGeo() {
-  const el = document.getElementById('macro-geo-grid');
-  if (!el) return;
-  el.innerHTML = MACRO_GEO.map(m => `
-    <div class="macro-card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <b>${m.area}</b>
-        <span class="signal signal-${m.signal === 'bullish' ? 'bull' : m.signal === 'bearish' ? 'bear' : 'bull'}">${m.signal.toUpperCase()}</span>
-      </div>
-      <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.5">${m.text}</div>
-    </div>`).join('');
-}
-
-function renderGeoRisks() {
-  const el = document.getElementById('geo-risks');
-  if (!el) return;
-  const colors = { high:'var(--red)', medium:'var(--orange)', low:'var(--green)' };
-  el.innerHTML = GEO_RISKS.map(r => `
-    <div class="macro-card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <b style="font-size:0.85rem">${r.name}</b>
-        <span style="font-size:0.75rem;color:${colors[r.level]};font-weight:700">${r.level.toUpperCase()}</span>
-      </div>
-      <div style="font-size:0.8rem;color:var(--text-muted);line-height:1.5">${r.text}</div>
-    </div>`).join('');
-}
-
 async function loadFX() {
   const el = document.getElementById('fx-grid-dash');
   if (!el) return;
@@ -3467,12 +3440,8 @@ function updateAutoTraderUI(data) {
   setChk('at-allow-short', data.allowShort);
   setChk('at-ai-managed', data.aiManagedWatchlist !== false);
   setVal('at-watchlist-size', data.watchlistSize || 30);
-  setVal('at-max-pct', data.maxPositionPct);
   setVal('at-stop-loss', data.stopLossPct);
   setVal('at-take-profit', data.takeProfitPct);
-  setVal('at-drawdown-limit', data.drawdownLimit != null ? Math.round(data.drawdownLimit * 100) : null);
-  setVal('at-target-vol', data.targetVolatility != null ? Math.round(data.targetVolatility * 100) : null);
-  setChk('at-allow-short', data.allowShort);
   if (Array.isArray(data.watchlist)) {
     const el = document.getElementById('at-watchlist');
     if (el) el.value = data.watchlist.join(', ');
@@ -3590,8 +3559,6 @@ async function saveAutoTraderConfig() {
     confidenceThreshold: +g('at-confidence').value,
     maxPositions: +g('at-max-pos').value,
     maxPositionsPerSector: +g('at-max-pos-sector').value,
-    maxPositionPct: +g('at-max-pct').value,
-
     maxPositionPct: +g('at-max-pct').value,
     stopLossPct: +g('at-stop-loss').value,
     takeProfitPct: +g('at-take-profit').value,
@@ -3729,10 +3696,9 @@ async function refreshIntradayCharts() {
   });
 
   // Fetch bars for each symbol
-  const token = sessionStorage.getItem('nexus_auth_token');
   await Promise.all(symbols.map(async sym => {
     try {
-      const res = await fetch(`/api/autotrader/intraday/${sym}`, { headers: { Authorization: 'Bearer ' + token } });
+      const res = await secureFetch(`/api/autotrader/intraday/${sym}`);
       const data = await res.json();
       if (!data.bars || !data.bars.length) return;
       renderIntradayChart(sym, data.bars, positions.find(p => p.symbol === sym));
