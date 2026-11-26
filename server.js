@@ -310,7 +310,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 const rateLimitMap = new Map();
 
 function rateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
   const now = Date.now();
   const entry = rateLimitMap.get(ip);
   if (!entry || now - entry.windowStart > 60000) {
@@ -840,18 +840,34 @@ app.get('/api/macro-brief', requireAuth, async (req, res) => {
   const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
   if (!anthropicKey) return res.status(503).json({ error: 'ANTHROPIC_API_KEY non configurata' });
 
+  // Fetch live FX rates and news headlines to ground the AI in current data
+  let fxStr = '';
+  try {
+    const fxRes = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,CHF,AUD,CAD,CNY');
+    const fxData = await fxRes.json();
+    const r = fxData.rates || {};
+    fxStr = `\nFX live: EUR/USD ${r.EUR||'?'} · GBP/USD ${r.GBP||'?'} · USD/JPY ${r.JPY||'?'} · USD/CHF ${r.CHF||'?'} · AUD/USD ${r.AUD||'?'} · USD/CAD ${r.CAD||'?'} · USD/CNY ${r.CNY||'?'}`;
+  } catch (_) {}
+
+  const newsHeadlines = await fetchAlpacaNews(15);
+  const newsSection = newsHeadlines
+    ? `\nUltime notizie di mercato (recenti):\n${newsHeadlines}`
+    : '';
+
   try {
     const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 900,
-        messages: [{ role: 'user', content: `Sei un analista macro senior. Oggi è ${today}. Genera un brief giornaliero sui mercati finanziari globali in italiano. Rispondi SOLO con JSON valido, nessun testo fuori dal JSON:
+        messages: [{ role: 'user', content: `Sei un analista macro senior. Oggi è ${today}.${fxStr}${newsSection}
+
+Basandoti sui dati live sopra, genera un brief giornaliero sui mercati finanziari globali in italiano. Rispondi SOLO con JSON valido, nessun testo fuori dal JSON:
 {
-  "central_banks": "2-3 frasi su Fed/BCE/BoJ/BoE: decisioni recenti sui tassi, forward guidance, e impatto atteso sui mercati azionari e obbligazionari.",
-  "markets": "2-3 frasi sulle principali mosse di mercato: equity, bond, commodity, volatilità. Focus su driver macro e settori in evidenza.",
-  "geopolitics": "2-3 frasi sul principale rischio geopolitico attivo e come si riflette sui mercati (petrolio, difesa, supply chain, valute rifugio)."
+  "central_banks": "2-3 frasi su banche centrali (Fed, BCE, BoJ, BoE): chair attuale, decisioni recenti sui tassi, forward guidance e impatto sui mercati. Cita notizie specifiche se disponibili.",
+  "markets": "2-3 frasi sulle principali mosse di mercato: equity, bond, commodity, volatilità. Focus su driver macro e settori in evidenza. Cita i dati FX live.",
+  "geopolitics": "2-3 frasi sul principale rischio geopolitico attivo e come si riflette sui mercati (petrolio, difesa, supply chain, valute rifugio). Cita notizie specifiche se disponibili."
 }` }],
       }),
     });
@@ -898,6 +914,9 @@ const NYSE_HOLIDAYS = new Set([
   // 2026
   '2026-01-01','2026-01-19','2026-02-16','2026-04-03','2026-05-25',
   '2026-06-19','2026-07-03','2026-09-07','2026-11-26','2026-12-25',
+  // 2027
+  '2027-01-01','2027-01-18','2027-02-15','2027-03-26','2027-05-31',
+  '2027-06-18','2027-07-05','2027-09-06','2027-11-25','2027-12-24',
 ]);
 
 function getNthDayOfMonth(year, month, dayOfWeek, nth) {
@@ -1173,7 +1192,7 @@ function enrichWithGreeks(contracts, spot, annVol, r = 0.053) {
 function findBestCSP(contracts, spot, annVol) {
   const puts = enrichWithGreeks(
     contracts.filter(c => c.type === 'put' && c.strike < spot),
-    spot, annVol
+    spot, annVol, riskFreeRate
   );
   // Target Δ ~−0.30: short put, delta between −0.15 and −0.40
   const candidates = puts.filter(c =>
@@ -1190,7 +1209,7 @@ function findBestCSP(contracts, spot, annVol) {
 function findBestCoveredCall(contracts, spot, avgEntry, annVol) {
   const calls = enrichWithGreeks(
     contracts.filter(c => c.type === 'call' && c.strike > avgEntry),
-    spot, annVol
+    spot, annVol, riskFreeRate
   );
   // Target Δ ~0.30: short call above avg entry
   const candidates = calls.filter(c =>
@@ -1372,18 +1391,6 @@ async function optionsCycle(account, openPositions, anthropicKey) {
   }
 }
 
-// ─── Telegram Notifications ───────────────────────────────────────────────────
-async function sendTelegram(text) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
-    });
-  } catch (_) {}
-}
-
 // ─── Adaptive Position Sizing ─────────────────────────────────────────────────
 function adaptiveNotional(equity, annualizedVol, targetVol, maxPositionPct) {
   const maxNotional = equity * maxPositionPct / 100;
@@ -1536,7 +1543,7 @@ const SYMBOL_SECTOR = {
   // SaaS
   SHOP:'SaaS', HUBS:'SaaS', BILL:'SaaS', GTLB:'SaaS',
   MNDY:'SaaS', BRZE:'SaaS', APP:'SaaS', WDAY:'SaaS', OKTA:'SaaS',
-  MDB:'SaaS', VEEV:'SaaS', SPLK:'SaaS', COUR:'SaaS', U:'SaaS',
+  MDB:'SaaS', VEEV:'SaaS', COUR:'SaaS', U:'SaaS',
   ASAN:'SaaS', DOCN:'SaaS', ESTC:'SaaS', CFLT:'SaaS',
   // Semiconductors (mid)
   SMCI:'Semiconductors', WOLF:'Semiconductors', AMBA:'Semiconductors',
@@ -3171,23 +3178,24 @@ const MAX_AGENTS = 8;
 
 const AGENT_PERSONALITIES = {
   hawk: { id: 'hawk', name: 'Hawk', description: 'Aggressivo, tech-focused, cicli rapidi, alta soglia di rischio', riskPerTrade: 0.15, entryThreshold: 0.65, stopLoss: 0.06, takeProfit: 0.15, allowShort: false, cycleMs: 25 * 60000, killDrawdown: 0.30, capitalAllocation: 10000 },
-  owl:  { id: 'owl',  name: 'Owl',  description: 'Conservativo, diversificato, predilige qualità e dividendi',    riskPerTrade: 0.08, entryThreshold: 0.80, stopLoss: 0.04, takeProfit: 0.10, allowShort: false, cycleMs: 60 * 60000, killDrawdown: 0.20, capitalAllocation: 10000 },
+  owl:  { id: 'owl',  name: 'Owl',  description: 'Conservativo, diversificato, predilige qualità e dividendi',    riskPerTrade: 0.08, entryThreshold: 0.72, stopLoss: 0.04, takeProfit: 0.10, allowShort: false, cycleMs: 60 * 60000, killDrawdown: 0.20, capitalAllocation: 10000 },
   fox:  { id: 'fox',  name: 'Fox',  description: 'Contrarian, cerca titoli oversold, opera contro il trend',     riskPerTrade: 0.12, entryThreshold: 0.70, stopLoss: 0.07, takeProfit: 0.20, allowShort: true,  cycleMs: 45 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
   bull: { id: 'bull', name: 'Bull', description: 'Momentum puro, segue il trend, no short',                     riskPerTrade: 0.12, entryThreshold: 0.68, stopLoss: 0.05, takeProfit: 0.18, allowShort: false, cycleMs: 35 * 60000, killDrawdown: 0.28, capitalAllocation: 10000 },
-  bear: { id: 'bear', name: 'Bear', description: 'Macro/ribassista, specializzato in short e protezione',       riskPerTrade: 0.10, entryThreshold: 0.75, stopLoss: 0.05, takeProfit: 0.20, allowShort: true,  cycleMs: 50 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
+  bear: { id: 'bear', name: 'Bear', description: 'Macro/ribassista, specializzato in short e protezione',       riskPerTrade: 0.10, entryThreshold: 0.72, stopLoss: 0.05, takeProfit: 0.20, allowShort: true,  cycleMs: 50 * 60000, killDrawdown: 0.25, capitalAllocation: 10000 },
+};
+
+// Each personality has a curated home universe — agents are independent of AT.watchlist
+const AGENT_UNIVERSE = {
+  hawk: ['NVDA','AMD','TSLA','META','PLTR','CRWD','NET','SNOW','AMZN','GOOGL'],
+  owl:  ['AAPL','MSFT','JPM','V','MA','UNH','COST','WMT','AMGN','ABBV'],
+  fox:  ['TSLA','PLTR','AMD','SNOW','XOM','CVX','BA','GS','RIVN','LABU'],
+  bull: ['NVDA','META','AMZN','GOOGL','MSFT','AVGO','QCOM','AAPL','CRWD','TSM'],
+  bear: ['TSLA','PLTR','SNOW','INTC','PFE','C','RIVN','XOM','CVX','BA'],
 };
 
 const agentTimers = new Map(); // agentId -> NodeJS.Timer
 const agentRunning = new Set(); // race condition guard: cycles in progress
 const agentPrevPrices = new Map(); // agentId -> {symbol: lastPrice} for direction context
-
-function isMarketHours() {
-  const now = new Date();
-  const day = now.getUTCDay();
-  if (day === 0 || day === 6) return false; // weekend
-  const min = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return min >= 13 * 60 + 30 && min < 21 * 60; // 13:30-21:00 UTC covers 9:30-17:00 ET all year
-}
 
 function agentCapital(agentId, capitalStart) {
   const { total: realized } = db.prepare('SELECT COALESCE(SUM(realized_pnl),0) AS total FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'closed');
@@ -3250,7 +3258,7 @@ async function generateRequiem(agentRow, anthropicKey) {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 500,
         messages: [{ role: 'user', content: `Analizza il fallimento di questo agente di trading algoritmico e scrivi un REQUIEM — memoria di 3-4 frasi per gli agenti futuri.
 
@@ -3302,7 +3310,10 @@ async function _agentCycleInner(agentId, anthropicKey) {
 
   // 1. Refresh prices + check stop loss / take profit
   const openPositions = db.prepare('SELECT * FROM agent_positions WHERE agent_id=? AND status=?').all(agentId, 'open');
-  const watchSymbols = AT.watchlist.slice(0, 20);
+  const personalityType = agentId.split('_')[0];
+  const ownUniverse = AGENT_UNIVERSE[personalityType] || STOCK_UNIVERSE.slice(0, 10);
+  const atSymbols = AT.watchlist.length >= 5 ? AT.watchlist.slice(0, 10) : [];
+  const watchSymbols = [...new Set([...ownUniverse, ...atSymbols])];
   const allSymbols = [...new Set([...openPositions.map(p => p.symbol), ...watchSymbols])];
   const prices = await agentUpdatePrices(agentId, allSymbols);
   const indicators = await agentFetchTechIndicators(watchSymbols);
@@ -3331,7 +3342,6 @@ async function _agentCycleInner(agentId, anthropicKey) {
   const openCount = db.prepare('SELECT COUNT(*) AS n FROM agent_positions WHERE agent_id=? AND status=?').get(agentId, 'open').n;
   if (openCount >= 3) return;
 
-  const personalityType = agentId.split('_')[0];
   const requiems = db.prepare('SELECT lessons FROM requiem WHERE agent_id LIKE ? ORDER BY ts DESC LIMIT 5').all(personalityType + '_%');
   const requiemCtx = requiems.length ? requiems.map(r => r.lessons).join('\n---\n') : 'Nessun requiem ancora. Sei un pioniere.';
   const prevPrices = agentPrevPrices.get(agentId) || {};
@@ -3352,7 +3362,7 @@ async function _agentCycleInner(agentId, anthropicKey) {
       method: 'POST',
       headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 350,
         messages: [{ role: 'user', content: `Sei l'agente "${personality.name}": ${personality.description}
 Params: riskPerTrade=${(personality.riskPerTrade * 100).toFixed(0)}% stopLoss=${(personality.stopLoss * 100).toFixed(0)}% takeProfit=${(personality.takeProfit * 100).toFixed(0)}% short=${personality.allowShort ? 'sì' : 'no'}
@@ -3362,7 +3372,7 @@ Prezzi: ${priceList}
 REQUIEM — memoria agenti morti:
 ${requiemCtx}
 
-Scegli UN'operazione o passa. Rispondi SOLO JSON:
+Hai ${Object.keys(prices).length} simboli. Se vedi un setup chiaro, aprilo — passare ha un costo opportunità. Rispondi SOLO JSON:
 {"symbol":"AAPL","side":"long","confidence":0.75,"reasoning":"..."} oppure {"symbol":null,"reasoning":"..."}` }],
       }),
     });
@@ -3460,17 +3470,6 @@ app.get('/api/agents/requiem', requireAuth, (req, res) => {
 });
 
 // ─── TECHNICAL INDICATORS ─────────────────────────────────────────────────────
-
-function computeRSI(closes, period = 14) {
-  if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
-    if (d > 0) gains += d; else losses -= d;
-  }
-  if (losses === 0) return 100;
-  return Math.round(100 - 100 / (1 + gains / losses));
-}
 
 function computeEMASeries(closes, period) {
   if (closes.length < period) return new Array(closes.length).fill(null);
@@ -3774,7 +3773,7 @@ async function runBacktest(btId) {
     const dailyRets = equityCurve.slice(1).map((pt, i) => equityCurve[i].equity > 0 ? (pt.equity - equityCurve[i].equity) / equityCurve[i].equity : 0);
     const mu = dailyRets.length ? dailyRets.reduce((a, b) => a + b, 0) / dailyRets.length : 0;
     const sigma = dailyRets.length > 1 ? Math.sqrt(dailyRets.reduce((a, b) => a + (b - mu) ** 2, 0) / dailyRets.length) : 0;
-    const sharpe = sigma > 0 ? +((((mu - 0.045 / 252) / sigma) * Math.sqrt(252))).toFixed(3) : 0;
+    const sharpe = sigma > 0 ? +((((mu - riskFreeRate / 252) / sigma) * Math.sqrt(252))).toFixed(3) : 0;
     const wins = closedTrades.filter(t => t.pnl > 0);
     const losses = closedTrades.filter(t => t.pnl <= 0);
     const grossProfit = +wins.reduce((a, t) => a + t.pnl, 0).toFixed(2);
@@ -3893,7 +3892,7 @@ const quantState = {
 
 function quantAuth(req, res, next) {
   const key = req.headers['x-nexus-api-key'];
-  if (ADMIN_TOKEN && key !== ADMIN_TOKEN) {
+  if (!key || key !== ADMIN_TOKEN) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
