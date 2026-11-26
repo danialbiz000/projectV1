@@ -175,6 +175,30 @@ function initDb() {
       geopolitics   TEXT,
       generated_at  INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS daily_pnl (
+      date TEXT PRIMARY KEY,
+      equity REAL,
+      realized_pnl REAL,
+      unrealized_pnl REAL,
+      cash REAL,
+      drawdown_pct REAL,
+      peak_equity REAL,
+      positions_count INTEGER,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT,
+      condition TEXT NOT NULL,
+      threshold REAL NOT NULL,
+      message TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      triggered_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
   `);
 }
 
@@ -1628,6 +1652,11 @@ const AT = {
   optionsLog: [],         // chronological log of options actions
 };
 
+// Trailing stop state: symbol → { entryPrice, highWaterMark, activePct }
+const atTrailingStops = new Map();
+// Live price cache updated by WS stream, used for alert checks
+const livepriceCache = new Map(); // symbol → price
+
 function ensureAtDayState() {
   const key = easternDateKey();
   if (AT.todayKey !== key) {
@@ -2100,6 +2129,19 @@ Generate the end-of-day recap JSON as instructed.`;
   AT.patternMemory = [...AT.patternMemory, ...newLessons];
   saveAtState();
 
+  // Record daily P&L snapshot to SQLite
+  try {
+    const { account: snapAcc, positions: snapPos } = await refreshAccountSnapshot();
+    const snapEquity = +(snapAcc.portfolio_value || snapAcc.equity || 0);
+    const snapCash = +(snapAcc.cash || 0);
+    const snapUnrealized = (Array.isArray(snapPos) ? snapPos : []).reduce((s, p) => s + +(p.unrealized_pl || 0), 0);
+    const prevPeak = db.prepare('SELECT MAX(equity) as peak FROM daily_pnl').get()?.peak || snapEquity;
+    const peakEq = Math.max(prevPeak, snapEquity);
+    const ddPct = peakEq > 0 ? (peakEq - snapEquity) / peakEq * 100 : 0;
+    db.prepare('INSERT OR REPLACE INTO daily_pnl (date,equity,realized_pnl,unrealized_pnl,cash,drawdown_pct,peak_equity,positions_count,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(dateKey, snapEquity, 0, snapUnrealized, snapCash, ddPct, peakEq, Array.isArray(snapPos) ? snapPos.length : 0, Date.now());
+  } catch (e) { console.error('[daily_pnl] snapshot failed:', e.message); }
+
   broadcast({ type: 'autotrader_recap', date: dateKey, recap, ts: Date.now() });
   const pnlIcon = recap.session_pnl === 'positive' ? '🟢' : recap.session_pnl === 'negative' ? '🔴' : '⚪';
   await sendTelegram(`${pnlIcon} <b>AutoTrader — Resoconto EOD ${dateKey}</b>\n${recap.summary}\n\n📅 Trades: ${trades.length} | Bias domani: ${recap.tomorrow_bias}\n🔍 Domani: ${recap.tomorrow_watchlist.join(', ') || '—'}`);
@@ -2490,6 +2532,49 @@ async function atCycle() {
       targets = [...new Set([...posMap.keys(), ...AT.watchlist])];
     }
 
+    // Phase 2.4: trailing stop — activate breakeven when position up ≥ 5%
+    for (const pos of openPositions) {
+      const sym = pos.symbol;
+      const plPct = +(pos.unrealized_plpc || 0) * 100;
+      const entryPrice = +(pos.avg_entry_price || 0);
+      const currentPrice = +(pos.current_price || 0);
+      const isLong = pos.side === 'long';
+      if (!entryPrice || !currentPrice) continue;
+
+      let ts = atTrailingStops.get(sym);
+      if (!ts) { ts = { entryPrice, activePct: null, highWaterMark: currentPrice }; atTrailingStops.set(sym, ts); }
+
+      if (isLong && currentPrice > ts.highWaterMark) ts.highWaterMark = currentPrice;
+      else if (!isLong && currentPrice < ts.highWaterMark) ts.highWaterMark = currentPrice;
+
+      if (ts.activePct === null && plPct >= 5.0) {
+        ts.activePct = plPct;
+        atLog({ symbol: sym, action: 'TRAILING_STOP', confidence: 1, reasoning: `Trailing stop attivato a +${plPct.toFixed(1)}% — stop spostato a breakeven ($${entryPrice.toFixed(2)})`, executed: false });
+        await sendTelegram(`🔒 <b>Trailing stop attivato</b> — <b>${sym}</b> +${plPct.toFixed(1)}% | Stop: breakeven $${entryPrice.toFixed(2)}`).catch(() => {});
+      }
+
+      if (ts.activePct !== null) {
+        const hit = isLong ? currentPrice <= entryPrice : currentPrice >= entryPrice;
+        if (hit) {
+          try {
+            await alpacaFetch(`/v2/positions/${sym}`, { method: 'DELETE' });
+            atTrailingStops.delete(sym);
+            atLog({ symbol: sym, action: 'CLOSE', confidence: 1, reasoning: `Trailing stop scattato — inversione oltre breakeven (entry $${entryPrice.toFixed(2)}, current $${currentPrice.toFixed(2)})`, executed: true, executedAction: 'TRAILING STOP CLOSE' });
+            markAutoTrade(sym, isLong ? 'SELL' : 'BUY');
+            delete AT.addHistory[sym];
+            delete AT.lastReviewDate[sym];
+            broadcast({ type: 'autotrader_trade', symbol: sym, action: 'TRAILING_STOP_CLOSE' });
+            await sendTelegram(`🔒 <b>Trailing stop CHIUSO</b> — <b>${sym}</b> | Entry: $${entryPrice.toFixed(2)} | Current: $${currentPrice.toFixed(2)}`).catch(() => {});
+            try { ({ account, positions } = await refreshAccountSnapshot()); openPositions = Array.isArray(positions) ? positions : []; posMap = new Map(openPositions.map(p => [p.symbol, p])); buyingPower = +account.buying_power; } catch(_) {}
+          } catch (e) {
+            atLog({ symbol: sym, action: 'ERROR', confidence: 0, reasoning: `Trailing stop close failed: ${e.message}`, executed: false });
+          }
+        }
+      }
+    }
+    // Clean up trailing stop entries for positions that no longer exist
+    for (const sym of atTrailingStops.keys()) { if (!posMap.has(sym)) atTrailingStops.delete(sym); }
+
     // Phase 2.5: volatility-aware position review for losing positions
     if (openPositions.some(p => +(p.unrealized_plpc||0) < 0)) {
       atLog({ symbol: 'SYSTEM', action: 'REVIEW', confidence: 1, reasoning: `Reviewing ${openPositions.filter(p=>+(p.unrealized_plpc||0)<0).length} losing position(s) before new trades…`, executed: false });
@@ -2585,6 +2670,8 @@ async function atCycle() {
 
       const sectorSummary = Object.entries(secExp).map(([s, n]) => `${s}:${n}`).join(', ') || 'none';
       const maxBudget = Math.min(equity * AT.maxPositionPct / 100, buyingPower * 0.95);
+      // Precision mode: use Sonnet for high-budget trades (≥ $2000)
+      const atModel = maxBudget >= 2000 ? 'claude-sonnet-4-6' : 'claude-haiku-4-5-20251001';
 
       const replaceBlock = sectorAtLimit && weakestInSector ? `
 SECTOR ROTATION AVAILABLE: ${sector} is at soft limit (${sectorCount}/${AT.maxPositionsPerSector}).
@@ -2658,7 +2745,7 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
           const res = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 600, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
+            body: JSON.stringify({ model: atModel, max_tokens: 600, system: AUTOTRADER_RESEARCH_PROMPT, messages: [{ role: 'user', content: prompt }] }),
           });
           const d = await res.json();
           if (d.error) {
@@ -3104,8 +3191,10 @@ function connectAlpacaDataWs() {
         } else if (msg.T === 'q') {
           // Fix: avoid 0-as-falsy bug for ask price
           const price = msg.ap != null ? msg.ap : msg.bp;
+          if (price) livepriceCache.set(msg.S, price);
           broadcast({ type: 'quote', symbol: msg.S, price, bid: msg.bp, ask: msg.ap, ts: msg.t });
         } else if (msg.T === 't') {
+          if (msg.p) livepriceCache.set(msg.S, msg.p);
           broadcast({ type: 'quote', symbol: msg.S, price: msg.p, ts: msg.t });
         }
       }
@@ -3392,6 +3481,15 @@ Hai ${Object.keys(prices).length} simboli. Se vedi un setup chiaro, aprilo — p
     if (!price) return;
     const alreadyOpen = db.prepare('SELECT id FROM agent_positions WHERE agent_id=? AND symbol=? AND status=?').get(agentId, dec.symbol, 'open');
     if (alreadyOpen) return; // no duplicate positions on same symbol
+    // Avoid opening agent positions in symbols already open in live Alpaca portfolio
+    try {
+      const alpPosResp = await alpacaFetch('/v2/positions');
+      const alpPos = await parseJsonResponse(alpPosResp);
+      if (Array.isArray(alpPos) && alpPos.some(p => p.symbol === dec.symbol)) {
+        console.log(`[Agent:${agentId}] SKIP ${dec.symbol} — already open in live portfolio`);
+        return;
+      }
+    } catch (_) {}
     const qty = Math.floor((currentCapital * personality.riskPerTrade) / price);
     if (qty < 1) return;
 
@@ -3606,6 +3704,10 @@ const BACKTEST_STRATEGIES = {
       if (ret < -0.15) return 'short';
       return null;
     }
+  },
+  portfolio: {
+    name: 'Portfolio — All Strategies Competition', lookback: 253, tp: null, sl: null, maxHold: null, maxConc: 9,
+    entry() { return null; } // handled by runPortfolioBacktest
   }
 };
 
@@ -3811,7 +3913,8 @@ app.post('/api/backtest', requireAuth, (req, res) => {
   db.prepare('INSERT INTO backtests (id,name,personality,symbols,start_date,end_date,initial_capital,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run(id, name || `${personality} ${start_date}→${end_date}`, personality, syms.join(','), start_date, end_date, +initial_capital, 'running', Date.now());
   res.json({ backtestId: id });
-  runBacktest(id).catch(() => {});
+  if (personality === 'portfolio') runPortfolioBacktest(id).catch(() => {});
+  else runBacktest(id).catch(() => {});
 });
 
 app.get('/api/backtest', requireAuth, (req, res) => {
@@ -3937,6 +4040,243 @@ app.get('/api/quant/state', requireAuth, (req, res) => {
     recentSignals:  quantState.signals.slice(0, 20),
   });
 });
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+
+async function checkAlerts() {
+  let activeAlerts;
+  try { activeAlerts = db.prepare('SELECT * FROM alerts WHERE active = 1 AND triggered_at IS NULL').all(); }
+  catch (_) { return; }
+  if (!activeAlerts.length) return;
+
+  let portfolioPnl = null;
+  for (const alert of activeAlerts) {
+    let currentValue = null;
+    try {
+      if (alert.condition === 'price_above' || alert.condition === 'price_below') {
+        currentValue = livepriceCache.get(alert.symbol) ?? null;
+      } else if (alert.condition === 'portfolio_pnl_below' || alert.condition === 'portfolio_pnl_above') {
+        if (portfolioPnl === null) {
+          const r = await alpacaFetch('/v2/account');
+          const acc = await parseJsonResponse(r);
+          portfolioPnl = acc ? +(acc.unrealized_pl || 0) : null;
+        }
+        currentValue = portfolioPnl;
+      }
+    } catch (_) { continue; }
+    if (currentValue === null) continue;
+
+    const triggered = (alert.condition.endsWith('_above') && currentValue >= alert.threshold)
+                   || (alert.condition.endsWith('_below') && currentValue <= alert.threshold);
+    if (!triggered) continue;
+
+    db.prepare('UPDATE alerts SET triggered_at=?, active=0 WHERE id=?').run(Date.now(), alert.id);
+    const label = alert.symbol ? alert.symbol : 'Portfolio';
+    const msg = alert.message || `🔔 Alert: ${label} — ${alert.condition} ${alert.threshold} [now: ${currentValue.toFixed(2)}]`;
+    broadcast({ type: 'alert_triggered', alertId: alert.id, symbol: alert.symbol, condition: alert.condition, threshold: alert.threshold, currentValue });
+    sendTelegram(msg).catch(() => {});
+  }
+}
+
+setInterval(() => { checkAlerts().catch(() => {}); }, 2 * 60 * 1000);
+
+// CRUD endpoints for alerts
+app.get('/api/alerts', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100').all();
+  res.json({ alerts: rows });
+});
+
+app.post('/api/alerts', requireAuth, (req, res) => {
+  const { symbol, condition, threshold, message } = req.body || {};
+  const VALID_CONDITIONS = ['price_above', 'price_below', 'portfolio_pnl_above', 'portfolio_pnl_below'];
+  if (!condition || !VALID_CONDITIONS.includes(condition) || threshold == null)
+    return res.status(400).json({ error: `condition must be one of: ${VALID_CONDITIONS.join(', ')}; threshold required` });
+  if ((condition === 'price_above' || condition === 'price_below') && !symbol)
+    return res.status(400).json({ error: 'symbol required for price alerts' });
+  const { lastInsertRowid } = db.prepare('INSERT INTO alerts (symbol,condition,threshold,message,active,created_at) VALUES (?,?,?,?,1,?)')
+    .run(symbol?.toUpperCase() || null, condition, +threshold, message || null, Date.now());
+  res.json({ ok: true, id: lastInsertRowid });
+});
+
+app.delete('/api/alerts/:id', requireAuth, (req, res) => {
+  db.prepare('UPDATE alerts SET active=0 WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── P&L History ──────────────────────────────────────────────────────────────
+
+app.get('/api/pnl/history', requireAuth, (req, res) => {
+  const days = Math.min(365, Math.max(1, parseInt(req.query.days || '30', 10)));
+  const rows = db.prepare('SELECT * FROM daily_pnl ORDER BY date DESC LIMIT ?').all(days);
+  res.json({ rows: rows.reverse() });
+});
+
+// ─── Backtest Leaderboard ─────────────────────────────────────────────────────
+
+app.get('/api/backtest/leaderboard', requireAuth, (req, res) => {
+  const rows = db.prepare(`
+    SELECT
+      personality,
+      COUNT(*) AS runs,
+      ROUND(AVG(CAST(json_extract(results,'$.sharpe') AS REAL)), 3) AS avg_sharpe,
+      ROUND(AVG(CAST(json_extract(results,'$.totalReturn') AS REAL)), 2) AS avg_return_pct,
+      ROUND(AVG(CAST(json_extract(results,'$.maxDrawdown') AS REAL)), 2) AS avg_drawdown_pct,
+      ROUND(AVG(CAST(json_extract(results,'$.winRate') AS REAL)), 1) AS avg_win_rate,
+      ROUND(MAX(CAST(json_extract(results,'$.sharpe') AS REAL)), 3) AS best_sharpe,
+      ROUND(MIN(CAST(json_extract(results,'$.maxDrawdown') AS REAL)), 2) AS best_drawdown_pct,
+      ROUND(MAX(CAST(json_extract(results,'$.totalReturn') AS REAL)), 2) AS best_return_pct
+    FROM backtests
+    WHERE status = 'done' AND results IS NOT NULL
+    GROUP BY personality
+    ORDER BY avg_sharpe DESC
+  `).all();
+  res.json({ leaderboard: rows });
+});
+
+// ─── Portfolio Backtest ───────────────────────────────────────────────────────
+// Runs all 9 strategies simultaneously on a shared capital pool.
+// Each strategy gets 1/9 of capital. Positions across strategies are independent
+// but share capital — when one strategy uses capital another may be unable to enter.
+
+async function runPortfolioBacktest(btId) {
+  const row = db.prepare('SELECT * FROM backtests WHERE id=?').get(btId);
+  if (!row || row.status !== 'running') return;
+  try {
+    const stratKeys = Object.keys(BACKTEST_STRATEGIES).filter(k => k !== 'portfolio');
+    const symbols = row.symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    const allBars = await fetchBarsBatch(symbols, row.start_date, row.end_date);
+
+    const dateSet = new Set();
+    for (const bars of Object.values(allBars)) bars.forEach(b => dateSet.add(b.t));
+    const dates = [...dateSet].sort();
+    const barMaps = {};
+    for (const [sym, bars] of Object.entries(allBars)) barMaps[sym] = new Map(bars.map((b, i) => [b.t, i]));
+
+    const stratAlloc = row.initial_capital / stratKeys.length;
+    const stratState = {};
+    for (const k of stratKeys) stratState[k] = { cash: stratAlloc, positions: {}, closedTrades: [] };
+
+    const equityCurve = [];
+
+    for (const date of dates) {
+      let totalEquity = 0;
+
+      for (const sk of stratKeys) {
+        const strat = BACKTEST_STRATEGIES[sk];
+        const ss = stratState[sk];
+
+        // Exit checks
+        for (const sym of Object.keys(ss.positions)) {
+          const pos = ss.positions[sym];
+          const bIdx = barMaps[sym]?.get(date);
+          const bar = bIdx !== undefined ? allBars[sym][bIdx] : undefined;
+          if (!bar) { pos.days++; continue; }
+          pos.days++;
+          const price = bar.c;
+          const ret = pos.side === 'long' ? (price - pos.entry_price) / pos.entry_price : (pos.entry_price - price) / pos.entry_price;
+          let exitReason = null;
+          if (ret >= strat.tp) exitReason = 'take_profit';
+          else if (ret <= -strat.sl) exitReason = 'stop_loss';
+          else if (pos.days >= strat.maxHold) exitReason = 'max_hold';
+          if (exitReason) {
+            const pnl = pos.side === 'long' ? (price - pos.entry_price) * pos.qty : (pos.entry_price - price) * pos.qty;
+            ss.cash += pos.qty * pos.entry_price + pnl;
+            ss.closedTrades.push({ btId, sym, side: pos.side, qty: pos.qty, entry_date: pos.entry_date, exit_date: date, entry_price: pos.entry_price, exit_price: price, pnl, ret_pct: ret * 100, exit_reason: `${sk}:${exitReason}` });
+            delete ss.positions[sym];
+          }
+        }
+
+        // New entries
+        if (Object.keys(ss.positions).length < strat.maxConc) {
+          for (const sym of symbols) {
+            if (ss.positions[sym] || Object.keys(ss.positions).length >= strat.maxConc) continue;
+            const bars = allBars[sym] || [];
+            const idx = barMaps[sym]?.get(date);
+            if (idx === undefined || idx < 0) continue;
+            const signal = strat.entry(bars, idx);
+            if (!signal) continue;
+            const nextBar = bars[idx + 1];
+            if (!nextBar) continue;
+            const alloc = Math.min(ss.cash * (1 / strat.maxConc), ss.cash * 0.95);
+            const price = nextBar.o;
+            const qty = Math.floor(alloc / price);
+            if (qty < 1) continue;
+            ss.cash -= qty * price;
+            ss.positions[sym] = { side: signal, qty, entry_price: price, entry_date: nextBar.t, days: 0 };
+          }
+        }
+
+        // MTM
+        let posValue = 0;
+        for (const [sym, pos] of Object.entries(ss.positions)) {
+          const bIdx2 = barMaps[sym]?.get(date);
+          const bar = bIdx2 !== undefined ? allBars[sym][bIdx2] : undefined;
+          const price = bar ? bar.c : pos.entry_price;
+          const pnl = pos.side === 'long' ? (price - pos.entry_price) * pos.qty : (pos.entry_price - price) * pos.qty;
+          posValue += pos.qty * pos.entry_price + pnl;
+        }
+        totalEquity += ss.cash + posValue;
+      }
+
+      equityCurve.push({ date, equity: Math.round(totalEquity * 100) / 100 });
+    }
+
+    // Force-close all remaining positions
+    const allClosedTrades = [];
+    for (const sk of stratKeys) {
+      const strat = BACKTEST_STRATEGIES[sk];
+      const ss = stratState[sk];
+      for (const [sym, pos] of Object.entries(ss.positions)) {
+        const bars = allBars[sym] || [];
+        const lastBar = bars[bars.length - 1];
+        if (!lastBar) continue;
+        const price = lastBar.c;
+        const ret = pos.side === 'long' ? (price - pos.entry_price) / pos.entry_price : (pos.entry_price - price) / pos.entry_price;
+        const pnl = pos.side === 'long' ? (price - pos.entry_price) * pos.qty : (pos.entry_price - price) * pos.qty;
+        ss.cash += pos.qty * pos.entry_price + pnl;
+        ss.closedTrades.push({ btId, sym, side: pos.side, qty: pos.qty, entry_date: pos.entry_date, exit_date: dates[dates.length - 1] || '', entry_price: pos.entry_price, exit_price: price, pnl, ret_pct: ret * 100, exit_reason: `${sk}:eop` });
+      }
+      allClosedTrades.push(...ss.closedTrades);
+    }
+
+    const finalEq = equityCurve.length ? equityCurve[equityCurve.length - 1].equity : row.initial_capital;
+    const totalReturn = +(((finalEq - row.initial_capital) / row.initial_capital) * 100).toFixed(2);
+    const years = dates.length / 252;
+    const annReturn = years > 0 ? +((Math.pow(finalEq / row.initial_capital, 1 / years) - 1) * 100).toFixed(2) : 0;
+
+    let peak = row.initial_capital, maxDD = 0;
+    for (const pt of equityCurve) {
+      if (pt.equity > peak) peak = pt.equity;
+      const dd = peak > 0 ? (peak - pt.equity) / peak * 100 : 0;
+      if (dd > maxDD) maxDD = dd;
+    }
+    const dailyRets = equityCurve.slice(1).map((pt, i) => equityCurve[i].equity > 0 ? (pt.equity - equityCurve[i].equity) / equityCurve[i].equity : 0);
+    const mu = dailyRets.length ? dailyRets.reduce((a, b) => a + b, 0) / dailyRets.length : 0;
+    const sigma = dailyRets.length > 1 ? Math.sqrt(dailyRets.reduce((a, b) => a + (b - mu) ** 2, 0) / dailyRets.length) : 0;
+    const sharpe = sigma > 0 ? +((((mu - riskFreeRate / 252) / sigma) * Math.sqrt(252))).toFixed(3) : 0;
+    const wins = allClosedTrades.filter(t => t.pnl > 0);
+    const losses = allClosedTrades.filter(t => t.pnl <= 0);
+    const grossProfit = +wins.reduce((a, t) => a + t.pnl, 0).toFixed(2);
+    const grossLoss = +Math.abs(losses.reduce((a, t) => a + t.pnl, 0)).toFixed(2);
+
+    const results = {
+      totalReturn, annReturn, maxDrawdown: +maxDD.toFixed(2), sharpe,
+      winRate: allClosedTrades.length ? +(wins.length / allClosedTrades.length * 100).toFixed(1) : 0,
+      profitFactor: grossLoss > 0 ? +(grossProfit / grossLoss).toFixed(3) : grossProfit > 0 ? 999 : 0,
+      totalTrades: allClosedTrades.length, grossProfit, grossLoss,
+      finalEquity: +finalEq.toFixed(2), tradingDays: dates.length,
+      equityCurve,
+    };
+
+    const ins = db.prepare('INSERT INTO backtest_trades (backtest_id,symbol,side,qty,entry_date,exit_date,entry_price,exit_price,pnl,return_pct,exit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+    db.transaction(trs => trs.forEach(t => ins.run(t.btId, t.sym, t.side, t.qty, t.entry_date, t.exit_date, t.entry_price, t.exit_price, t.pnl, t.ret_pct, t.exit_reason)))(allClosedTrades);
+    db.prepare('UPDATE backtests SET status=?,results=? WHERE id=?').run('done', JSON.stringify(results), btId);
+    broadcast({ type: 'backtest_done', backtestId: btId, results });
+  } catch (e) {
+    db.prepare('UPDATE backtests SET status=?,results=? WHERE id=?').run('error', JSON.stringify({ error: e.message }), btId);
+    broadcast({ type: 'backtest_error', backtestId: btId, error: e.message });
+  }
+}
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 refreshRiskFreeRate();
