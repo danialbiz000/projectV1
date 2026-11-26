@@ -16,8 +16,8 @@ Severity: **critical** (can lose a large share of the account), **high**, **medi
 
 | ID | Severity | Status | Owner | Finding | Proposed fix |
 |----|----------|--------|-------|---------|--------------|
-| L1 | critical | open | risk-guardian | BUY/SHORT orders are `oto` with **take profit only** — no stop loss at the broker (`server.js`, "No bracket stop_loss"). If the server is down, asleep or crashes, positions have no protection at all; gaps of −10…−17% overnight were observed in the backtest. | Use `order_class: 'bracket'` with a broker-side **catastrophic stop** (e.g. 1.5 × adaptive SL). AI review can still exit earlier. |
-| L2 | critical | open | risk-guardian | Emergency close only at **2.2 × adaptive SL**; adaptive SL is capped at 25% → a position can lose up to **−55%** before the hard stop. | Cap the hard stop (e.g. min(2.2×SL, 15%)) and enforce it at the broker (L1). |
+| L1 | critical | fix-proposed (`risk/L1-L2-broker-stop`) | risk-guardian | BUY/SHORT orders are `oto` with **take profit only** — no stop loss at the broker (`server.js`, "No bracket stop_loss"). If the server is down, asleep or crashes, positions have no protection at all; gaps of −10…−17% overnight were observed in the backtest. | Use `order_class: 'bracket'` with a broker-side **catastrophic stop** (e.g. 1.5 × adaptive SL). AI review can still exit earlier. |
+| L2 | critical | fix-proposed (`risk/L1-L2-broker-stop`) | risk-guardian | Emergency close only at **2.2 × adaptive SL**; adaptive SL is capped at 25% → a position can lose up to **−55%** before the hard stop. | Cap the hard stop (e.g. min(2.2×SL, 15%)) and enforce it at the broker (L1). |
 | L3 | high | open | risk-guardian | AI position review has a **2-day cooldown** per symbol. The emergency close is checked every cycle, but between the review zone (−SL×reviewPct) and the hard stop (−2.2×SL) a losing position can drift for 2 days with no decision. | Re-review if the loss deepened by ≥ 0.5×SL since the last review; shorten the cooldown in RISK-OFF. |
 | L4 | high | open | risk-guardian | Review can **ADD** to a losing position (averaging down, max 1 per position). | Disable ADD on positions below −SL, or require the regime to be RISK-ON and the backtest to support it. |
 | L5 | high | open | risk-guardian | Sizing uses `buyingPower * 0.95`; Alpaca buying power includes **margin (2×–4×)**. 20 positions × 15% = up to 300% gross exposure. | Cap gross exposure at 100% of equity (sum of position market values ≤ equity) unless explicitly allowed. |
@@ -51,4 +51,5 @@ Benchmark buy-and-hold SPY: **+57.6%**, CAGR 16.5%, max DD 19.0%, Sharpe 0.77.
 
 ## Log
 
+- 2026-11-26 — L1+L2 fix proposed on `risk/L1-L2-broker-stop`: bracket entries with a GTC broker stop at min(2.2×SL, 15%), `ensureProtectiveStops` each cycle (also when halted), open TP/stop legs cancelled before every close.
 - 2026-11-26 — register created from the first full analysis (realistic backtest + code review). Reports: `reports/backtests/backtest-2026-11-26.md`, `reports/backtests/backtest-2026-11-26-long-only.md`.

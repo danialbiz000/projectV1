@@ -29,6 +29,8 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const MAX_ORDER_NOTIONAL = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_NOTIONAL || 5000));
 const MAX_ORDER_QTY = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_QTY || 1000));
 const AUTOTRADER_MAX_DAILY_TRADES = Math.max(1, Number(process.env.NEXUS_AUTOTRADER_MAX_DAILY_TRADES || 8));
+// L1/L2: largest loss allowed on an AutoTrader position, enforced by a stop order at the broker.
+const MAX_HARD_STOP_PCT = Math.min(50, Math.max(1, Number(process.env.NEXUS_MAX_HARD_STOP_PCT || 15)));
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 const ALLOWED_ORIGINS = new Set(
@@ -2197,6 +2199,108 @@ async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
 }
 
 // ── Volatility-aware position review (runs before new-trade scan) ────────────
+// ─── Broker-side protection (risk register L1/L2) ────────────────────────────
+// Every AutoTrader position carries a GTC stop order at Alpaca, so it stays protected even when this
+// server is down, asleep or crashed. Hard stop = 2.2 × adaptive SL, capped at MAX_HARD_STOP_PCT.
+// The AI position review can still close earlier; the broker stop is the last line of defence.
+function hardStopPct(slPct) {
+  return Math.min(slPct * 2.2, MAX_HARD_STOP_PCT);
+}
+
+function hardStopPrice(side, refPrice, slPct) {
+  const k = hardStopPct(slPct) / 100;
+  return +(side === 'short' ? refPrice * (1 + k) : refPrice * (1 - k)).toFixed(2);
+}
+
+async function fetchOpenOrders(symbol) {
+  const qs = symbol ? `&symbols=${encodeURIComponent(symbol)}` : '';
+  const res = await alpacaFetch(`/v2/orders?status=open&limit=500${qs}`);
+  const orders = await parseJsonResponse(res);
+  return res.ok && Array.isArray(orders) ? orders : null;
+}
+
+// Cancel this symbol's open orders (take-profit / stop legs). Alpaca reserves the shares for them,
+// so a closing order sent while they are open is rejected with "insufficient qty available".
+async function cancelOpenOrdersFor(symbol) {
+  let cancelled = 0;
+  try {
+    const orders = await fetchOpenOrders(symbol);
+    for (const o of orders || []) {
+      if (o.symbol !== symbol) continue;
+      const r = await alpacaFetch(`/v2/orders/${o.id}`, { method: 'DELETE' });
+      if (r.ok || r.status === 404 || r.status === 422) cancelled++;
+    }
+    if (cancelled) await new Promise(r => setTimeout(r, 400)); // give Alpaca time to release the shares
+  } catch (_) { /* best effort: the closing order reports its own error */ }
+  return cancelled;
+}
+
+// Make sure every open position has a stop order at the broker: positions opened before L1, legs
+// cancelled by hand, or protection lost after an ADD. An existing take-profit is kept (OCO TP + stop).
+async function ensureProtectiveStops(openPositions) {
+  let added = 0;
+  if (!PAPER_MODE && !LIVE_TRADING_ENABLED) return 0;   // same gate as submitValidatedOrder: no writes to a live account
+  const all = await fetchOpenOrders(null);
+  if (!all) return 0;
+  for (const pos of openPositions || []) {
+    const side = pos.side === 'short' ? 'short' : 'long';
+    const qty = Math.abs(+pos.qty);
+    if (!Number.isInteger(qty) || qty < 1) continue;   // fractional positions can't carry GTC stops
+    const exitSide = side === 'long' ? 'sell' : 'buy';
+    const mine = all.filter(o => o.symbol === pos.symbol && o.side === exitSide);
+    if (mine.some(o => ['stop', 'stop_limit', 'trailing_stop'].includes(o.type))) continue;
+    const tp = mine.find(o => o.type === 'limit' && +o.limit_price > 0);
+    const entry = +pos.avg_entry_price, last = +pos.current_price || entry;
+    const k = MAX_HARD_STOP_PCT / 100;
+    // Hard stop from the entry price; if the price is already beyond it, place it just past the market.
+    let stop = +(side === 'long' ? entry * (1 - k) : entry * (1 + k)).toFixed(2);
+    if (side === 'long' && stop >= last) stop = +(last * 0.98).toFixed(2);
+    if (side === 'short' && stop <= last) stop = +(last * 1.02).toFixed(2);
+    try {
+      if (tp) await cancelOpenOrdersFor(pos.symbol);
+      const body = tp
+        ? { symbol: pos.symbol, qty, side: exitSide, type: 'limit', time_in_force: 'gtc', order_class: 'oco',
+            take_profit: { limit_price: +(+tp.limit_price).toFixed(2) }, stop_loss: { stop_price: stop },
+            client_order_id: `nexus_protect_${pos.symbol}_${Date.now()}` }
+        : { symbol: pos.symbol, qty, side: exitSide, type: 'stop', stop_price: stop, time_in_force: 'gtc',
+            client_order_id: `nexus_protect_${pos.symbol}_${Date.now()}` };
+      const r = await alpacaFetch('/v2/orders', { method: 'POST', body: JSON.stringify(body) });
+      if (r.ok) {
+        added++;
+        atLog({ symbol: pos.symbol, action: 'PROTECT', confidence: 1, reasoning: `Broker-side stop added (risk register L1)`, executed: true,
+          executedAction: `STOP ${exitSide.toUpperCase()} ${qty} @ $${stop}${tp ? ` + TP $${tp.limit_price} (OCO)` : ''}` });
+      } else {
+        const err = await parseJsonResponse(r);
+        atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: `Could not add broker stop: ${err?.message || r.status}`, executed: false });
+      }
+    } catch (e) {
+      atLog({ symbol: pos.symbol, action: 'ERROR', confidence: 0, reasoning: `Protective stop failed: ${e.message}`, executed: false });
+    }
+  }
+  return added;
+}
+
+async function protectOpenPositions() {
+  try {
+    const res = await alpacaFetch('/v2/positions');
+    const positions = await parseJsonResponse(res);
+    if (res.ok && Array.isArray(positions) && positions.length) return await ensureProtectiveStops(positions);
+  } catch (_) { /* retried next cycle */ }
+  return 0;
+}
+
+// Submit an entry with a broker-side stop (bracket, GTC). If Alpaca rejects that shape, fall back to the
+// previous take-profit-only order: the next cycle's ensureProtectiveStops adds the stop.
+async function submitEntryWithStop(bracketBody, fallbackBody) {
+  try {
+    return await submitValidatedOrder(bracketBody);
+  } catch (e) {
+    if (!e.status || e.status >= 500 || e.status === 403) throw e;
+    atLog({ symbol: bracketBody.symbol, action: 'WARN', confidence: 0, reasoning: `Bracket with stop rejected (${e.message}) — sent TP-only order, stop will be added next cycle`, executed: false });
+    return submitValidatedOrder(fallbackBody);
+  }
+}
+
 async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, fxStr, equity, buyingPower, posMap) {
   const todayDate = easternDateKey(); // 'YYYY-MM-DD'
 
@@ -2231,11 +2335,12 @@ async function reviewDrawdownPositions(openPositions, anthropicKey, macroBrief, 
     if (plPct > reviewThreshold) continue;
 
     // Emergency hard close at 2.2× adaptive SL — immediate, no AI
-    const emergencyThreshold = -(brackets.slPct * 2.2);
+    const emergencyThreshold = -hardStopPct(brackets.slPct);   // L2: capped at MAX_HARD_STOP_PCT
     if (plPct <= emergencyThreshold) {
       try {
+        await cancelOpenOrdersFor(pos.symbol);   // free the shares held by the TP/stop legs
         await alpacaFetch(`/v2/positions/${pos.symbol}`, { method: 'DELETE' });
-        const msg = `🚨 <b>AutoTrader EMERGENCY CLOSE</b> — <b>${pos.symbol}</b>\n📉 P&L: ${plPct.toFixed(1)}% (hard stop: -${(brackets.slPct*2.2).toFixed(0)}%)\nChiusura immediata senza AI — perdita estrema.`;
+        const msg = `🚨 <b>AutoTrader EMERGENCY CLOSE</b> — <b>${pos.symbol}</b>\n📉 P&L: ${plPct.toFixed(1)}% (hard stop: -${hardStopPct(brackets.slPct).toFixed(0)}%)\nChiusura immediata senza AI — perdita estrema.`;
         atLog({ symbol: pos.symbol, action: 'CLOSE', confidence: 1, reasoning: `Emergency hard stop at ${plPct.toFixed(1)}%`, executed: true, executedAction: `EMERGENCY CLOSE ${pos.qty} shares` });
         markAutoTrade(pos.symbol, 'SELL');
         delete AT.addHistory[pos.symbol];
@@ -2282,7 +2387,7 @@ P(reach TP +${brackets.tpPct}%): ${bs ? bs.probTP+'%' : '?'}
 ATM call delta: ${bs ? bs.callDelta : '?'}
 
 Position side: ${isLongPos ? 'LONG (price fell)' : 'SHORT (price rose against us)'}
-REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brackets.slPct}% | hard stop: -${(brackets.slPct*2.2).toFixed(0)}%
+REVIEW: position down ${Math.abs(plPct).toFixed(1)}% | adaptive SL zone: -${brackets.slPct}% | hard stop: -${hardStopPct(brackets.slPct).toFixed(0)}%
 ${canAdd ? '' : 'NOTE: ADD not available (max 1 ADD already used or insufficient buying power)'}
 Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFixed(0)} | equity: $${equity.toFixed(0)}${
   (() => {
@@ -2342,6 +2447,7 @@ Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFix
       if (rAction === 'CLOSE' && rConf >= 0.72) {
         const closeSide = isLongPos ? 'sell' : 'buy'; // buy to cover short
         const closeQty = Math.abs(+pos.qty);
+        await cancelOpenOrdersFor(pos.symbol);   // free the shares held by the TP/stop legs
         const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ symbol: pos.symbol, qty: closeQty, side: closeSide, type: 'market', time_in_force: 'day', client_order_id: `nexus_review_close_${pos.symbol}_${Date.now()}` }) });
         atLog({ symbol: pos.symbol, action: isShortPos ? 'COVER' : 'CLOSE', confidence: rConf, reasoning: rReason, executed: true, executedAction: `${isShortPos ? 'COVER' : 'CLOSE'} (AI review) ${closeQty} shares | P&L ${plPct.toFixed(1)}%`, orderId: order?.id });
@@ -2357,19 +2463,9 @@ Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFix
           const addSide = isLongPos ? 'buy' : 'sell';
           const totalQty = Math.abs(+pos.qty) + addQty;
 
-          // Cancel any open TP limit orders for this symbol before placing unified TP
-          try {
-            const openOrders = await alpacaFetch(`/v2/orders?status=open&symbols=${pos.symbol}&limit=50`);
-            if (Array.isArray(openOrders)) {
-              for (const o of openOrders) {
-                const isTP = (isLongPos && o.side === 'sell' && o.type === 'limit') ||
-                             (isShortPos && o.side === 'buy' && o.type === 'limit');
-                if (isTP) {
-                  await alpacaFetch(`/v2/orders/${o.id}`, { method: 'DELETE' });
-                }
-              }
-            }
-          } catch (_) { /* best-effort: cancel original TP */ }
+          // Cancel this symbol's TP/stop legs before the unified exit orders below
+          // (the previous version never cancelled: it treated the fetch Response as an array).
+          await cancelOpenOrdersFor(pos.symbol);
 
           // Place the ADD order
           const order = await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2382,8 +2478,11 @@ Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFix
           const tpSide = isLongPos ? 'sell' : 'buy';
           try {
             await alpacaFetch('/v2/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ symbol: pos.symbol, qty: totalQty, side: tpSide, type: 'limit', limit_price: tpPrice, time_in_force: 'gtc', client_order_id: `nexus_unified_tp_${pos.symbol}_${Date.now()}` }) });
-          } catch (_) { /* best-effort */ }
+              body: JSON.stringify({ symbol: pos.symbol, qty: totalQty, side: tpSide, type: 'limit', time_in_force: 'gtc',
+                order_class: 'oco', take_profit: { limit_price: tpPrice },
+                stop_loss: { stop_price: hardStopPrice(isLongPos ? 'long' : 'short', lastPrice, brackets.slPct) },
+                client_order_id: `nexus_unified_tp_${pos.symbol}_${Date.now()}` }) });
+          } catch (_) { /* best-effort: ensureProtectiveStops re-protects next cycle */ }
 
           AT.addHistory[pos.symbol] = addsDone + 1;
           const addLabel = isLongPos ? 'ADD (avg-down)' : 'ADD (avg-up short)';
@@ -2418,6 +2517,8 @@ async function atCycle() {
   saveAtState();
 
   try {
+    // L1: every open position gets a broker-side stop — also when halted or the market is closed.
+    await protectOpenPositions();
     if (AT.halted) {
       atLog({ symbol: 'SYSTEM', action: 'HALTED', confidence: 0, reasoning: AT.haltReason, executed: false });
       return;
@@ -2702,6 +2803,7 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
         const replacePos = posMap.get(replaceSymbol);
         if (replacePos && replacePos.side === 'long') {
           try {
+            await cancelOpenOrdersFor(replaceSymbol);
             await alpacaFetch(`/v2/positions/${replaceSymbol}`, { method: 'DELETE' });
             logEntry.executedAction = `REPLACE: closed ${replaceSymbol} (P&L: ${(+(replacePos.unrealized_plpc||0)*100).toFixed(1)}%), opening ${symbol}`;
             markAutoTrade(replaceSymbol, 'SELL');
@@ -2728,19 +2830,27 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
           if (tradeNotional >= 10) {
             try {
               const useBracket = estQty >= 1;
+              const tpLimit = +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2);
               const orderBody = useBracket ? {
-                symbol, qty: estQty, side: 'buy', type: 'market', time_in_force: 'day',
-                order_class: 'oto',
-                take_profit: { limit_price: +(lastPrice * (1 + brackets.tpPct / 100)).toFixed(2) },
-                // No bracket stop_loss — AI position review handles drawdown intelligently
+                symbol, qty: estQty, side: 'buy', type: 'market', time_in_force: 'gtc',
+                order_class: 'bracket',
+                take_profit: { limit_price: tpLimit },
+                // L1/L2: hard stop at the broker (GTC); the AI review can still exit earlier
+                stop_loss: { stop_price: hardStopPrice('long', lastPrice, brackets.slPct) },
                 client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
               } : {
+                // fractional/notional orders can't carry a stop at Alpaca
                 symbol, notional: Math.floor(tradeNotional), side: 'buy', type: 'market',
                 time_in_force: 'day', client_order_id: `nexus_at_buy_${symbol}_${Date.now()}`,
               };
-              const order = await submitValidatedOrder(orderBody);
+              const order = useBracket
+                ? await submitEntryWithStop(orderBody, {
+                    symbol, qty: estQty, side: 'buy', type: 'market', time_in_force: 'day', order_class: 'oto',
+                    take_profit: { limit_price: tpLimit }, client_order_id: `nexus_at_buy_${symbol}_${Date.now()}_tp`,
+                  })
+                : await submitValidatedOrder(orderBody);
               logEntry.executed = true;
-              logEntry.executedAction = `BUY ${useBracket ? estQty + ' shares' : '$' + Math.floor(tradeNotional)} | TP: +${brackets.tpPct}% | AI-managed SL (review at -${brackets.slPct}%)`;
+              logEntry.executedAction = `BUY ${useBracket ? estQty + ' shares' : '$' + Math.floor(tradeNotional)} | TP: +${brackets.tpPct}% | AI review at -${brackets.slPct}% | broker stop -${hardStopPct(brackets.slPct).toFixed(0)}%`;
               logEntry.orderId = order.id;
               markAutoTrade(symbol, 'BUY');
               try {
@@ -2759,6 +2869,7 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
         // ── SELL (close long) ──────────────────────────────────────────────────
         else if (action === 'SELL' && isLong) {
           try {
+            await cancelOpenOrdersFor(symbol);   // free the shares held by the TP/stop legs
             const order = await submitValidatedOrder({
               symbol, qty: +pos.qty, side: 'sell', type: 'market', time_in_force: 'day',
               client_order_id: `nexus_at_sell_${symbol}_${Date.now()}`,
@@ -2791,12 +2902,17 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
           const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
           if (estQty >= 1 && tradeNotional >= 10) {
             try {
-              const order = await submitValidatedOrder({
-                symbol, qty: estQty, side: 'sell', type: 'market', time_in_force: 'day',
-                order_class: 'oto',
-                take_profit: { limit_price: +(lastPrice * (1 - shortBrackets.tpPct / 100)).toFixed(2) },
-                // No bracket stop_loss — AI position review handles drawdown intelligently
+              const shortTp = +(lastPrice * (1 - shortBrackets.tpPct / 100)).toFixed(2);
+              const order = await submitEntryWithStop({
+                symbol, qty: estQty, side: 'sell', type: 'market', time_in_force: 'gtc',
+                order_class: 'bracket',
+                take_profit: { limit_price: shortTp },
+                // L1/L2: hard stop at the broker (GTC); the AI review can still cover earlier
+                stop_loss: { stop_price: hardStopPrice('short', lastPrice, shortBrackets.slPct) },
                 client_order_id: `nexus_at_short_${symbol}_${Date.now()}`,
+              }, {
+                symbol, qty: estQty, side: 'sell', type: 'market', time_in_force: 'day', order_class: 'oto',
+                take_profit: { limit_price: shortTp }, client_order_id: `nexus_at_short_${symbol}_${Date.now()}_tp`,
               });
               logEntry.executed = true;
               logEntry.executedAction = `SHORT ${estQty} shares | SL: +${shortBrackets.slPct}% | TP: -${shortBrackets.tpPct}%`;
@@ -2817,6 +2933,7 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
         else if (action === 'COVER' && isShort) {
           try {
             const shortQty = Math.abs(+pos.qty);
+            await cancelOpenOrdersFor(symbol);   // free the shares held by the TP/stop legs
             const order = await submitValidatedOrder({
               symbol, qty: shortQty, side: 'buy', type: 'market', time_in_force: 'day',
               client_order_id: `nexus_at_cover_${symbol}_${Date.now()}`,
