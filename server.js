@@ -31,6 +31,8 @@ const MAX_ORDER_QTY = Math.max(1, Number(process.env.NEXUS_MAX_ORDER_QTY || 1000
 const AUTOTRADER_MAX_DAILY_TRADES = Math.max(1, Number(process.env.NEXUS_AUTOTRADER_MAX_DAILY_TRADES || 8));
 // L1/L2: largest loss allowed on an AutoTrader position, enforced by a stop order at the broker.
 const MAX_HARD_STOP_PCT = Math.min(50, Math.max(1, Number(process.env.NEXUS_MAX_HARD_STOP_PCT || 15)));
+// L5: max gross exposure (sum of |position market value|) as a multiple of equity. 1 = no margin.
+const MAX_GROSS_EXPOSURE = Math.min(4, Math.max(0.1, Number(process.env.NEXUS_MAX_GROSS_EXPOSURE || 1)));
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 const ALLOWED_ORIGINS = new Set(
@@ -1650,6 +1652,7 @@ const AT = {
   addHistory: {},       // { [symbol]: addCount }
   lastReviewDate: {},   // { [symbol]: 'YYYY-MM-DD' }
   sessionStartEquity: null,
+  peakEquity: null,          // L7: high-water mark for the drawdown halt
   halted: false,
   haltReason: '',
   running: false,
@@ -1724,6 +1727,7 @@ function saveAtState() {
       addHistory: AT.addHistory,
       lastReviewDate: AT.lastReviewDate,
       sessionStartEquity: AT.sessionStartEquity,
+      peakEquity: AT.peakEquity,
       halted: AT.halted,
       haltReason: AT.haltReason,
       lastMacroBrief: AT.lastMacroBrief,
@@ -1816,6 +1820,7 @@ function loadAtState() {
     AT.addHistory = state.addHistory || {};
     AT.lastReviewDate = state.lastReviewDate || {};
     AT.sessionStartEquity = state.sessionStartEquity || null;
+    AT.peakEquity = state.peakEquity || null;
     AT.halted = !!state.halted;
     AT.haltReason = state.haltReason || '';
     AT.lastMacroBrief = state.lastMacroBrief || '';
@@ -2238,6 +2243,22 @@ async function aiSelectWatchlist(anthropicKey, macroBrief, openSymbols) {
 }
 
 // ── Volatility-aware position review (runs before new-trade scan) ────────────
+// ─── Account-level limits (risk register L5/L7) ──────────────────────────────
+// L5: total market value of all positions (longs + |shorts|) may not exceed MAX_GROSS_EXPOSURE × equity.
+// Alpaca's buying power includes margin (2×–4×), so without this cap the AutoTrader could lever up.
+function grossExposureRoom(openPositions, equity) {
+  const gross = (openPositions || []).reduce((a, p) => a + Math.abs(+p.market_value || 0), 0);
+  return Math.max(0, equity * MAX_GROSS_EXPOSURE - gross);
+}
+
+// L7: drawdown measured from the persisted high-water mark, not from the first equity seen,
+// so gains made along the way can't be given back in full before the halt triggers.
+function equityDrawdown(equity) {
+  if (!AT.sessionStartEquity) AT.sessionStartEquity = equity;
+  AT.peakEquity = Math.max(+AT.peakEquity || 0, +AT.sessionStartEquity || 0, equity);
+  return AT.peakEquity > 0 ? (AT.peakEquity - equity) / AT.peakEquity : 0;
+}
+
 // ─── Broker-side protection (risk register L1/L2) ────────────────────────────
 // Every AutoTrader position carries a GTC stop order at Alpaca, so it stays protected even when this
 // server is down, asleep or crashed. Hard stop = 2.2 × adaptive SL, capped at MAX_HARD_STOP_PCT.
@@ -2497,7 +2518,7 @@ Portfolio: ${openPositions.length} positions | buyingPower: $${buyingPower.toFix
         await sendTelegram(`${isShortPos ? '🔵' : '🔴'} <b>AutoTrader ${isShortPos ? 'COVER' : 'CLOSE'}</b> (AI review) — <b>${pos.symbol}</b>\n📉 ${closeQty} shares | P&L: ${plPct.toFixed(1)}%\n🧠 ${rReason}`);
 
       } else if (rAction === 'ADD' && canAdd && rConf >= 0.82 && addNotional > 0) {
-        const addQty = Math.floor(Math.min(addNotional, 5000, buyingPower * 0.9) / lastPrice);
+        const addQty = Math.floor(Math.min(addNotional, 5000, buyingPower * 0.9, grossExposureRoom(openPositions, equity)) / lastPrice);
         if (addQty >= 1) {
           const addSide = isLongPos ? 'buy' : 'sell';
           const totalQty = Math.abs(+pos.qty) + addQty;
@@ -2583,11 +2604,10 @@ async function atCycle() {
     }
 
     const equity = +account.equity;
-    if (!AT.sessionStartEquity) AT.sessionStartEquity = equity;
-    const drawdown = (AT.sessionStartEquity - equity) / AT.sessionStartEquity;
+    const drawdown = equityDrawdown(equity);   // L7: from the high-water mark
     if (drawdown > AT.drawdownLimit) {
       AT.halted = true;
-      AT.haltReason = `Equity drawdown ${(drawdown * 100).toFixed(1)}% exceeds limit ${(AT.drawdownLimit * 100).toFixed(0)}% — emergency stop`;
+      AT.haltReason = `Equity drawdown from peak ($${AT.peakEquity.toFixed(0)}) ${(drawdown * 100).toFixed(1)}% exceeds limit ${(AT.drawdownLimit * 100).toFixed(0)}% — emergency stop`;
       atLog({ symbol: 'SYSTEM', action: 'HALTED', confidence: 0, reasoning: AT.haltReason, executed: false });
       broadcast({ type: 'autotrader_halted', reason: AT.haltReason });
       await sendTelegram(`🚨 <b>AutoTrader HALTED</b>\n${AT.haltReason}`);
@@ -2864,7 +2884,8 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
         if (action === 'BUY' && !hasPos && openPositions.length < AT.maxPositions && buyingPower > 100) {
           const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct)
             * bsSizing(bs, brackets.tpPct, brackets.slPct);
-          const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
+          const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95,
+            grossExposureRoom(openPositions, equity));   // L5: no margin beyond MAX_GROSS_EXPOSURE
           const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
           if (tradeNotional >= 10) {
             try {
@@ -2937,7 +2958,8 @@ ${replaceBlock}${symbolHistory}${memoryBlock}`;
           const shortBs = computeBlackScholes(lastPrice, annVol, shortBrackets.tpPct, shortBrackets.slPct, 60 / 252, riskFreeRate);
           const baseNotional = adaptiveNotional(equity, annVol, AT.targetVolatility, AT.maxPositionPct)
             * bsSizing(shortBs, shortBrackets.tpPct, shortBrackets.slPct);
-          const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95);
+          const tradeNotional = Math.min(suggestedNotional || baseNotional, baseNotional, buyingPower * 0.95,
+            grossExposureRoom(openPositions, equity));   // L5: no margin beyond MAX_GROSS_EXPOSURE
           const estQty = lastPrice > 0 ? Math.floor(tradeNotional / lastPrice) : 0;
           if (estQty >= 1 && tradeNotional >= 10) {
             try {
@@ -3092,7 +3114,7 @@ app.post('/api/autotrader/config', (req, res) => {
   if (drawdownLimit != null) AT.drawdownLimit = Math.max(0.02, Math.min(0.50, +drawdownLimit));
   if (typeof allowShort === 'boolean') AT.allowShort = allowShort;
   if (targetVolatility != null) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +targetVolatility));
-  if (resetHalt) { AT.halted = false; AT.haltReason = ''; AT.sessionStartEquity = null; }
+  if (resetHalt) { AT.halted = false; AT.haltReason = ''; AT.sessionStartEquity = null; AT.peakEquity = null; }
 
   // Watchlist/AI-managed settings
   const { aiManagedWatchlist, watchlistSize } = req.body;

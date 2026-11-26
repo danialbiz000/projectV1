@@ -1,0 +1,471 @@
+{
+ "generated_at": "2026-11-26T18:49:54.364Z",
+ "period": {
+  "start": "2018-01-01",
+  "end": "2022-12-31"
+ },
+ "source": "yahoo",
+ "longOnly": false,
+ "symbols": [
+  "AAPL",
+  "MSFT",
+  "NVDA",
+  "AMZN",
+  "GOOGL",
+  "META",
+  "JPM",
+  "V",
+  "UNH",
+  "LLY",
+  "XOM",
+  "CVX",
+  "CAT",
+  "HON",
+  "WMT",
+  "COST",
+  "HD",
+  "AMD",
+  "CRM",
+  "BAC",
+  "GS",
+  "PFE",
+  "MRK",
+  "LMT",
+  "TSLA"
+ ],
+ "missing": [],
+ "costs": {
+  "slippageBps": 5,
+  "commissionBps": 0,
+  "borrowBpsYear": 30
+ },
+ "capital": 10000,
+ "benchmark": {
+  "symbol": "SPY",
+  "totalReturn": 42.78,
+  "annReturn": 7.39,
+  "maxDrawdown": 34.1,
+  "sharpe": 0.237,
+  "winRate": 0,
+  "profitFactor": 0,
+  "totalTrades": 0,
+  "finalEquity": 14278.3
+ },
+ "note": "Historical simulation, not live results. Universe chosen today (survivorship bias). Out-of-sample validation period (risk register S5).",
+ "strategies": [
+  {
+   "key": "momentum",
+   "name": "Momentum \u2014 12-1 Factor",
+   "realistic": {
+    "strategy": "momentum (2018-22)",
+    "totalReturn": 95.28,
+    "annReturn": 14.33,
+    "maxDrawdown": 46.48,
+    "sharpe": 0.45,
+    "winRate": 42,
+    "profitFactor": 1.253,
+    "totalTrades": 150,
+    "finalEquity": 19528.32
+   },
+   "legacy": null,
+   "exits": {
+    "take_profit": 32,
+    "stop_loss": 68,
+    "max_hold": 23,
+    "stop_loss_gap": 16,
+    "take_profit_gap": 8,
+    "eop": 3
+   },
+   "flags": [
+    {
+     "sev": "medium",
+     "msg": "Sharpe 0.45 (< 0.5)"
+    },
+    {
+     "sev": "high",
+     "msg": "max drawdown 46.48% (> 20%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "16 stops gapped through (worst -12.5% vs stop -8%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "short side loses money (32 trades, P&L -409)"
+    }
+   ]
+  },
+  {
+   "key": "hawk",
+   "name": "Hawk \u2014 Breakout Momentum",
+   "realistic": {
+    "strategy": "hawk (2018-22)",
+    "totalReturn": 32.14,
+    "annReturn": 5.74,
+    "maxDrawdown": 18.97,
+    "sharpe": 0.16,
+    "winRate": 44.5,
+    "profitFactor": 1.135,
+    "totalTrades": 317,
+    "finalEquity": 13214.18
+   },
+   "legacy": null,
+   "exits": {
+    "take_profit": 46,
+    "max_hold": 111,
+    "stop_loss": 126,
+    "stop_loss_gap": 19,
+    "take_profit_gap": 14,
+    "eop": 1
+   },
+   "flags": [
+    {
+     "sev": "medium",
+     "msg": "Sharpe 0.16 (< 0.5)"
+    },
+    {
+     "sev": "medium",
+     "msg": "CAGR 5.74% below buy-and-hold 7.39%"
+    },
+    {
+     "sev": "medium",
+     "msg": "19 stops gapped through (worst -5.6% vs stop -4%)"
+    }
+   ]
+  },
+  {
+   "key": "bull",
+   "name": "Bull \u2014 Golden Cross",
+   "realistic": {
+    "strategy": "bull (2018-22)",
+    "totalReturn": 27.56,
+    "annReturn": 4.99,
+    "maxDrawdown": 23.69,
+    "sharpe": 0.114,
+    "winRate": 41.1,
+    "profitFactor": 1.202,
+    "totalTrades": 112,
+    "finalEquity": 12756.29
+   },
+   "legacy": null,
+   "exits": {
+    "take_profit": 17,
+    "stop_loss": 47,
+    "max_hold": 35,
+    "take_profit_gap": 3,
+    "stop_loss_gap": 8,
+    "eop": 2
+   },
+   "flags": [
+    {
+     "sev": "medium",
+     "msg": "Sharpe 0.114 (< 0.5)"
+    },
+    {
+     "sev": "high",
+     "msg": "max drawdown 23.69% (> 20%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "CAGR 4.99% below buy-and-hold 7.39%"
+    },
+    {
+     "sev": "medium",
+     "msg": "8 stops gapped through (worst -10.5% vs stop -6%)"
+    }
+   ]
+  },
+  {
+   "key": "macd",
+   "name": "MACD \u2014 Momentum Cross",
+   "realistic": {
+    "strategy": "macd (2018-22)",
+    "totalReturn": 4.12,
+    "annReturn": 0.81,
+    "maxDrawdown": 33.4,
+    "sharpe": -0.096,
+    "winRate": 40.6,
+    "profitFactor": 1.013,
+    "totalTrades": 318,
+    "finalEquity": 10411.52
+   },
+   "legacy": null,
+   "exits": {
+    "stop_loss": 137,
+    "max_hold": 88,
+    "take_profit": 47,
+    "take_profit_gap": 19,
+    "stop_loss_gap": 24,
+    "eop": 3
+   },
+   "flags": [
+    {
+     "sev": "high",
+     "msg": "Sharpe -0.096 (< 0.5)"
+    },
+    {
+     "sev": "high",
+     "msg": "max drawdown 33.4% (> 20%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "CAGR 0.81% below buy-and-hold 7.39%"
+    },
+    {
+     "sev": "medium",
+     "msg": "24 stops gapped through (worst -9.9% vs stop -5%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "short side loses money (169 trades, P&L -4163)"
+    }
+   ]
+  },
+  {
+   "key": "owl",
+   "name": "Owl \u2014 Mean Reversion",
+   "realistic": {
+    "strategy": "owl (2018-22)",
+    "totalReturn": -13.71,
+    "annReturn": -2.91,
+    "maxDrawdown": 37.23,
+    "sharpe": -0.3,
+    "winRate": 44.6,
+    "profitFactor": 0.962,
+    "totalTrades": 617,
+    "finalEquity": 8628.55
+   },
+   "legacy": null,
+   "exits": {
+    "max_hold": 151,
+    "take_profit_gap": 34,
+    "stop_loss": 241,
+    "take_profit": 133,
+    "stop_loss_gap": 54,
+    "eop": 4
+   },
+   "flags": [
+    {
+     "sev": "high",
+     "msg": "profit factor 0.962 < 1: loses money after costs"
+    },
+    {
+     "sev": "high",
+     "msg": "Sharpe -0.3 (< 0.5)"
+    },
+    {
+     "sev": "high",
+     "msg": "max drawdown 37.23% (> 20%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "CAGR -2.91% below buy-and-hold 7.39%"
+    },
+    {
+     "sev": "high",
+     "msg": "54 stops gapped through (worst -15.1% vs stop -4%)"
+    }
+   ]
+  },
+  {
+   "key": "fox",
+   "name": "Fox \u2014 Contrarian",
+   "realistic": {
+    "strategy": "fox (2018-22)",
+    "totalReturn": -35.58,
+    "annReturn": -8.42,
+    "maxDrawdown": 54.49,
+    "sharpe": -0.466,
+    "winRate": 39.8,
+    "profitFactor": 0.925,
+    "totalTrades": 913,
+    "finalEquity": 6442.25
+   },
+   "legacy": null,
+   "exits": {
+    "max_hold": 207,
+    "stop_loss": 398,
+    "take_profit": 189,
+    "take_profit_gap": 39,
+    "stop_loss_gap": 77,
+    "eop": 3
+   },
+   "flags": [
+    {
+     "sev": "high",
+     "msg": "profit factor 0.925 < 1: loses money after costs"
+    },
+    {
+     "sev": "high",
+     "msg": "Sharpe -0.466 (< 0.5)"
+    },
+    {
+     "sev": "high",
+     "msg": "max drawdown 54.49% (> 20%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "CAGR -8.42% below buy-and-hold 7.39%"
+    },
+    {
+     "sev": "high",
+     "msg": "77 stops gapped through (worst -14.6% vs stop -4%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "short side loses money (462 trades, P&L -5203)"
+    }
+   ]
+  },
+  {
+   "key": "bear",
+   "name": "Bear \u2014 Death Cross",
+   "realistic": {
+    "strategy": "bear (2018-22)",
+    "totalReturn": -35.66,
+    "annReturn": -8.45,
+    "maxDrawdown": 49.4,
+    "sharpe": -0.677,
+    "winRate": 31.3,
+    "profitFactor": 0.707,
+    "totalTrades": 160,
+    "finalEquity": 6434.38
+   },
+   "legacy": null,
+   "exits": {
+    "stop_loss": 76,
+    "max_hold": 40,
+    "stop_loss_gap": 17,
+    "take_profit_gap": 7,
+    "take_profit": 17,
+    "eop": 3
+   },
+   "flags": [
+    {
+     "sev": "high",
+     "msg": "profit factor 0.707 < 1: loses money after costs"
+    },
+    {
+     "sev": "high",
+     "msg": "Sharpe -0.677 (< 0.5)"
+    },
+    {
+     "sev": "high",
+     "msg": "max drawdown 49.4% (> 20%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "CAGR -8.45% below buy-and-hold 7.39%"
+    },
+    {
+     "sev": "medium",
+     "msg": "17 stops gapped through (worst -7.9% vs stop -5%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "short side loses money (160 trades, P&L -3566)"
+    }
+   ]
+  },
+  {
+   "key": "rsi",
+   "name": "RSI \u2014 Oversold Bounce",
+   "realistic": {
+    "strategy": "rsi (2018-22)",
+    "totalReturn": -59.54,
+    "annReturn": -16.57,
+    "maxDrawdown": 63.17,
+    "sharpe": -1.075,
+    "winRate": 38.2,
+    "profitFactor": 0.789,
+    "totalTrades": 714,
+    "finalEquity": 4045.6
+   },
+   "legacy": null,
+   "exits": {
+    "stop_loss_gap": 64,
+    "stop_loss": 303,
+    "take_profit": 127,
+    "max_hold": 189,
+    "take_profit_gap": 27,
+    "eop": 4
+   },
+   "flags": [
+    {
+     "sev": "high",
+     "msg": "profit factor 0.789 < 1: loses money after costs"
+    },
+    {
+     "sev": "high",
+     "msg": "Sharpe -1.075 (< 0.5)"
+    },
+    {
+     "sev": "high",
+     "msg": "max drawdown 63.17% (> 20%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "CAGR -16.57% below buy-and-hold 7.39%"
+    },
+    {
+     "sev": "high",
+     "msg": "64 stops gapped through (worst -16.0% vs stop -4%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "short side loses money (417 trades, P&L -5724)"
+    }
+   ]
+  },
+  {
+   "key": "bb",
+   "name": "Bollinger \u2014 Band Reversion",
+   "realistic": {
+    "strategy": "bb (2018-22)",
+    "totalReturn": -62.78,
+    "annReturn": -17.95,
+    "maxDrawdown": 64.13,
+    "sharpe": -1.461,
+    "winRate": 34.5,
+    "profitFactor": 0.797,
+    "totalTrades": 914,
+    "finalEquity": 3722.27
+   },
+   "legacy": null,
+   "exits": {
+    "stop_loss": 483,
+    "stop_loss_gap": 62,
+    "take_profit": 151,
+    "take_profit_gap": 31,
+    "max_hold": 185,
+    "eop": 2
+   },
+   "flags": [
+    {
+     "sev": "high",
+     "msg": "profit factor 0.797 < 1: loses money after costs"
+    },
+    {
+     "sev": "high",
+     "msg": "Sharpe -1.461 (< 0.5)"
+    },
+    {
+     "sev": "high",
+     "msg": "max drawdown 64.13% (> 20%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "CAGR -17.95% below buy-and-hold 7.39%"
+    },
+    {
+     "sev": "high",
+     "msg": "62 stops gapped through (worst -11.8% vs stop -3%)"
+    },
+    {
+     "sev": "medium",
+     "msg": "short side loses money (495 trades, P&L -5208)"
+    }
+   ]
+  }
+ ]
+}
