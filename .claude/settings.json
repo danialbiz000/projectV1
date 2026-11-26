@@ -2,13 +2,23 @@
   "permissions": {
     "allow": [
       "Bash(node scripts/backtest.js:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 node scripts/backtest.js:*)",
       "Bash(node scripts/paper-health.js:*)",
       "Bash(node test/backtest-engine.test.js:*)",
       "Bash(node test/broker-protection.test.js:*)",
       "Bash(node --check server.js)",
+      "Bash(npm ci)",
+      "Bash(npm test:*)",
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push -u origin auto/:*)",
+      "Bash(git push origin auto/:*)",
       "Read(reports/**)",
       "Write(reports/**)",
       "Edit(reports/**)",
@@ -24,8 +34,13 @@
       "Bash(npm start:*)",
       "Bash(curl:*)",
       "Bash(wget:*)",
-      "Bash(git push:*)",
-      "Bash(git merge:*)"
+      "Bash(git push origin main:*)",
+      "Bash(git push -u origin main:*)",
+      "Bash(git push origin HEAD:main:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push origin --delete:*)",
+      "Bash(git branch -D:*)"
     ]
   }
 }

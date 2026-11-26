@@ -24,6 +24,20 @@ claude -p "/nexus-check"                 # weekly check, non-interactive
 ```
 `/nexus-check` runs paper-monitor → backtest-analyst → risk-guardian and writes `reports/weekly-<date>.md`.
 
+## Daily autonomous agent (Claude cloud)
+A scheduled Claude cloud session runs **`/nexus-daily`** every US trading day after the close, even
+with your PC off. It follows `.claude/commands/nexus-daily.md`:
+1. skips weekends/holidays (no bar for SPY today);
+2. `node --check server.js` + `npm test`;
+3. realistic + long-only backtests (Yahoo data in the cloud) and comparison with the previous day;
+4. risk-guardian checklist on the parts of `server.js` merged since the last report;
+5. writes `reports/daily/daily-<date>.md` (OK / ATTENZIONE / AZIONE RICHIESTA) on the branch
+   **`auto/reports`**, kept in one rolling PR "Report automatici";
+6. if tests or the syntax check fail: a minimal fix on `auto/fix-<date>-…` with its own PR.
+It never merges, never pushes to `main` (blocked in `.claude/settings.json`: pushes are allowed only to
+`auto/*` branches), never touches orders or `.env`. You get a phone notification with the outcome.
+The cloud agent has no Alpaca keys: the paper-account check stays local (`paper-monitor`).
+
 ## Run it automatically every week (Windows)
 `scripts/schedule-weekly-check.ps1` registers a Windows scheduled task that runs
 `claude -p "/nexus-check"` every Saturday at 09:17. Run once in PowerShell, from this folder:

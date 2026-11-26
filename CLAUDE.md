@@ -9,7 +9,7 @@ More background: `CONTEXT_FOR_NEW_CHAT.md` (Italian).
   or the AutoTrader on your own.
 - Never read, print or edit `.env`; never set `NEXUS_ENABLE_LIVE_TRADING` or change `ALPACA_BASE_URL`.
 - Never weaken an existing guard (live gate, order caps, daily trade cap, drawdown halt, auth, CORS).
-- Work on a branch, never on `main`; don't merge or push unless the owner asks.
+- Work on a branch, never on `main`; don't merge, and push only `auto/*` branches (daily routine) or when the owner asks.
 - The owner is Italian: write reports and summaries **in Italian**, in plain language (code and
   identifiers stay in English).
 
@@ -21,6 +21,9 @@ More background: `CONTEXT_FOR_NEW_CHAT.md` (Italian).
 | `paper-monitor` | L1, L5–L8 (evidence) | "how is the paper account?", daily check |
 
 `/nexus-check` runs all three and writes `reports/weekly-<date>.md`. Details: `docs/AGENTS.md`.
+`/nexus-daily` is the unattended daily routine (scheduled in Claude cloud): tests + backtest +
+comparison, reports on branch `auto/reports`, fix PRs on `auto/fix-*`. Agents may push **only** to
+`auto/*` branches, never to `main`.
 
 ## Useful commands
 - `node scripts/backtest.js` — realistic + legacy backtest of the 9 strategies → `reports/backtests/`
