@@ -21,7 +21,7 @@ Severity: **critical** (can lose a large share of the account), **high**, **medi
 | L3 | high | open | risk-guardian | AI position review has a **2-day cooldown** per symbol. The emergency close is checked every cycle, but between the review zone (−SL×reviewPct) and the hard stop (−2.2×SL) a losing position can drift for 2 days with no decision. | Re-review if the loss deepened by ≥ 0.5×SL since the last review; shorten the cooldown in RISK-OFF. |
 | L4 | high | open | risk-guardian | Review can **ADD** to a losing position (averaging down, max 1 per position). | Disable ADD on positions below −SL, or require the regime to be RISK-ON and the backtest to support it. |
 | L5 | high | open | risk-guardian | Sizing uses `buyingPower * 0.95`; Alpaca buying power includes **margin (2×–4×)**. 20 positions × 15% = up to 300% gross exposure. | Cap gross exposure at 100% of equity (sum of position market values ≤ equity) unless explicitly allowed. |
-| L6 | high | open | backtest-analyst | `allowShort: true`. In the 3-year realistic backtest **every strategy lost money on the short side** (e.g. RSI −9.5% → +58% when long-only). | Default `allowShort: false`; re-enable only for a strategy whose short side is profitable out-of-sample. |
+| L6 | high | fix-proposed (`risk/L6-shorts-off`) | backtest-analyst | `allowShort: true`. In the 3-year realistic backtest **every strategy lost money on the short side** (e.g. RSI −9.5% → +58% when long-only). | Default `allowShort: false`; re-enable only for a strategy whose short side is profitable out-of-sample. |
 | L7 | medium | open | risk-guardian | Drawdown halt is measured from `sessionStartEquity` (start value), not from the **high-water mark**: after a +20% run the account can give back 35% before halting. | Track and persist peak equity; halt on drawdown from peak. |
 | L8 | medium | open | paper-monitor | The live AT is AI-driven (Claude + Black-Scholes filter); the 9 backtest strategies **do not validate it**. Its only evidence is the paper account. | Compare paper P&L, hit rate and drawdown with expectations every week (paper-monitor). |
 | L9 | low | open | risk-guardian | Multi-agent sizing: `riskPerTrade` is actually the **position size** (8–15% of capital per trade), not the risk. Virtual only today. | Rename / document; if agents ever trade real money, size by risk (stop distance). |
@@ -51,4 +51,5 @@ Benchmark buy-and-hold SPY: **+57.6%**, CAGR 16.5%, max DD 19.0%, Sharpe 0.77.
 
 ## Log
 
+- 2026-11-26 — L6 fix proposed on `risk/L6-shorts-off`: `allowShort: false` by default, one-time switch-off for saved states.
 - 2026-11-26 — register created from the first full analysis (realistic backtest + code review). Reports: `reports/backtests/backtest-2026-11-26.md`, `reports/backtests/backtest-2026-11-26-long-only.md`.
