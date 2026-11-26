@@ -4,6 +4,7 @@
       "Bash(node scripts/backtest.js:*)",
       "Bash(node scripts/paper-health.js:*)",
       "Bash(node test/backtest-engine.test.js:*)",
+      "Bash(node test/broker-protection.test.js:*)",
       "Bash(node --check server.js)",
       "Bash(git status:*)",
       "Bash(git log:*)",
