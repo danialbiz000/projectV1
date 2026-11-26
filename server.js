@@ -1600,7 +1600,10 @@ const AT = {
   stopLossPct: 8,
   takeProfitPct: 30,
   drawdownLimit: 0.15,
-  allowShort: true,
+  // L6 (docs/RISK_REGISTER.md): shorts off by default — in the realistic backtest the short side
+  // lost money in every strategy that shorts. Can still be enabled from the settings.
+  allowShort: false,
+  shortPolicyVersion: 1,
   targetVolatility: 0.20,
   aiManagedWatchlist: true,   // Claude picks symbols each cycle from STOCK_UNIVERSE
   watchlistSize: 50,          // how many symbols Claude picks per cycle
@@ -1679,6 +1682,7 @@ function saveAtState() {
         takeProfitPct: AT.takeProfitPct,
         drawdownLimit: AT.drawdownLimit,
         allowShort: AT.allowShort,
+        shortPolicyVersion: AT.shortPolicyVersion,
         targetVolatility: AT.targetVolatility,
         aiManagedWatchlist: AT.aiManagedWatchlist,
         watchlistSize: AT.watchlistSize,
@@ -1759,7 +1763,13 @@ function loadAtState() {
     if (Number.isFinite(+cfg.stopLossPct)) AT.stopLossPct = Math.max(1, Math.min(50, +cfg.stopLossPct));
     if (Number.isFinite(+cfg.takeProfitPct)) AT.takeProfitPct = Math.max(1, Math.min(200, +cfg.takeProfitPct));
     if (Number.isFinite(+cfg.drawdownLimit)) AT.drawdownLimit = Math.max(0.02, Math.min(0.50, +cfg.drawdownLimit));
-    if (typeof cfg.allowShort === 'boolean') AT.allowShort = cfg.allowShort;
+    if (typeof cfg.allowShort === 'boolean') {
+      // One-time switch-off for states saved before the L6 policy; later choices from the UI are kept.
+      if ((cfg.shortPolicyVersion || 0) < 1 && cfg.allowShort) {
+        AT.allowShort = false;
+        console.log('[AutoTrader] Shorts disabled by default (risk register L6). Re-enable them in the settings if you really want them.');
+      } else AT.allowShort = cfg.allowShort;
+    }
     if (Number.isFinite(+cfg.targetVolatility)) AT.targetVolatility = Math.max(0.05, Math.min(1.0, +cfg.targetVolatility));
     if (typeof cfg.aiManagedWatchlist === 'boolean') AT.aiManagedWatchlist = cfg.aiManagedWatchlist;
     if (Number.isFinite(+cfg.watchlistSize)) AT.watchlistSize = Math.max(3, Math.min(100, +cfg.watchlistSize));
