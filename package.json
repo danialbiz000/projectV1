@@ -1,10 +1,13 @@
 {
   "name": "portfolio-nexus-trading",
   "version": "1.0.0",
-  "description": "Portfolio Nexus × Trading Desk with Alpaca Live Trading",
+  "description": "Portfolio Nexus \u00d7 Trading Desk with Alpaca Live Trading",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "backtest": "node scripts/backtest.js",
+    "health": "node scripts/paper-health.js",
+    "test": "node test/backtest-engine.test.js"
   },
   "engines": {
     "node": ">=18.0.0"

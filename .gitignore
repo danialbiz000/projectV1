@@ -1,6 +1,7 @@
 .env
 node_modules/
-.claude/
+# Claude Code: share agents/commands/settings.json, keep personal settings local
+.claude/settings.local.json
 data/
 *.zip
 diagnose.js
