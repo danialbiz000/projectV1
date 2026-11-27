@@ -20,9 +20,9 @@ Severity: **critical** (can lose a large share of the account), **high**, **medi
 | L2 | critical | merged #13 — verify on paper | risk-guardian | Emergency close only at **2.2 × adaptive SL**; adaptive SL is capped at 25% → a position can lose up to **−55%** before the hard stop. | Cap the hard stop (e.g. min(2.2×SL, 15%)) and enforce it at the broker (L1). |
 | L3 | high | open | risk-guardian | AI position review has a **2-day cooldown** per symbol. The emergency close is checked every cycle, but between the review zone (−SL×reviewPct) and the hard stop (−2.2×SL) a losing position can drift for 2 days with no decision. | Re-review if the loss deepened by ≥ 0.5×SL since the last review; shorten the cooldown in RISK-OFF. |
 | L4 | high | open | risk-guardian | Review can **ADD** to a losing position (averaging down, max 1 per position). | Disable ADD on positions below −SL, or require the regime to be RISK-ON and the backtest to support it. |
-| L5 | high | fix-proposed (`claude/risk-limits-l5-l7`) | risk-guardian | Sizing uses `buyingPower * 0.95`; Alpaca buying power includes **margin (2×–4×)**. 20 positions × 15% = up to 300% gross exposure. | Cap gross exposure at 100% of equity (sum of position market values ≤ equity) unless explicitly allowed. |
+| L5 | high | merged #17 — verify on paper | risk-guardian | Sizing uses `buyingPower * 0.95`; Alpaca buying power includes **margin (2×–4×)**. 20 positions × 15% = up to 300% gross exposure. | Cap gross exposure at 100% of equity (sum of position market values ≤ equity) unless explicitly allowed. |
 | L6 | high | merged #13 — verify on paper | backtest-analyst | `allowShort: true`. In the 3-year realistic backtest **every strategy lost money on the short side** (e.g. RSI −9.5% → +58% when long-only). | Default `allowShort: false`; re-enable only for a strategy whose short side is profitable out-of-sample. |
-| L7 | medium | fix-proposed (`claude/risk-limits-l5-l7`) | risk-guardian | Drawdown halt is measured from `sessionStartEquity` (start value), not from the **high-water mark**: after a +20% run the account can give back 35% before halting. | Track and persist peak equity; halt on drawdown from peak. |
+| L7 | medium | merged #17 — verify on paper | risk-guardian | Drawdown halt is measured from `sessionStartEquity` (start value), not from the **high-water mark**: after a +20% run the account can give back 35% before halting. | Track and persist peak equity; halt on drawdown from peak. |
 | L8 | medium | open | paper-monitor | The live AT is AI-driven (Claude + Black-Scholes filter); the 9 backtest strategies **do not validate it**. Its only evidence is the paper account. | Compare paper P&L, hit rate and drawdown with expectations every week (paper-monitor). |
 | L9 | low | open | risk-guardian | Multi-agent sizing: `riskPerTrade` is actually the **position size** (8–15% of capital per trade), not the risk. Virtual only today. | Rename / document; if agents ever trade real money, size by risk (stop distance). |
 
@@ -51,6 +51,7 @@ Benchmark buy-and-hold SPY: **+57.6%**, CAGR 16.5%, max DD 19.0%, Sharpe 0.77.
 
 ## Log
 
+- 2026-11-27 — Daily (run di prova): L5+L7 merged in #17, risk-guardian check on the changed `server.js` parts OK (close endpoint behind auth, validated before cancelling stops). Owl Sharpe 0.768 now below SPY 0.799 (realistic and long-only).
 - 2026-11-26 — S5: out-of-sample 2018–2022 run; owl/rsi not robust, momentum long-only robust, shorts lose in both periods.
 - 2026-11-26 — L5+L7 fix proposed on `claude/risk-limits-l5-l7`: gross exposure capped at 1× equity (`NEXUS_MAX_GROSS_EXPOSURE`), drawdown halt from the persisted peak.
 - 2026-11-26 — L1, L2, L6 merged in #13; dashboard close fixed in #15. Status stays 'verify on paper' until paper-monitor confirms every position has a broker stop.
